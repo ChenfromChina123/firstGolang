@@ -448,6 +448,15 @@ func (db *DB) migrate() error {
 				INDEX idx_files_filename (filename(255)),
 				INDEX idx_files_status (status)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`CREATE TABLE IF NOT EXISTS users (
+				id VARCHAR(64) PRIMARY KEY,
+				username VARCHAR(64) NOT NULL,
+				password_hash VARCHAR(255) NOT NULL,
+				role VARCHAR(32) NOT NULL DEFAULT 'admin',
+				created_at VARCHAR(32) NOT NULL,
+				updated_at VARCHAR(32) NOT NULL,
+				UNIQUE KEY uk_username (username)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		}
 	default: // sqlite 支持多语句
 		statements = []string{
@@ -485,6 +494,15 @@ func (db *DB) migrate() error {
 				chunk_size INTEGER NOT NULL,
 				total_chunks INTEGER NOT NULL,
 				status TEXT NOT NULL DEFAULT 'completed',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
+
+			CREATE TABLE IF NOT EXISTS users (
+				id TEXT PRIMARY KEY,
+				username TEXT NOT NULL UNIQUE,
+				password_hash TEXT NOT NULL,
+				role TEXT NOT NULL DEFAULT 'admin',
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL
 			);`,
@@ -712,6 +730,40 @@ func escapeLikePrefix(s string) string {
 		out = append(out, c)
 	}
 	return string(out)
+}
+
+// CreateUser 创建新用户。username 唯一，重复时返回错误。
+func (db *DB) CreateUser(u *model.User) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Username, u.PasswordHash, u.Role,
+		u.CreatedAt.Format(time.RFC3339), u.UpdatedAt.Format(time.RFC3339),
+	)
+	return err
+}
+
+// GetUserByUsername 按用户名查询用户。不存在返回 sql.ErrNoRows。
+func (db *DB) GetUserByUsername(username string) (*model.User, error) {
+	var u model.User
+	var createdAt, updatedAt string
+	err := db.conn.QueryRow(
+		`SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE username = ?`,
+		username,
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	u.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return &u, nil
+}
+
+// CountUsers 返回用户总数。用于首次启动判断是否需要创建初始管理员。
+func (db *DB) CountUsers() (int64, error) {
+	var count int64
+	err := db.conn.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	return count, err
 }
 
 // DeleteFile 删除单个文件记录（按 ID）。返回受影响行数。

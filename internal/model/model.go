@@ -125,3 +125,13 @@ func ComputeHash(r io.Reader) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// User 表示系统用户（登录认证用）
+type User struct {
+	ID           string    `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"-"`              // bcrypt 哈希，不序列化到 JSON
+	Role         string    `json:"role"`           // admin, user
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}

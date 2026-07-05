@@ -644,6 +644,45 @@ body::after {
     to { opacity: 1; transform: translateX(0); }
 }
 
+/* === 用户信息区（顶部栏右侧） === */
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 12px;
+}
+.user-info .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--ok);
+    box-shadow: 0 0 6px var(--ok);
+}
+.user-info .name { color: var(--fg-1); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-info .role { color: var(--accent); font-size: 10px; padding: 1px 6px; background: var(--accent-dim); border-radius: 3px; }
+
+.logout-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--fg-2);
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.logout-btn:hover {
+    border-color: var(--err);
+    color: var(--err);
+    background: var(--err-dim);
+}
+
 /* === 响应式 === */
 @media (max-width: 720px) {
     .topbar { padding: 0 16px; }
@@ -655,4 +694,7 @@ body::after {
     .tree-row { grid-template-columns: 20px minmax(0, 1fr) auto auto; gap: 8px; padding: 8px 10px; }
     .tree-row .tree-meta:nth-of-type(3),
     .tree-row .tree-meta:nth-of-type(4) { display: none; }
+    /* 窄屏下隐藏角色标签，用户名截断 */
+    .user-info .role { display: none; }
+    .user-info .name { max-width: 80px; }
 }

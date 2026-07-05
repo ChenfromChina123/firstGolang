@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260705f">
+    <link rel="stylesheet" href="/web/style.css?v=20260706a">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -24,10 +24,18 @@
                 <span class="brand-sub">CHUNKED · SYNC · CONSOLE</span>
             </div>
         </div>
-        <div class="health" id="health-badge">
-            <span class="dot" id="health-dot"></span>
-            <span class="health-text" id="health-text">检测中</span>
-            <span class="health-meta" id="health-meta"></span>
+        <div class="topbar-right">
+            <div class="health" id="health-badge">
+                <span class="dot" id="health-dot"></span>
+                <span class="health-text" id="health-text">检测中</span>
+                <span class="health-meta" id="health-meta"></span>
+            </div>
+            <div class="user-info" id="user-info" hidden>
+                <span class="dot"></span>
+                <span class="name" id="user-name">—</span>
+                <span class="role" id="user-role">user</span>
+            </div>
+            <button class="logout-btn" id="logout-btn" hidden>登出</button>
         </div>
     </header>
 
@@ -188,6 +196,6 @@
     <!-- Toast 提示 -->
     <div class="toast-wrap" id="toast-wrap"></div>
 
-    <script src="/web/app.js?v=20260705f"></script>
+    <script src="/web/app.js?v=20260706a"></script>
 </body>
 </html>

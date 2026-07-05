@@ -19,7 +19,83 @@
         download: '/api/download',
         downloadDir: '/api/download/dir',
         health: '/api/health',
+        me: '/api/me',
+        logout: '/api/logout',
     };
+
+    // === 认证：路由守卫 + 401 拦截 ===
+
+    /**
+     * 跳转到登录页（带 redirect 参数，登录后跳回当前页）
+     * @param {string} [reason] - 跳转原因（用于登录页提示，可选）
+     */
+    function redirectToLogin(reason) {
+        const current = window.location.pathname + window.location.search;
+        const url = '/web/login.html?redirect=' + encodeURIComponent(current);
+        window.location.href = url;
+    }
+
+    /**
+     * 带 401 拦截的 fetch 封装。
+     * 收到 401 时自动跳转登录页，避免用户在 token 过期后继续操作无响应。
+     * 其余行为与原生 fetch 一致。
+     */
+    function apiFetch(input, init) {
+        return fetch(input, init).then(res => {
+            if (res.status === 401) {
+                redirectToLogin('session_expired');
+            }
+            return res;
+        });
+    }
+
+    /**
+     * 检查登录状态：调用 /api/me
+     * - 401：立即跳转登录页（路由守卫）
+     * - 成功：显示用户名和角色，显示登出按钮
+     */
+    async function checkAuth() {
+        try {
+            const res = await fetch(API.me, { credentials: 'same-origin' });
+            if (res.status === 401) {
+                redirectToLogin('not_authenticated');
+                return false;
+            }
+            if (!res.ok) {
+                toast('获取用户信息失败: HTTP ' + res.status, 'err');
+                return false;
+            }
+            const user = await res.json();
+            const infoEl = document.getElementById('user-info');
+            const nameEl = document.getElementById('user-name');
+            const roleEl = document.getElementById('user-role');
+            const logoutBtn = document.getElementById('logout-btn');
+            if (infoEl && nameEl) {
+                nameEl.textContent = user.username || '—';
+                if (roleEl && user.role) roleEl.textContent = user.role;
+                infoEl.hidden = false;
+            }
+            if (logoutBtn) logoutBtn.hidden = false;
+            return true;
+        } catch (e) {
+            // 网络错误等：不跳转，仅提示（可能是后端未启动）
+            console.error('checkAuth error:', e);
+            return false;
+        }
+    }
+
+    /** 登出：调用 /api/logout 清除 Cookie，跳转登录页 */
+    async function logout() {
+        try {
+            await fetch(API.logout, {
+                method: 'POST',
+                credentials: 'same-origin',
+            });
+        } catch (e) {
+            // 忽略网络错误，仍然跳转登录页
+        }
+        window.location.href = '/web/login.html';
+    }
 
     // === 工具函数 ===
 
@@ -142,7 +218,7 @@
 
             // 文件元信息通过 JSON body 传递（后端 InitUploadRequest 解析）
             const uploadName = this.getUploadFilename();
-            const res = await fetch(url, {
+            const res = await apiFetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -181,7 +257,7 @@
         async checkResumable() {
             if (!this.sessionId) return;
             try {
-                const res = await fetch(`${API.status}?session_id=${this.sessionId}`);
+                const res = await apiFetch(`${API.status}?session_id=${this.sessionId}`);
                 if (!res.ok) return;
                 const data = await res.json();
                 if (data.received_chunks && Array.isArray(data.received_chunks)) {
@@ -203,7 +279,7 @@
             form.append('chunk_index', idx);
             form.append('chunk_data', blob);
 
-            const res = await fetch(API.chunk, { method: 'POST', body: form });
+            const res = await apiFetch(API.chunk, { method: 'POST', body: form });
             if (!res.ok) throw new Error(`chunk ${idx} 失败: HTTP ${res.status}`);
             this.received.add(idx);
             // 用 received.size 计算总上传量，而非 (idx+1)*chunkSize。
@@ -239,7 +315,7 @@
 
         /** 完成上传，合并分片 */
         async complete() {
-            const res = await fetch(API.complete, {
+            const res = await apiFetch(API.complete, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session_id: this.sessionId }),
@@ -438,7 +514,7 @@
             const url = currentPath
                 ? `${API.files}?prefix=${encodeURIComponent(currentPath)}`
                 : API.files;
-            const res = await fetch(url);
+            const res = await apiFetch(url);
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const files = await res.json();
             if (!files || files.length === 0) {
@@ -533,7 +609,7 @@
     function confirmDeleteFile(fileId, filename) {
         openConfirmDialog(`确认删除文件「${filename}」？此操作不可恢复。`, async () => {
             try {
-                const res = await fetch(`${API.files}/${fileId}`, { method: 'DELETE' });
+                const res = await apiFetch(`${API.files}/${fileId}`, { method: 'DELETE' });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 toast(`「${filename}」已删除`, 'ok');
                 loadFiles();
@@ -547,7 +623,7 @@
     function confirmDeleteDir(prefix, dirName) {
         openConfirmDialog(`确认删除目录「${dirName}」及其所有内容？此操作不可恢复。`, async () => {
             try {
-                const res = await fetch(`${API.files}?prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' });
+                const res = await apiFetch(`${API.files}?prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json().catch(() => ({}));
                 toast(`目录「${dirName}」已删除（${data.files_deleted || 0} 个文件）`, 'ok');
@@ -574,7 +650,7 @@
             if (!newFilename) { toast('文件名不能为空', 'err'); return; }
             if (newFilename === currentFilename) { cleanup(); return; }
             try {
-                const res = await fetch(API.filesRename, {
+                const res = await apiFetch(API.filesRename, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id: fileId, new_filename: newFilename }),
@@ -640,7 +716,7 @@
             const rawPath = input.value.trim();
             if (!rawPath) { toast('目录名不能为空', 'err'); return; }
             try {
-                const res = await fetch(API.filesMkdir, {
+                const res = await apiFetch(API.filesMkdir, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path: rawPath }),
@@ -728,6 +804,14 @@
             const list = document.getElementById('queue-list');
             if (!list.children.length) document.getElementById('queue').hidden = true;
         });
+
+        // 登出按钮
+        const logoutBtn = document.getElementById('logout-btn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', () => {
+                logout();
+            });
+        }
     }
 
     /** 处理选择的文件列表，加入上传队列。
@@ -772,8 +856,14 @@
 
     // === 初始化 ===
 
-    /** 入口：绑定事件、启动健康检查、加载文件列表 */
-    function init() {
+    /**
+     * 入口：先检查登录状态（路由守卫），通过后再加载主界面。
+     * 顺序：checkAuth → bindEvents + checkHealth + loadFiles
+     * 未登录时 checkAuth 会自动跳转 login.html，后续代码不执行。
+     */
+    async function init() {
+        const ok = await checkAuth();
+        if (!ok) return; // 已跳转登录页
         bindEvents();
         checkHealth();
         setInterval(checkHealth, 10000); // 每 10 秒检查一次健康
