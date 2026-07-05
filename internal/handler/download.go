@@ -38,6 +38,7 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 
 	file, err := h.db.GetFile(fileID)
 	if err != nil {
+		log.Printf("[DOWNLOAD] file not found: id=%s err=%v", fileID, err)
 		http.Error(w, "file not found", http.StatusNotFound)
 		return
 	}
@@ -45,21 +46,24 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	filePath := file.StoragePath
 	fileSize, err := h.storage.FileSize(filePath)
 	if err != nil {
-		log.Printf("get file size error: %v", err)
+		log.Printf("[DOWNLOAD] get file size error: id=%s path=%s err=%v", fileID, filePath, err)
 		http.Error(w, "file not found on storage", http.StatusNotFound)
 		return
 	}
+
+	rangeHeader := r.Header.Get("Range")
+	log.Printf("[DOWNLOAD] req: file=%s id=%s size=%d range=%q ua=%q", file.Filename, fileID, fileSize, rangeHeader, r.UserAgent())
 
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.Filename))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Accept-Ranges", "bytes")
 
 	// Handle Range header for resume download
-	rangeHeader := r.Header.Get("Range")
 	if rangeHeader == "" {
 		// Full file download
 		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
 		w.WriteHeader(http.StatusOK)
+		log.Printf("[DOWNLOAD] full file: file=%s size=%d status=200", file.Filename, fileSize)
 
 		reader, err := h.storage.ReadFile(filePath, 0)
 		if err != nil {
@@ -67,17 +71,18 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer reader.Close()
-		io.Copy(w, reader)
+		written, err := io.Copy(w, reader)
+		log.Printf("[DOWNLOAD] done: file=%s written=%d err=%v", file.Filename, written, err)
 		return
 	}
 
-	// Parse Range header: "bytes=start-end"
+	// Parse Range header: "bytes=start-end" or "bytes=start-"
 	var start, end int64
-	_, err = fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
-	if err != nil {
+	if n, _ := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end); n != 2 {
 		// Try "bytes=start-"
-		n, err := fmt.Sscanf(rangeHeader, "bytes=%d-", &start)
-		if err != nil || n != 1 || start < 0 {
+		n2, err2 := fmt.Sscanf(rangeHeader, "bytes=%d-", &start)
+		if err2 != nil || n2 != 1 || start < 0 {
+			log.Printf("[DOWNLOAD] invalid range: %q", rangeHeader)
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
 			http.Error(w, "invalid range", http.StatusRequestedRangeNotSatisfiable)
 			return
@@ -86,6 +91,7 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if start >= fileSize || end >= fileSize || start > end {
+		log.Printf("[DOWNLOAD] range not satisfiable: start=%d end=%d size=%d", start, end, fileSize)
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
 		http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
 		return
@@ -95,6 +101,7 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.FormatInt(chunkSize, 10))
 	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
 	w.WriteHeader(http.StatusPartialContent)
+	log.Printf("[DOWNLOAD] range: file=%s start=%d end=%d size=%d status=206", file.Filename, start, end, chunkSize)
 
 	reader, err := h.storage.ReadFile(filePath, start)
 	if err != nil {
@@ -104,8 +111,10 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	defer reader.Close()
 
 	// Limit to requested range
-	if _, err := io.CopyN(w, reader, chunkSize); err != nil && err != io.EOF {
-		log.Printf("stream error: %v", err)
+	written, err := io.CopyN(w, reader, chunkSize)
+	log.Printf("[DOWNLOAD] done: file=%s written=%d expected=%d err=%v", file.Filename, written, chunkSize, err)
+	if err != nil && err != io.EOF {
+		log.Printf("[DOWNLOAD] stream error: file=%s err=%v", file.Filename, err)
 	}
 }
 

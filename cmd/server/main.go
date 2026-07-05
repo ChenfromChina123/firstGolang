@@ -173,7 +173,7 @@ func main() {
 		Addr:           addr,
 		Handler:        mux,
 		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   30 * time.Second,
+		WriteTimeout:   30 * time.Minute, // 大文件下载需要足够长的写超时（30MB/1MB/s=30s，30min 可覆盖 1GB 慢速下载）
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 1 << 16, // 64KB
 	}
