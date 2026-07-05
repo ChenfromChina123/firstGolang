@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FileSync · 文件同步控制台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+    <!-- 顶部状态栏：Logo + 服务健康状态 -->
+    <header class="topbar">
+        <div class="brand">
+            <div class="brand-mark" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                    <path d="M4 14L14 4L24 14L14 24L4 14Z" stroke="currentColor" stroke-width="1.5"/>
+                    <path d="M9 14L14 9L19 14L14 19L9 14Z" fill="currentColor" opacity="0.6"/>
+                </svg>
+            </div>
+            <div class="brand-text">
+                <h1>FileSync</h1>
+                <span class="brand-sub">CHUNKED · SYNC · CONSOLE</span>
+            </div>
+        </div>
+        <div class="health" id="health-badge">
+            <span class="dot" id="health-dot"></span>
+            <span class="health-text" id="health-text">检测中</span>
+            <span class="health-meta" id="health-meta"></span>
+        </div>
+    </header>
+
+    <main class="layout">
+        <!-- 上传区域 -->
+        <section class="panel upload-panel">
+            <div class="panel-head">
+                <h2><span class="idx">01</span> 上传文件</h2>
+                <div class="upload-controls">
+                    <label class="chunk-size">
+                        分片大小
+                        <select id="chunk-size">
+                            <option value="262144">256 KB</option>
+                            <option value="524288" selected>512 KB</option>
+                            <option value="1048576">1 MB</option>
+                            <option value="4194304">4 MB</option>
+                        </select>
+                    </label>
+                    <label class="concurrency">
+                        并发数
+                        <select id="concurrency">
+                            <option value="3">3</option>
+                            <option value="5" selected>5</option>
+                            <option value="8">8</option>
+                            <option value="12">12</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+
+            <!-- 拖拽区 -->
+            <div class="dropzone" id="dropzone" tabindex="0">
+                <div class="dropzone-inner">
+                    <svg class="drop-icon" width="48" height="48" viewBox="0 0 48 48" fill="none">
+                        <path d="M24 32V12M24 12L16 20M24 12L32 20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M8 32V38C8 39.1046 8.89543 40 10 40H38C39.1046 40 40 39.1046 40 38V32" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <p class="drop-title">拖拽文件到此处</p>
+                    <p class="drop-sub">或 <button class="link-btn" id="pick-btn">点击选择</button> · 支持大文件分片上传与断点续传</p>
+                    <input type="file" id="file-input" multiple hidden>
+                </div>
+            </div>
+
+            <!-- 上传队列 -->
+            <div class="queue" id="queue" hidden>
+                <div class="queue-head">
+                    <span>上传队列</span>
+                    <button class="ghost-btn" id="clear-done">清除已完成</button>
+                </div>
+                <ul class="queue-list" id="queue-list"></ul>
+            </div>
+        </section>
+
+        <!-- 文件列表 -->
+        <section class="panel files-panel">
+            <div class="panel-head">
+                <h2><span class="idx">02</span> 文件库</h2>
+                <button class="ghost-btn" id="refresh-files">刷新</button>
+            </div>
+            <div class="files-table-wrap">
+                <table class="files-table">
+                    <thead>
+                        <tr>
+                            <th>文件名</th>
+                            <th class="num">大小</th>
+                            <th class="num">分片</th>
+                            <th>上传时间</th>
+                            <th>存储</th>
+                            <th class="ops">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="files-body">
+                        <tr class="empty-row"><td colspan="6">加载中…</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- 冲突处理对话框 -->
+    <div class="modal" id="conflict-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>文件名冲突</h3>
+                <span class="modal-tag" id="conflict-name">—</span>
+            </div>
+            <p class="modal-desc">该文件已存在，请选择处理方式：</p>
+            <div class="modal-opts">
+                <button class="opt-btn" data-strategy="skip">
+                    <strong>跳过</strong>
+                    <span>取消本次上传</span>
+                </button>
+                <button class="opt-btn" data-strategy="overwrite">
+                    <strong>覆盖</strong>
+                    <span>覆盖原文件（?force=true）</span>
+                </button>
+                <button class="opt-btn" data-strategy="rename">
+                    <strong>重命名</strong>
+                    <span>自动重命名上传（?rename=true）</span>
+                </button>
+            </div>
+            <div class="modal-foot">
+                <label class="apply-all"><input type="checkbox" id="apply-all"> 应用到后续所有冲突</label>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 提示 -->
+    <div class="toast-wrap" id="toast-wrap"></div>
+
+    <script src="/web/app.js"></script>
+</body>
+</html>

@@ -100,6 +100,36 @@ STORAGE_TYPE=s3 S3_ENDPOINT=http://localhost:9000 S3_BUCKET=mybucket ./server.ex
 ./client.exe -server http://localhost:8080 download <file-id> <输出路径>
 ```
 
+## Web 控制台
+
+filesync 内置一个纯 HTML+CSS+JS 的 Web 控制台（无框架依赖，轻量），支持分片上传、断点续传、文件列表、下载、文件名冲突处理。前端仅做页面展示，所有业务方法走 `/api/*` 后端（规则15）。
+
+### 启用方式
+
+服务启动时自动检测 `./web/` 目录（可用 `WEB_DIR` 环境变量自定义路径）。目录存在时注册：
+
+- `GET /web/` — 静态文件服务（index.html / style.css / app.js）
+- `GET /` — 重定向到 `/web/index.html`
+
+### 访问
+
+浏览器打开 `http://<server>:<port>/` 或 `http://<server>:<port>/web/` 即可使用。
+
+### 功能
+
+- **分片上传**：拖拽/点击选择文件，自动分片（默认 512KB），可配置分片大小与并发数
+- **断点续传**：上传中断后再次上传同一文件，自动查询已传分片跳过
+- **进度显示**：实时进度条 + 已传/总大小，扫描线动画
+- **冲突处理**：文件名冲突时弹窗选择 跳过 / 覆盖（?force=true）/ 重命名（?rename=true），支持"应用到所有"
+- **文件列表**：表格展示文件名、大小、分片数、上传时间、存储类型，点击下载
+- **健康状态**：顶部实时显示服务健康状态（每 10 秒刷新）
+
+### 设计要点
+
+- 终端美学深色主题（JetBrains Mono + Outfit 字体，电光青强调色）
+- 纯前端无构建步骤，3 个文件共约 15KB
+- 所有请求复用同源（避免 CORS），后端已开启 CORS 支持
+
 ## API 文档
 
 ### 上传

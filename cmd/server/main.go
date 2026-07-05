@@ -1,11 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"time"
 
 	"filesync/internal/handler"
 	"filesync/internal/store"
@@ -13,6 +17,9 @@ import (
 )
 
 func main() {
+	// Explicit CPU affinity — prevents container/VM environment misdetection
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	// Configuration
 	port := getEnv("PORT", "8080")
 	dataDir := getEnv("DATA_DIR", "./data")
@@ -35,6 +42,9 @@ func main() {
 	}
 	defer db.Close()
 
+	// Enable async batch write (bypasses SQLite SetMaxOpenConns(1) bottleneck)
+	db.EnableAsyncWrite()
+
 	// Initialize storage backend
 	var st storage.Storage
 	switch storageType {
@@ -47,14 +57,14 @@ func main() {
 	case "s3":
 		// S3 configuration from environment
 		s3Cfg := storage.S3Config{
-			Endpoint:  getEnv("S3_ENDPOINT", "http://localhost:9000"),
+			Endpoint:  getEnv("S3_ENDPOINT", "localhost:9000"),
 			Region:    getEnv("S3_REGION", "us-east-1"),
 			Bucket:    getEnv("S3_BUCKET", "filesync"),
 			AccessKey: getEnv("S3_ACCESS_KEY", ""),
 			SecretKey: getEnv("S3_SECRET_KEY", ""),
 			UseSSL:    getEnv("S3_USE_SSL", "false") == "true",
 		}
-		st, err = storage.NewS3(absDataDir, s3Cfg)
+		st, err = storage.NewS3(s3Cfg)
 		if err != nil {
 			log.Fatalf("init s3 storage: %v", err)
 		}
@@ -63,8 +73,46 @@ func main() {
 		log.Fatalf("unknown storage type: %s (use 'local' or 's3')", storageType)
 	}
 
+	// Initialize Redis cache (optional)
+	// Priority: Sentinel > Single-instance > None
+	redisSentinelAddrs := os.Getenv("REDIS_SENTINEL_ADDRS")
+	var rc *store.RedisCache
+	var uploadHandler *handler.UploadHandler
+
+	if redisSentinelAddrs != "" {
+		// === Mode 1: Redis Sentinel (分布式 + 投票选主) ===
+		masterName := getEnv("REDIS_SENTINEL_MASTER", "mymaster")
+		redisPassword := os.Getenv("REDIS_PASSWORD")
+		redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
+		cacheTTL := 10 * time.Minute
+
+		cfg := store.RedisSentinelConfig{
+			MasterName:    masterName,
+			SentinelAddrs: store.ParseSentinelAddrs(redisSentinelAddrs),
+			Password:      redisPassword,
+			DB:            redisDB,
+			TTL:           cacheTTL,
+		}
+		rc = store.NewRedisSentinel(cfg)
+		log.Printf("Redis: SENTINEL mode -> master=%s addrs=%v db=%d",
+			masterName, cfg.SentinelAddrs, redisDB)
+		uploadHandler = handler.NewUploadHandlerWithRedis(db, st, rc)
+
+	} else if redisAddr := os.Getenv("REDIS_ADDR"); redisAddr != "" {
+		// === Mode 2: Single-instance Redis ===
+		redisPassword := os.Getenv("REDIS_PASSWORD")
+		redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
+
+		rc = store.NewRedisCache(redisAddr, redisPassword, redisDB, 10*time.Minute)
+		log.Printf("Redis: STANDALONE mode -> addr=%s db=%d", redisAddr, redisDB)
+		uploadHandler = handler.NewUploadHandlerWithRedis(db, st, rc)
+
+	} else {
+		// === Mode 3: No Redis (SQLite only) ===
+		uploadHandler = handler.NewUploadHandler(db, st)
+	}
+
 	// Register handlers
-	uploadHandler := handler.NewUploadHandler(db, st)
 	downloadHandler := handler.NewDownloadHandler(db, st)
 	fileHandler := handler.NewFileHandler(db)
 
@@ -74,11 +122,34 @@ func main() {
 	mux.Handle("/api/files/", fileHandler)
 	mux.Handle("/api/files", fileHandler)
 
-	// Health check
+	// Health check (with Redis watchdog status if available)
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok","service":"filesync"}`))
+		if rc != nil {
+			stats := rc.WatchdogStats()
+			stats["service"] = "filesync"
+			json.NewEncoder(w).Encode(stats)
+		} else {
+			w.Write([]byte(`{"status":"ok","service":"filesync","redis":"disabled"}`))
+		}
 	})
+
+	// 静态文件服务：前端 Web 控制台（/web/ 路径 + 根路径重定向）
+	// 前端仅做页面展示，所有业务方法走 /api/* 后端（规则15）
+	webDir := getEnv("WEB_DIR", "./web")
+	if _, err := os.Stat(webDir); err == nil {
+		mux.Handle("/web/", http.StripPrefix("/web/", http.FileServer(http.Dir(webDir))))
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/" {
+				http.Redirect(w, r, "/web/index.html", http.StatusFound)
+				return
+			}
+			http.NotFound(w, r)
+		})
+		log.Printf("Web console: /web/ -> %s", webDir)
+	} else {
+		log.Printf("Web console: directory %s not found (set WEB_DIR to enable)", webDir)
+	}
 
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("FileSync Server starting on http://0.0.0.0%s", addr)
@@ -91,8 +162,18 @@ func main() {
 	log.Printf("  GET    /api/files           - List files")
 	log.Printf("  GET    /api/files/{id}      - File info")
 	log.Printf("  GET    /api/health          - Health check")
+	log.Printf("  GET    /web/                - Web console (static)")
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	server := &http.Server{
+		Addr:           addr,
+		Handler:        mux,
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 16, // 64KB
+	}
+
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }
