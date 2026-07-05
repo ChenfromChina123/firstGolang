@@ -410,6 +410,42 @@ func (db *DB) GetUploadSession(id string) (*model.UploadSession, error) {
 	return s, nil
 }
 
+// FindActiveSessionByHash 按 file_hash + filename 查找活跃的断点续传 session。
+// 用于 InitUpload 时恢复已有 session，避免每次都创建新 session 导致之前的 chunks 作废。
+// 条件：file_hash 匹配 + filename 匹配 + status='active'，取最近一条。
+// file_hash 与 filename 双重匹配，避免不同文件 hash 碰撞（虽然概率极低）。
+func (db *DB) FindActiveSessionByHash(fileHash, filename string) (*model.UploadSession, error) {
+	if fileHash == "" {
+		return nil, nil
+	}
+	row := db.conn.QueryRow(
+		`SELECT id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at
+		 FROM upload_sessions
+		 WHERE file_hash = ? AND filename = ? AND status = 'active'
+		 ORDER BY created_at DESC LIMIT 1`, fileHash, filename,
+	)
+	s := &model.UploadSession{}
+	var createdAt, updatedAt string
+	err := row.Scan(&s.ID, &s.Filename, &s.FileSize, &s.FileHash,
+		&s.ChunkSize, &s.TotalChunks, &s.Status, &s.StorageType, &createdAt, &updatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	s.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	s.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+
+	// 加载已上传的 chunks
+	chunks, err := db.getSessionChunks(s.ID)
+	if err != nil {
+		return nil, err
+	}
+	s.ReceivedChunks = chunks
+	return s, nil
+}
+
 func (db *DB) getSessionChunks(sessionID string) ([]int, error) {
 	rows, err := db.conn.Query(
 		`SELECT chunk_index FROM chunks WHERE session_id = ? ORDER BY chunk_index`, sessionID)

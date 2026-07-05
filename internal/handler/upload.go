@@ -204,6 +204,35 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// === 断点续传：按 file_hash 查找已有 active session ===
+	// 同一文件（file_hash + filename 匹配）若已有 active session，直接复用，
+	// 让前端继续上传未完成的 chunks，避免之前已上传的 chunks 作废。
+	// 前端会随后调用 /api/upload/status 获取 received_chunks，实现断点续传。
+	if req.FileHash != "" {
+		existing, err := h.db.FindActiveSessionByHash(req.FileHash, req.Filename)
+		if err != nil {
+			log.Printf("find active session by hash error (non-fatal): %v", err)
+		} else if existing != nil {
+			// 复用已有 session，重缓存到 Redis（可能已过期）
+			if h.redis != nil {
+				if err := h.redis.CacheSession(r.Context(), existing); err != nil {
+					log.Printf("redis re-cache session error (non-fatal): %v", err)
+				}
+			}
+			log.Printf("resumable upload: reuse session %s for file %s (hash=%s)", existing.ID, req.Filename, req.FileHash)
+			resp := model.InitUploadResponse{
+				SessionID:   existing.ID,
+				Filename:    existing.Filename,
+				ChunkSize:   existing.ChunkSize,
+				TotalChunks: existing.TotalChunks,
+				StorageType: existing.StorageType,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+	}
+
 	sessionID := generateID()
 	session := &model.UploadSession{
 		ID:          sessionID,
