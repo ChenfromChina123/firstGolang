@@ -144,48 +144,63 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 
 	totalChunks := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
 
-	// === High-performance conflict check: Redis SISMEMBER (O(1)) ===
+	// === Conflict check: Redis first, fallback to SQLite ===
+	// Redis 集合可能不完整（Redis 重启、文件通过 SQLite path 上传、历史数据残留），
+	// 所以 Redis miss 时必须 fallback 到 SQLite 检查，并补标记 Redis 修复集合不一致。
+	var conflictFile *model.FileRecord
+	redisHit := false
 	if h.redis != nil {
 		exists, err := h.redis.FileExists(r.Context(), req.Filename)
 		if err == nil && exists {
-			force := fastQueryParam(r.URL.RawQuery, "force") == "true"
-			rename := fastQueryParam(r.URL.RawQuery, "rename") == "true"
-			if !force && !rename {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(conflictResponse{
-					Conflict:   true,
-					Message:    fmt.Sprintf("file '%s' already exists", req.Filename),
-					Strategies: []string{"skip", "overwrite", "rename"},
-				})
-				return
-			}
+			redisHit = true
 		}
-	} else {
-		// Fallback to SQLite conflict check
+	}
+	if redisHit {
+		// Redis 命中：查 SQLite 获取完整记录（附带 Existing 字段供前端展示）
 		existing, _ := h.db.FindFileByName(req.Filename)
 		if existing != nil {
-			force := fastQueryParam(r.URL.RawQuery, "force") == "true"
-			rename := fastQueryParam(r.URL.RawQuery, "rename") == "true"
-			if !force && !rename {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(conflictResponse{
-					Conflict: true,
-					Message:  fmt.Sprintf("file '%s' already exists", existing.Filename),
-					Existing: &model.FileInfoResponse{
-						ID:          existing.ID,
-						Filename:    existing.Filename,
-						Size:        existing.Size,
-						Hash:        existing.Hash,
-						StoragePath: existing.StoragePath,
-						StorageType: existing.StorageType,
-						CreatedAt:   existing.CreatedAt.Format(time.RFC3339),
-					},
-					Strategies: []string{"skip", "overwrite", "rename"},
-				})
-				return
+			conflictFile = existing
+		} else {
+			// Redis 有但 SQLite 没有（孤儿数据），用最小记录
+			conflictFile = &model.FileRecord{Filename: req.Filename}
+		}
+	} else {
+		// Redis miss 或无 Redis：查 SQLite
+		existing, _ := h.db.FindFileByName(req.Filename)
+		if existing != nil {
+			conflictFile = existing
+			// 补标记 Redis（修复集合不一致，下次可命中 Redis 快速路径）
+			if h.redis != nil {
+				h.redis.MarkFileExists(r.Context(), req.Filename)
 			}
+		}
+	}
+
+	if conflictFile != nil {
+		force := fastQueryParam(r.URL.RawQuery, "force") == "true"
+		rename := fastQueryParam(r.URL.RawQuery, "rename") == "true"
+		if !force && !rename {
+			resp := conflictResponse{
+				Conflict:   true,
+				Message:    fmt.Sprintf("file '%s' already exists", conflictFile.Filename),
+				Strategies: []string{"skip", "overwrite", "rename"},
+			}
+			// 有完整记录时附带 Existing 字段（来自 SQLite）
+			if conflictFile.ID != "" {
+				resp.Existing = &model.FileInfoResponse{
+					ID:          conflictFile.ID,
+					Filename:    conflictFile.Filename,
+					Size:        conflictFile.Size,
+					Hash:        conflictFile.Hash,
+					StoragePath: conflictFile.StoragePath,
+					StorageType: conflictFile.StorageType,
+					CreatedAt:   conflictFile.CreatedAt.Format(time.RFC3339),
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(resp)
+			return
 		}
 	}
 
