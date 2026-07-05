@@ -206,7 +206,11 @@
             const res = await fetch(API.chunk, { method: 'POST', body: form });
             if (!res.ok) throw new Error(`chunk ${idx} 失败: HTTP ${res.status}`);
             this.received.add(idx);
-            this.uploaded = Math.min((idx + 1) * this.chunkSize, this.file.size);
+            // 用 received.size 计算总上传量，而非 (idx+1)*chunkSize。
+            // 并发上传时 chunks 乱序完成，(idx+1) 会导致进度条回弹
+            // （如 chunk 2 先完成时 uploaded=3*chunkSize，之后 chunk 0 完成时 uploaded=1*chunkSize）。
+            // received.size 只增不减，保证进度条单调递增。
+            this.uploaded = Math.min(this.received.size * this.chunkSize, this.file.size);
             this.updateDom();
         }
 
