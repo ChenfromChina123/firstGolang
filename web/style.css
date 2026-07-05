@@ -268,7 +268,21 @@ body::after {
     letter-spacing: 1px;
     text-transform: uppercase;
 }
-.queue-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.queue-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    /* 限制队列高度，100+ 文件时滚动而非撑开页面 */
+    max-height: 400px;
+    overflow-y: auto;
+    padding-right: 4px; /* 滚动条留位 */
+}
+/* 滚动条样式（WebKit） */
+.queue-list::-webkit-scrollbar { width: 6px; }
+.queue-list::-webkit-scrollbar-track { background: var(--bg-3); border-radius: 3px; }
+.queue-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.queue-list::-webkit-scrollbar-thumb:hover { background: var(--fg-3); }
 
 .queue-item {
     background: var(--bg-1);

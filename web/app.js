@@ -730,7 +730,10 @@
         });
     }
 
-    /** 处理选择的文件列表，加入上传队列 */
+    /** 处理选择的文件列表，加入上传队列。
+     *  文件级并发控制：限制同时上传的文件数为 MAX_PARALLEL_FILES，
+     *  避免 100+ 文件同时启动导致 hash 计算阻塞主线程、HTTP 请求排队、DOM 卡顿。
+     *  每个 task 内部仍有 chunk 级并发（concurrency），两层并发控制互不干扰。 */
     async function handleFiles(files) {
         const queue = document.getElementById('queue');
         const list = document.getElementById('queue-list');
@@ -738,19 +741,33 @@
 
         const chunkSize = parseInt(document.getElementById('chunk-size').value, 10);
         const concurrency = parseInt(document.getElementById('concurrency').value, 10);
-        // 上传目标目录跟随用户当前所在目录（currentPath 已规范化：末尾带 / 或空字符串）
         const targetDir = currentPath;
 
-        // 创建任务并依次启动（避免同时上传多个大文件导致内存压力）
+        // 先创建所有任务的 DOM（让用户看到排队状态），再控制并发启动
+        const tasks = [];
         for (const file of files) {
             const task = new UploadTask(file, { chunkSize, concurrency, targetDir });
             const dom = task.createDom();
             list.appendChild(dom);
-            task.run().then(() => {
-                if (task.status === 'done') loadFiles();
-            });
-            await sleep(150); // 错开启动，让 init 请求不扎堆
+            tasks.push(task);
         }
+
+        // 文件级并发控制：MAX_PARALLEL_FILES 个 worker 串行处理任务队列
+        // 100+ 文件同时启动会导致：hash 计算阻塞 + 100+ HTTP 请求 + DOM 卡顿
+        const MAX_PARALLEL_FILES = 3;
+        let cursor = 0;
+        const runOne = async () => {
+            while (cursor < tasks.length) {
+                const task = tasks[cursor++];
+                await task.run();
+                if (task.status === 'done') loadFiles();
+            }
+        };
+        const workers = [];
+        for (let i = 0; i < MAX_PARALLEL_FILES && i < tasks.length; i++) {
+            workers.push(runOne());
+        }
+        await Promise.all(workers);
     }
 
     // === 初始化 ===
