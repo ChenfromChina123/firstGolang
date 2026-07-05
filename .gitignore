@@ -1,0 +1,21 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go cover
+*.out
+
+# Data directory (auto-created)
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
