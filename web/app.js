@@ -350,16 +350,24 @@
         const dirs = new Map();
         const fileList = [];
         for (const f of files) {
-            // 过滤 .keep 占位文件（mkdir 创建的虚拟目录标记）
-            if (f.filename.endsWith('/.keep') || f.filename === '.keep') continue;
             const rel = prefix ? f.filename.slice(prefix.length) : f.filename;
             if (!rel) continue;
             const slashIdx = rel.indexOf('/');
             if (slashIdx === -1) {
+                // 根目录下的文件：跳过 .keep 占位文件
+                if (rel === '.keep') continue;
                 fileList.push(f);
             } else {
+                // 子目录项：识别目录名（含 .keep 占位文件也要识别目录存在）
                 const dirName = rel.slice(0, slashIdx);
-                dirs.set(dirName, (dirs.get(dirName) || 0) + 1);
+                const rest = rel.slice(slashIdx + 1);
+                // 只有非 .keep 文件才计入目录的文件数
+                if (rest && rest !== '.keep' && !rest.endsWith('/.keep')) {
+                    dirs.set(dirName, (dirs.get(dirName) || 0) + 1);
+                } else if (!dirs.has(dirName)) {
+                    // .keep 占位文件：只标记目录存在，文件数为 0
+                    dirs.set(dirName, 0);
+                }
             }
         }
         return { dirs, files: fileList };
@@ -526,13 +534,7 @@
 
         const confirmBtn = document.getElementById('rename-confirm');
         const cancelBtn = document.getElementById('rename-cancel');
-        const cleanup = () => {
-            modal.hidden = true;
-            confirmBtn.onclick = null;
-            cancelBtn.onclick = null;
-        };
-        cancelBtn.onclick = cleanup;
-        confirmBtn.onclick = async () => {
+        const submit = async () => {
             const newFilename = input.value.trim();
             if (!newFilename) { toast('文件名不能为空', 'err'); return; }
             if (newFilename === currentFilename) { cleanup(); return; }
@@ -554,6 +556,19 @@
             } catch (e) {
                 toast(`重命名失败: ${e.message}`, 'err');
             }
+        };
+        const cleanup = () => {
+            modal.hidden = true;
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+            input.onkeydown = null;
+        };
+        cancelBtn.onclick = cleanup;
+        confirmBtn.onclick = submit;
+        // Enter 键提交，Esc 键取消
+        input.onkeydown = e => {
+            if (e.key === 'Enter') { e.preventDefault(); submit(); }
+            else if (e.key === 'Escape') { e.preventDefault(); cleanup(); }
         };
     }
 
@@ -581,16 +596,12 @@
         input.value = currentPath; // 默认当前目录
         modal.hidden = false;
         input.focus();
+        // 选中末尾，方便用户在当前目录下追加子目录名
+        input.setSelectionRange(input.value.length, input.value.length);
 
         const confirmBtn = document.getElementById('mkdir-confirm');
         const cancelBtn = document.getElementById('mkdir-cancel');
-        const cleanup = () => {
-            modal.hidden = true;
-            confirmBtn.onclick = null;
-            cancelBtn.onclick = null;
-        };
-        cancelBtn.onclick = cleanup;
-        confirmBtn.onclick = async () => {
+        const submit = async () => {
             const rawPath = input.value.trim();
             if (!rawPath) { toast('目录名不能为空', 'err'); return; }
             try {
@@ -611,6 +622,19 @@
             } catch (e) {
                 toast(`新建目录失败: ${e.message}`, 'err');
             }
+        };
+        const cleanup = () => {
+            modal.hidden = true;
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+            input.onkeydown = null;
+        };
+        cancelBtn.onclick = cleanup;
+        confirmBtn.onclick = submit;
+        // Enter 键提交，Esc 键取消
+        input.onkeydown = e => {
+            if (e.key === 'Enter') { e.preventDefault(); submit(); }
+            else if (e.key === 'Escape') { e.preventDefault(); cleanup(); }
         };
     }
 
