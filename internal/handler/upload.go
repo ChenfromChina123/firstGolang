@@ -5,10 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"filesync/internal/model"
@@ -16,15 +19,66 @@ import (
 	"filesync/internal/storage"
 )
 
+// Pre-defined conflict response types to avoid map[string]interface{} allocations.
+type conflictResponse struct {
+	Conflict   bool     `json:"conflict"`
+	Message    string   `json:"message"`
+	Strategies []string `json:"strategies"`
+	Existing   *model.FileInfoResponse `json:"existing,omitempty"`
+}
+
+// fastQueryParam extracts a single query param from RawQuery without map allocation.
+// Returns empty string if key is not present or value is empty.
+func fastQueryParam(rawQuery, key string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	prefix := key + "="
+	idx := strings.Index(rawQuery, prefix)
+	if idx < 0 {
+		return ""
+	}
+	start := idx + len(prefix)
+	end := strings.IndexByte(rawQuery[start:], '&')
+	if end < 0 {
+		end = len(rawQuery)
+	} else {
+		end = start + end
+	}
+	val := rawQuery[start:end]
+	decoded, _ := url.QueryUnescape(val)
+	return decoded
+}
+
+// progressStr formats a progress percentage without allocating via fmt.Sprintf.
+func progressStr(progress float64) string {
+	return strconv.FormatFloat(progress, 'f', 1, 64) + "%"
+}
+
+// sync.Pool for reusable []byte buffers (large chunk reads).
+// Reduces GC pressure in UploadChunk handler.
+var chunkBufPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 0, 512*1024) // 512KB default chunk size
+		return &b
+	},
+}
+
 // UploadHandler handles chunked upload operations
 type UploadHandler struct {
 	db      *store.DB
 	storage storage.Storage
+	redis   *store.RedisCache // optional Redis cache for high concurrency
 }
 
-// NewUploadHandler creates a new upload handler
+// NewUploadHandler creates a new upload handler (SQLite-only path)
 func NewUploadHandler(db *store.DB, s storage.Storage) *UploadHandler {
 	return &UploadHandler{db: db, storage: s}
+}
+
+// NewUploadHandlerWithRedis creates a new upload handler with Redis caching enabled
+func NewUploadHandlerWithRedis(db *store.DB, s storage.Storage, rc *store.RedisCache) *UploadHandler {
+	return &UploadHandler{db: db, storage: s, redis: rc}
 }
 
 func generateID() string {
@@ -33,7 +87,7 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
-// InitUpload initializes a new upload session
+// InitUpload initializes a new upload session (高并发优化版)
 // POST /api/upload/init
 func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -61,30 +115,48 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 
 	totalChunks := int((req.FileSize + req.ChunkSize - 1) / req.ChunkSize)
 
-	// Check for conflict
-	existing, _ := h.db.FindFileByName(req.Filename)
-	if existing != nil {
-		// file exists - respond with conflict info
-		resp := map[string]interface{}{
-			"conflict": true,
-			"message":  fmt.Sprintf("file '%s' already exists (size=%d, hash=%s)", existing.Filename, existing.Size, existing.Hash),
-			"existing": model.FileInfoResponse{
-				ID:          existing.ID,
-				Filename:    existing.Filename,
-				Size:        existing.Size,
-				Hash:        existing.Hash,
-				StoragePath: existing.StoragePath,
-				StorageType: existing.StorageType,
-				CreatedAt:   existing.CreatedAt.Format(time.RFC3339),
-			},
-			"strategies": []string{"skip", "overwrite", "rename"},
+	// === High-performance conflict check: Redis SISMEMBER (O(1)) ===
+	if h.redis != nil {
+		exists, err := h.redis.FileExists(r.Context(), req.Filename)
+		if err == nil && exists {
+			force := fastQueryParam(r.URL.RawQuery, "force") == "true"
+			rename := fastQueryParam(r.URL.RawQuery, "rename") == "true"
+			if !force && !rename {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(conflictResponse{
+					Conflict:   true,
+					Message:    fmt.Sprintf("file '%s' already exists", req.Filename),
+					Strategies: []string{"skip", "overwrite", "rename"},
+				})
+				return
+			}
 		}
-		// Allow continuing with ?force=true to overwrite
-		if r.URL.Query().Get("force") != "true" && r.URL.Query().Get("rename") != "true" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(resp)
-			return
+	} else {
+		// Fallback to SQLite conflict check
+		existing, _ := h.db.FindFileByName(req.Filename)
+		if existing != nil {
+			force := fastQueryParam(r.URL.RawQuery, "force") == "true"
+			rename := fastQueryParam(r.URL.RawQuery, "rename") == "true"
+			if !force && !rename {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(conflictResponse{
+					Conflict: true,
+					Message:  fmt.Sprintf("file '%s' already exists", existing.Filename),
+					Existing: &model.FileInfoResponse{
+						ID:          existing.ID,
+						Filename:    existing.Filename,
+						Size:        existing.Size,
+						Hash:        existing.Hash,
+						StoragePath: existing.StoragePath,
+						StorageType: existing.StorageType,
+						CreatedAt:   existing.CreatedAt.Format(time.RFC3339),
+					},
+					Strategies: []string{"skip", "overwrite", "rename"},
+				})
+				return
+			}
 		}
 	}
 
@@ -102,10 +174,15 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:   time.Now(),
 	}
 
-	if err := h.db.CreateUploadSession(session); err != nil {
-		log.Printf("create session error: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	// === Async SQLite write — don't block HTTP response ===
+	h.db.AsyncCreateSession(session)
+
+	// Cache session in Redis for fast chunk verification
+	if h.redis != nil {
+		// Pipeline: Set session + Expire chunks + SAdd filename → 1 RTT（原 3 RTT）
+		if err := h.redis.CacheSessionAndMarkFile(r.Context(), session, req.Filename); err != nil {
+			log.Printf("redis cache session + mark file error (non-fatal): %v", err)
+		}
 	}
 
 	resp := model.InitUploadResponse{
@@ -120,7 +197,7 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// UploadChunk receives a chunk of data
+// UploadChunk receives a chunk of data (高并发优化版)
 // POST /api/upload/chunk
 func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -142,7 +219,69 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify session exists and is active
+	// === Redis fast path: Lua atomic verify + mark (1 Redis call) ===
+	if h.redis != nil {
+		// Lua script: GET session + GETBIT check + SETBIT in ONE atomic call
+		result, err := h.redis.VerifyAndMarkChunk(r.Context(), sessionID, chunkIndex)
+		if err == nil && result == -2 {
+			// Chunk already received — return 200 immediately
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(model.UploadChunkResponse{
+				SessionID:  sessionID,
+				ChunkIndex: chunkIndex,
+				Received:   true,
+			})
+			return
+		}
+		if err != nil || result == -1 {
+			// Session not found — fallback to SQLite
+			session, dbErr := h.db.GetUploadSession(sessionID)
+			if dbErr != nil {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			if session.Status != "active" {
+				http.Error(w, "session is not active", http.StatusConflict)
+				return
+			}
+			// Re-cache + mark chunk
+			h.redis.CacheSession(r.Context(), session)
+			h.redis.MarkChunkReceived(r.Context(), sessionID, chunkIndex)
+		}
+
+		// Read chunk data from multipart form into memory
+		file, _, err := r.FormFile("chunk_data")
+		if err != nil {
+			http.Error(w, fmt.Sprintf("chunk_data field required: %v", err), http.StatusBadRequest)
+			return
+		}
+		chunkData, err := io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			http.Error(w, "failed to read chunk data", http.StatusInternalServerError)
+			return
+		}
+
+		// === Async disk write — don't block HTTP response ===
+		if asyncSt, ok := h.storage.(storage.AsyncStorager); ok {
+			asyncSt.SaveChunkAsync(sessionID, chunkIndex, chunkData)
+		} else {
+			h.storage.SaveChunk(sessionID, chunkIndex, strings.NewReader(string(chunkData)))
+		}
+
+		// === Async SQLite chunk record ===
+		h.db.AsyncSaveChunk(sessionID, chunkIndex, int64(len(chunkData)), "")
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(model.UploadChunkResponse{
+			SessionID:  sessionID,
+			ChunkIndex: chunkIndex,
+			Received:   true,
+		})
+		return
+	}
+
+	// === SQLite path (no Redis) ===
 	session, err := h.db.GetUploadSession(sessionID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -153,7 +292,6 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read chunk data from multipart form
 	file, _, err := r.FormFile("chunk_data")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("chunk_data field required: %v", err), http.StatusBadRequest)
@@ -161,7 +299,6 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Save chunk to storage
 	size, err := h.storage.SaveChunk(sessionID, chunkIndex, file)
 	if err != nil {
 		log.Printf("save chunk error: %v", err)
@@ -169,30 +306,82 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record in database
-	if err := h.db.SaveChunk(sessionID, chunkIndex, size, ""); err != nil {
-		log.Printf("db save chunk error: %v", err)
-	}
+	h.db.SaveChunk(sessionID, chunkIndex, size, "")
 
-	resp := model.UploadChunkResponse{
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(model.UploadChunkResponse{
 		SessionID:  sessionID,
 		ChunkIndex: chunkIndex,
 		Received:   true,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	})
 }
 
-// GetUploadStatus returns the current progress of an upload
+// GetUploadStatus returns the current progress of an upload (BITFIELD 优化版)
 // GET /api/upload/status?session_id=xxx
 func (h *UploadHandler) GetUploadStatus(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.URL.Query().Get("session_id")
+	sessionID := fastQueryParam(r.URL.RawQuery, "session_id")
 	if sessionID == "" {
 		http.Error(w, "session_id required", http.StatusBadRequest)
 		return
 	}
 
+	// === Redis fast path with BITFIELD (one command, no pipeline overhead) ===
+	if h.redis != nil {
+		session, err := h.redis.GetSession(r.Context(), sessionID)
+		if err != nil {
+			session, err = h.db.GetUploadSession(sessionID)
+			if err != nil {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+		}
+
+		// BITFIELD: N GETBIT in a single command (CPU-efficient)
+		received, err := h.redis.GetReceivedChunksBitfield(r.Context(), sessionID, session.TotalChunks)
+		if err != nil {
+			// Fallback to Pipeline if BITFIELD fails (older Redis versions)
+			received, err = h.redis.GetReceivedChunksPipeline(r.Context(), sessionID, session.TotalChunks)
+			if err != nil {
+				http.Error(w, "failed to get chunk status", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		// Build missing chunks list
+		receivedSet := make(map[int]bool, len(received))
+		for _, idx := range received {
+			receivedSet[idx] = true
+		}
+
+		var missing []int
+		for i := 0; i < session.TotalChunks; i++ {
+			if !receivedSet[i] {
+				missing = append(missing, i)
+			}
+		}
+
+		progress := 0.0
+		if session.TotalChunks > 0 {
+			progress = float64(len(received)) / float64(session.TotalChunks) * 100
+		}
+
+		resp := model.UploadStatusResponse{
+			SessionID:      sessionID,
+			Filename:       session.Filename,
+			FileSize:       session.FileSize,
+			ChunkSize:      session.ChunkSize,
+			TotalChunks:    session.TotalChunks,
+			ReceivedChunks: received,
+			MissingChunks:  missing,
+			Progress:       progressStr(progress),
+			Status:         session.Status,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// === SQLite path ===
 	session, err := h.db.GetUploadSession(sessionID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -225,7 +414,7 @@ func (h *UploadHandler) GetUploadStatus(w http.ResponseWriter, r *http.Request) 
 		TotalChunks:    session.TotalChunks,
 		ReceivedChunks: received,
 		MissingChunks:  missing,
-		Progress:       fmt.Sprintf("%.1f%%", progress),
+		Progress:       progressStr(progress),
 		Status:         session.Status,
 	}
 
@@ -249,6 +438,96 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// === Redis fast path ===
+	if h.redis != nil {
+		locked, err := h.redis.TryLock(r.Context(), req.SessionID)
+		if err != nil {
+			log.Printf("redis trylock error: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !locked {
+			http.Error(w, "assembly already in progress", http.StatusConflict)
+			return
+		}
+		defer h.redis.Unlock(r.Context(), req.SessionID)
+
+		session, err := h.redis.GetSession(r.Context(), req.SessionID)
+		if err != nil {
+			session, err = h.db.GetUploadSession(req.SessionID)
+			if err != nil {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+		}
+
+		// Wait for pending async chunk writes to complete
+		if asyncSt, ok := h.storage.(storage.AsyncStorager); ok {
+			asyncSt.WaitAsync()
+		}
+
+		count, err := h.redis.CountReceivedChunks(r.Context(), req.SessionID)
+		if err != nil {
+			http.Error(w, "failed to verify chunks", http.StatusInternalServerError)
+			return
+		}
+		if int(count) != session.TotalChunks {
+			http.Error(w, fmt.Sprintf("not all chunks received: %d/%d",
+				count, session.TotalChunks), http.StatusBadRequest)
+			return
+		}
+
+		var filePath, hash string
+		if assembler, ok := h.storage.(storage.HashAssembler); ok {
+			filePath, hash, err = assembler.AssembleFileWithHash(req.SessionID, session.Filename, session.TotalChunks)
+		} else {
+			filePath, err = h.storage.AssembleFile(req.SessionID, session.Filename, session.TotalChunks)
+			if err == nil {
+				hash, _ = h.storage.HashFile(filePath)
+			}
+		}
+		if err != nil {
+			log.Printf("assemble error: %v", err)
+			http.Error(w, "failed to assemble file", http.StatusInternalServerError)
+			return
+		}
+
+		fileID := generateID()
+		fileSize, _ := h.storage.FileSize(filePath)
+
+		fileRecord := &model.FileRecord{
+			ID:          fileID,
+			Filename:    session.Filename,
+			Size:        fileSize,
+			Hash:        hash,
+			StoragePath: filePath,
+			StorageType: session.StorageType,
+			ChunkSize:   session.ChunkSize,
+			TotalChunks: session.TotalChunks,
+			Status:      "completed",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+
+		// Async SQLite write (atomic: file + status in same transaction)
+		h.db.AsyncCreateFileAndStatus(fileRecord, req.SessionID)
+
+		// Cleanup Redis + temp chunks
+		h.redis.DeleteSession(r.Context(), req.SessionID)
+		h.storage.DeleteTemp(req.SessionID)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(model.CompleteUploadResponse{
+			FileID:      fileID,
+			Filename:    session.Filename,
+			Size:        fileSize,
+			Hash:        hash,
+			StoragePath: filePath,
+		})
+		return
+	}
+
+	// === SQLite path ===
 	session, err := h.db.GetUploadSession(req.SessionID)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -261,7 +540,6 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Assemble file
 	filePath, err := h.storage.AssembleFile(req.SessionID, session.Filename, session.TotalChunks)
 	if err != nil {
 		log.Printf("assemble error: %v", err)
@@ -269,10 +547,7 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Compute hash
-	hash, _ := storage.ComputeFileHash(filePath)
-
-	// Store file record
+	hash, _ := h.storage.HashFile(filePath)
 	fileID := generateID()
 	fileSize, _ := h.storage.FileSize(filePath)
 
@@ -290,26 +565,18 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:   time.Now(),
 	}
 
-	if err := h.db.CreateFile(fileRecord); err != nil {
-		log.Printf("create file record error: %v", err)
-	}
-
-	// Update session status
+	h.db.CreateFile(fileRecord)
 	h.db.UpdateUploadSessionStatus(req.SessionID, "completed")
-
-	// Cleanup temp chunks
 	h.storage.DeleteTemp(req.SessionID)
 
-	resp := model.CompleteUploadResponse{
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(model.CompleteUploadResponse{
 		FileID:      fileID,
 		Filename:    session.Filename,
 		Size:        fileSize,
 		Hash:        hash,
 		StoragePath: filePath,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // ServeHTTP routes upload-related requests
