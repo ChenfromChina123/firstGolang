@@ -192,7 +192,7 @@ body::after {
     font-size: 11px;
     color: var(--fg-2);
 }
-.chunk-size select, .concurrency select, .target-dir input {
+.chunk-size select, .concurrency select {
     background: var(--bg-3);
     color: var(--fg-1);
     border: 1px solid var(--border);
@@ -202,8 +202,22 @@ body::after {
     font-size: 11px;
     cursor: pointer;
 }
-.target-dir input { width: 180px; cursor: text; }
-.chunk-size select:focus, .concurrency select:focus, .target-dir input:focus {
+/* 上传目标目录显示：只读展示当前所在目录，跟随面包屑导航 */
+.target-dir-display {
+    background: var(--bg-3);
+    color: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    min-width: 120px;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.chunk-size select:focus, .concurrency select:focus {
     outline: none;
     border-color: var(--accent);
 }
@@ -622,7 +636,7 @@ body::after {
     .layout { padding: 16px; }
     .upload-controls { flex-wrap: wrap; gap: 8px; }
     .panel-head { flex-wrap: wrap; gap: 8px; }
-    .target-dir input { width: 140px; }
+    .target-dir-display { min-width: 100px; max-width: 160px; }
     /* 窄屏下隐藏树形行中的"上传时间"和"存储"列，避免拥挤 */
     .tree-row { grid-template-columns: 20px minmax(0, 1fr) auto auto; gap: 8px; padding: 8px 10px; }
     .tree-row .tree-meta:nth-of-type(3),

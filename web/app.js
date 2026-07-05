@@ -430,6 +430,9 @@
     async function loadFiles() {
         const tree = document.getElementById('file-tree');
         renderBreadcrumb();
+        // 同步上传目标目录显示：跟随用户当前所在目录（currentPath）
+        const targetDirEl = document.getElementById('target-dir');
+        if (targetDirEl) targetDirEl.textContent = currentPath || '根目录';
         tree.innerHTML = '<div class="tree-empty">加载中…</div>';
         try {
             const url = currentPath
@@ -727,16 +730,6 @@
         });
     }
 
-    /**
-     * 规范化目标目录路径：去除开头 /、合并连续 //、非空时末尾补 /。
-     * 例："docs" → "docs/"，"/docs/" → "docs/"，"" → ""，"a//b" → "a/b/"
-     */
-    function normalizeTargetDir(raw) {
-        let s = (raw || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/{2,}/g, '/');
-        if (s && !s.endsWith('/')) s += '/';
-        return s;
-    }
-
     /** 处理选择的文件列表，加入上传队列 */
     async function handleFiles(files) {
         const queue = document.getElementById('queue');
@@ -745,7 +738,8 @@
 
         const chunkSize = parseInt(document.getElementById('chunk-size').value, 10);
         const concurrency = parseInt(document.getElementById('concurrency').value, 10);
-        const targetDir = normalizeTargetDir(document.getElementById('target-dir').value);
+        // 上传目标目录跟随用户当前所在目录（currentPath 已规范化：末尾带 / 或空字符串）
+        const targetDir = currentPath;
 
         // 创建任务并依次启动（避免同时上传多个大文件导致内存压力）
         for (const file of files) {

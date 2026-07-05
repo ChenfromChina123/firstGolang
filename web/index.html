@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260705d">
+    <link rel="stylesheet" href="/web/style.css?v=20260705e">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -38,8 +38,8 @@
                 <h2><span class="idx">01</span> 上传文件</h2>
                 <div class="upload-controls">
                     <label class="target-dir">
-                        目标目录
-                        <input type="text" id="target-dir" placeholder="留空=根目录，如 docs/" />
+                        上传到
+                        <span id="target-dir" class="target-dir-display">根目录</span>
                     </label>
                     <label class="chunk-size">
                         分片大小
@@ -188,6 +188,6 @@
     <!-- Toast 提示 -->
     <div class="toast-wrap" id="toast-wrap"></div>
 
-    <script src="/web/app.js?v=20260705d"></script>
+    <script src="/web/app.js?v=20260705e"></script>
 </body>
 </html>
