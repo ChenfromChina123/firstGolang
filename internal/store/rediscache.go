@@ -146,6 +146,7 @@ func mapToHostAddr(containerIP, containerPort string) string {
 }
 
 // discoverMaster queries one of the Sentinel nodes for the current master address.
+// 注意：成功路径不打印日志，避免 watchdog 每 5s 刷屏；仅失败/降级时打印。
 func discoverMaster(sentinelAddrs []string, masterName, password string) (host, port string) {
 	for _, addr := range sentinelAddrs {
 		sentinelClient := redis.NewClient(&redis.Options{
@@ -160,7 +161,6 @@ func discoverMaster(sentinelAddrs []string, masterName, password string) (host, 
 		sentinelClient.Close()
 		cancel()
 		if err == nil && len(masterAddr) >= 2 {
-			log.Printf("[RedisSentinel] Discovered master: %s:%s via %s", masterAddr[0], masterAddr[1], addr)
 			return masterAddr[0], masterAddr[1]
 		}
 		log.Printf("[RedisSentinel] Failed to get master from %s: %v", addr, err)
