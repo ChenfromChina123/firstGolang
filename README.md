@@ -238,6 +238,11 @@ curl -H "Range: bytes=1024-" -o output.file \
 |------|------|------|
 | `GET` | `/api/files` | 列出所有已完成文件（支持 `?prefix=docs/` 按虚拟目录递归过滤） |
 | `GET` | `/api/files/{fileID}` | 查询文件详情 |
+| `POST` | `/api/files/mkdir` | 新建目录（创建 `.keep` 占位文件） |
+| `POST` | `/api/files/rename` | 重命名/移动文件 |
+| `DELETE` | `/api/files/{fileID}` | 删除单个文件 |
+| `DELETE` | `/api/files?prefix=docs/` | 递归删除目录（删除所有匹配前缀的文件） |
+| `GET` | `/api/download/dir?prefix=docs/` | ZIP 流式打包下载目录（自动过滤 `.keep`） |
 
 **按虚拟目录列出文件（路径枚举）：**
 ```bash
@@ -249,6 +254,49 @@ curl "http://localhost:8080/api/files?prefix=docs/"
 
 # 文件名约定：docs/report.pdf 表示 docs 目录下的 report.pdf
 # 后端 LIKE 'docs/%' ESCAPE '\' 匹配，前端按 / 构建树形展示
+```
+
+**新建目录（创建 .keep 占位文件）：**
+```bash
+curl -X POST http://localhost:8080/api/files/mkdir \
+  -H "Content-Type: application/json" \
+  -d '{"path":"docs/sub/"}'
+# 响应 200: {"created":true,"path":"docs/sub/"}
+# 响应 409: 目录已存在
+# 响应 400: 路径非法（含 ..、//、\ 等）
+```
+
+**重命名/移动文件：**
+```bash
+curl -X POST http://localhost:8080/api/files/rename \
+  -H "Content-Type: application/json" \
+  -d '{"id":"<fileID>","new_filename":"docs/renamed.txt"}'
+# 响应 200: {"renamed":true,"old_filename":"...","new_filename":"..."}
+# 响应 409: 目标文件名已存在
+# 响应 400: 文件名非法
+```
+
+**删除单个文件：**
+```bash
+curl -X DELETE http://localhost:8080/api/files/<fileID>
+# 响应 200: {"deleted":true,"id":"...","filename":"..."}
+# 同时递归清理空的父目录（路径枚举方案下保持目录整洁）
+```
+
+**递归删除目录：**
+```bash
+curl -X DELETE "http://localhost:8080/api/files?prefix=docs/"
+# 响应 200: {"deleted":true,"prefix":"docs/","files_deleted":N,"storage_errors":0}
+# 删除所有 filename LIKE 'docs/%' 的文件
+```
+
+**ZIP 打包下载目录：**
+```bash
+curl -o docs.zip "http://localhost:8080/api/download/dir?prefix=docs/"
+# 响应 200: Content-Type: application/zip
+# 流式打包，ZIP 内文件路径为相对路径（去掉 prefix 前缀）
+# 自动过滤 .keep 占位文件
+# 响应 404: 目录为空或不存在
 ```
 
 **文件名路径校验规则（路径枚举方案）：**

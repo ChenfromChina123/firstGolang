@@ -14,7 +14,10 @@
         status: '/api/upload/status',
         complete: '/api/upload/complete',
         files: '/api/files',
+        filesMkdir: '/api/files/mkdir',
+        filesRename: '/api/files/rename',
         download: '/api/download',
+        downloadDir: '/api/download/dir',
         health: '/api/health',
     };
 
@@ -347,6 +350,8 @@
         const dirs = new Map();
         const fileList = [];
         for (const f of files) {
+            // 过滤 .keep 占位文件（mkdir 创建的虚拟目录标记）
+            if (f.filename.endsWith('/.keep') || f.filename === '.keep') continue;
             const rel = prefix ? f.filename.slice(prefix.length) : f.filename;
             if (!rel) continue;
             const slashIdx = rel.indexOf('/');
@@ -413,37 +418,200 @@
         const tree = document.getElementById('file-tree');
         const items = [];
         for (const [name, count] of dirs) {
+            const dirPrefix = currentPath + name + '/';
             items.push(`
                 <div class="tree-row dir" data-dir="${escapeHtml(name)}" tabindex="0">
                     <span class="tree-icon" aria-hidden="true">▸</span>
                     <span class="tree-name">${escapeHtml(name)}/</span>
                     <span class="tree-meta">${count} 个文件</span>
+                    <span class="tree-meta"></span>
+                    <span class="tree-meta"></span>
+                    <span class="tree-ops">
+                        <button class="op-btn" data-action="zip" data-prefix="${escapeHtml(dirPrefix)}" title="打包下载 ZIP">ZIP</button>
+                        <button class="op-btn danger" data-action="rmdir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="删除目录">删除</button>
+                    </span>
                 </div>
             `);
         }
         for (const f of files) {
             items.push(`
-                <div class="tree-row file">
+                <div class="tree-row file" data-id="${escapeHtml(f.id)}" data-filename="${escapeHtml(f.filename)}">
                     <span class="tree-icon" aria-hidden="true">▪</span>
                     <span class="tree-name">${escapeHtml(f.filename.split('/').pop())}</span>
                     <span class="tree-meta num">${fmtSize(f.size)}</span>
                     <span class="tree-meta">${fmtDate(f.created_at)}</span>
                     <span class="tree-meta"><span class="fstore">${escapeHtml(f.storage_type || 'local')}</span></span>
-                    <a class="dl-btn" href="${API.download}/${f.id}" download="${escapeHtml(f.filename)}">下载</a>
+                    <span class="tree-ops">
+                        <a class="op-btn" href="${API.download}/${f.id}" download="${escapeHtml(f.filename)}" title="下载文件">下载</a>
+                        <button class="op-btn" data-action="rename" data-id="${escapeHtml(f.id)}" data-filename="${escapeHtml(f.filename)}" title="重命名/移动">重命名</button>
+                        <button class="op-btn danger" data-action="rmfile" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(f.filename.split('/').pop())}" title="删除文件">删除</button>
+                    </span>
                 </div>
             `);
         }
         tree.innerHTML = items.join('');
+
+        // 目录行：点击进入目录（操作按钮 stopPropagation）
         tree.querySelectorAll('.tree-row.dir').forEach(el => {
             const enter = () => {
                 currentPath += el.dataset.dir + '/';
                 loadFiles();
             };
-            el.addEventListener('click', enter);
+            el.addEventListener('click', e => {
+                if (e.target.closest('.tree-ops')) return; // 点击操作按钮不进入目录
+                enter();
+            });
             el.addEventListener('keydown', e => {
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); enter(); }
             });
         });
+
+        // 操作按钮事件
+        tree.querySelectorAll('.op-btn[data-action]').forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                const action = btn.dataset.action;
+                if (action === 'zip') {
+                    window.location.href = `${API.downloadDir}?prefix=${encodeURIComponent(btn.dataset.prefix)}`;
+                } else if (action === 'rmdir') {
+                    confirmDeleteDir(btn.dataset.prefix, btn.dataset.name);
+                } else if (action === 'rmfile') {
+                    confirmDeleteFile(btn.dataset.id, btn.dataset.name);
+                } else if (action === 'rename') {
+                    openRenameDialog(btn.dataset.id, btn.dataset.filename);
+                }
+            });
+        });
+    }
+
+    // === 文件/目录操作 ===
+
+    /** 删除文件确认 */
+    function confirmDeleteFile(fileId, filename) {
+        openConfirmDialog(`确认删除文件「${filename}」？此操作不可恢复。`, async () => {
+            try {
+                const res = await fetch(`${API.files}/${fileId}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                toast(`「${filename}」已删除`, 'ok');
+                loadFiles();
+            } catch (e) {
+                toast(`删除失败: ${e.message}`, 'err');
+            }
+        });
+    }
+
+    /** 删除目录确认（递归删除所有文件） */
+    function confirmDeleteDir(prefix, dirName) {
+        openConfirmDialog(`确认删除目录「${dirName}」及其所有内容？此操作不可恢复。`, async () => {
+            try {
+                const res = await fetch(`${API.files}?prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json().catch(() => ({}));
+                toast(`目录「${dirName}」已删除（${data.files_deleted || 0} 个文件）`, 'ok');
+                loadFiles();
+            } catch (e) {
+                toast(`删除目录失败: ${e.message}`, 'err');
+            }
+        });
+    }
+
+    /** 打开重命名/移动对话框 */
+    function openRenameDialog(fileId, currentFilename) {
+        const modal = document.getElementById('rename-modal');
+        const input = document.getElementById('rename-input');
+        input.value = currentFilename;
+        modal.hidden = false;
+        input.focus();
+        input.select();
+
+        const confirmBtn = document.getElementById('rename-confirm');
+        const cancelBtn = document.getElementById('rename-cancel');
+        const cleanup = () => {
+            modal.hidden = true;
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+        };
+        cancelBtn.onclick = cleanup;
+        confirmBtn.onclick = async () => {
+            const newFilename = input.value.trim();
+            if (!newFilename) { toast('文件名不能为空', 'err'); return; }
+            if (newFilename === currentFilename) { cleanup(); return; }
+            try {
+                const res = await fetch(API.filesRename, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: fileId, new_filename: newFilename }),
+                });
+                if (res.status === 409) { toast('文件名已存在', 'err'); return; }
+                if (res.status === 400) {
+                    const txt = await res.text();
+                    toast(`文件名非法: ${txt}`, 'err'); return;
+                }
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                toast(`已重命名为「${newFilename}」`, 'ok');
+                cleanup();
+                loadFiles();
+            } catch (e) {
+                toast(`重命名失败: ${e.message}`, 'err');
+            }
+        };
+    }
+
+    /** 打开通用确认对话框 */
+    function openConfirmDialog(message, onConfirm) {
+        const modal = document.getElementById('confirm-modal');
+        const msg = document.getElementById('confirm-message');
+        const okBtn = document.getElementById('confirm-ok');
+        const cancelBtn = document.getElementById('confirm-cancel');
+        msg.textContent = message;
+        modal.hidden = false;
+        const cleanup = () => {
+            modal.hidden = true;
+            okBtn.onclick = null;
+            cancelBtn.onclick = null;
+        };
+        cancelBtn.onclick = cleanup;
+        okBtn.onclick = () => { cleanup(); onConfirm(); };
+    }
+
+    /** 新建目录 */
+    async function mkdir() {
+        const modal = document.getElementById('mkdir-modal');
+        const input = document.getElementById('mkdir-input');
+        input.value = currentPath; // 默认当前目录
+        modal.hidden = false;
+        input.focus();
+
+        const confirmBtn = document.getElementById('mkdir-confirm');
+        const cancelBtn = document.getElementById('mkdir-cancel');
+        const cleanup = () => {
+            modal.hidden = true;
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+        };
+        cancelBtn.onclick = cleanup;
+        confirmBtn.onclick = async () => {
+            const rawPath = input.value.trim();
+            if (!rawPath) { toast('目录名不能为空', 'err'); return; }
+            try {
+                const res = await fetch(API.filesMkdir, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: rawPath }),
+                });
+                if (res.status === 409) { toast('目录已存在', 'err'); return; }
+                if (res.status === 400) {
+                    const txt = await res.text();
+                    toast(`目录名非法: ${txt}`, 'err'); return;
+                }
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                toast(`目录「${rawPath}」已创建`, 'ok');
+                cleanup();
+                loadFiles();
+            } catch (e) {
+                toast(`新建目录失败: ${e.message}`, 'err');
+            }
+        };
     }
 
     // === 事件绑定 ===
@@ -491,6 +659,9 @@
 
         // 刷新文件列表
         document.getElementById('refresh-files').addEventListener('click', loadFiles);
+
+        // 新建目录
+        document.getElementById('mkdir-btn').addEventListener('click', mkdir);
 
         // 清除已完成
         document.getElementById('clear-done').addEventListener('click', () => {

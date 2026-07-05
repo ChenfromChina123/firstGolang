@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"archive/zip"
 	"fmt"
 	"io"
 	"log"
@@ -119,7 +120,71 @@ func (h *DownloadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 路由：/api/download/dir?prefix=xxx → ZIP 打包下载目录
+	if strings.HasPrefix(r.URL.Path, "/api/download/dir") {
+		h.DownloadDir(w, r)
+		return
+	}
 	h.DownloadFile(w, r)
+}
+
+// DownloadDir 把指定目录下所有文件（递归）打包成 ZIP 流式下载。
+// GET /api/download/dir?prefix=docs/
+// ZIP 内文件路径为相对路径（去掉 prefix 前缀），保留虚拟目录结构。
+func (h *DownloadHandler) DownloadDir(w http.ResponseWriter, r *http.Request) {
+	prefix := fastQueryParam(r.URL.RawQuery, "prefix")
+	if prefix == "" {
+		http.Error(w, "prefix required", http.StatusBadRequest)
+		return
+	}
+
+	files, err := h.db.ListFiles(prefix)
+	if err != nil {
+		log.Printf("list files for zip error: %v", err)
+		http.Error(w, "failed to list files", http.StatusInternalServerError)
+		return
+	}
+	if len(files) == 0 {
+		http.Error(w, "directory is empty or not found", http.StatusNotFound)
+		return
+	}
+
+	// ZIP 文件名：用 prefix 去掉末尾 / 作为目录名
+	dirName := strings.TrimSuffix(prefix, "/")
+	if dirName == "" {
+		dirName = "files"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, dirName))
+	w.Header().Set("Content-Type", "application/zip")
+
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	for _, f := range files {
+		// 跳过 .keep 占位文件（路径枚举方案下的虚拟目录占位）
+		if strings.HasSuffix(f.Filename, ".keep") {
+			continue
+		}
+		// ZIP 内路径：去掉 prefix 前缀，保留相对路径（含子目录）
+		relPath := strings.TrimPrefix(f.Filename, prefix)
+		if relPath == "" {
+			continue
+		}
+		zf, err := zw.Create(relPath)
+		if err != nil {
+			log.Printf("zip create %s error: %v", relPath, err)
+			continue
+		}
+		reader, err := h.storage.ReadFile(f.StoragePath, 0)
+		if err != nil {
+			log.Printf("read file %s for zip error: %v", f.StoragePath, err)
+			continue
+		}
+		if _, err := io.Copy(zf, reader); err != nil {
+			log.Printf("zip copy %s error: %v", relPath, err)
+		}
+		reader.Close()
+	}
 }
 
 // unused import guard

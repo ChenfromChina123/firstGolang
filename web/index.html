@@ -89,7 +89,10 @@
         <section class="panel files-panel">
             <div class="panel-head">
                 <h2><span class="idx">02</span> 文件库</h2>
-                <button class="ghost-btn" id="refresh-files">刷新</button>
+                <div class="files-head-ops">
+                    <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
+                    <button class="ghost-btn" id="refresh-files">刷新</button>
+                </div>
             </div>
             <div class="files-tree-wrap">
                 <!-- 面包屑导航：根目录 > docs > sub -->
@@ -127,6 +130,57 @@
             </div>
             <div class="modal-foot">
                 <label class="apply-all"><input type="checkbox" id="apply-all"> 应用到后续所有冲突</label>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建目录对话框 -->
+    <div class="modal" id="mkdir-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>新建目录</h3>
+            </div>
+            <p class="modal-desc">输入目录路径，支持多级（如 docs/sub/）。末尾 / 可省略。</p>
+            <div class="modal-input-wrap">
+                <input type="text" id="mkdir-input" class="modal-input" placeholder="docs/" autocomplete="off" />
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="mkdir-cancel">取消</button>
+                <button class="primary-btn" id="mkdir-confirm">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 重命名/移动对话框 -->
+    <div class="modal" id="rename-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>重命名 / 移动</h3>
+            </div>
+            <p class="modal-desc">输入新的完整路径（含文件名）。可用 / 移动到其他目录。</p>
+            <div class="modal-input-wrap">
+                <input type="text" id="rename-input" class="modal-input" autocomplete="off" />
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="rename-cancel">取消</button>
+                <button class="primary-btn" id="rename-confirm">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 通用确认对话框 -->
+    <div class="modal" id="confirm-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>确认操作</h3>
+            </div>
+            <p class="modal-desc" id="confirm-message">—</p>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="confirm-cancel">取消</button>
+                <button class="danger-btn" id="confirm-ok">确认</button>
             </div>
         </div>
     </div>

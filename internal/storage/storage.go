@@ -23,6 +23,27 @@ type Storage interface {
 	FileSize(path string) (int64, error)
 	// BasePath returns the storage base directory
 	BasePath() string
+	// HashFile returns the SHA256 hex hash of a file
+	HashFile(path string) (string, error)
+	// DeleteFile removes a completed file from storage
+	DeleteFile(path string) error
+}
+
+// AsyncStorager is an optional interface for backends that support async writes.
+type AsyncStorager interface {
+	Storage
+	// SaveChunkAsync enqueues a chunk for async background write. Returns immediately.
+	SaveChunkAsync(sessionID string, chunkIndex int, data []byte)
+	// WaitAsync blocks until all pending async writes complete.
+	WaitAsync()
+}
+
+// HashAssembler is an optional interface for backends that can compute hash during assembly.
+// Avoids reading the assembled file a second time for hash computation.
+type HashAssembler interface {
+	// AssembleFileWithHash merges all chunks and computes SHA256 simultaneously.
+	// Returns (filePath, hash, error).
+	AssembleFileWithHash(sessionID string, filename string, totalChunks int) (string, string, error)
 }
 
 // tempDir returns the temporary directory for chunk storage

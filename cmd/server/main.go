@@ -114,7 +114,7 @@ func main() {
 
 	// Register handlers
 	downloadHandler := handler.NewDownloadHandler(db, st)
-	fileHandler := handler.NewFileHandler(db)
+	fileHandler := handler.NewFileHandler(db, st)
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/upload/", uploadHandler)
@@ -159,8 +159,13 @@ func main() {
 	log.Printf("  GET    /api/upload/status   - Upload progress")
 	log.Printf("  POST   /api/upload/complete - Complete upload")
 	log.Printf("  GET    /api/download/{id}   - Download file (supports Range)")
-	log.Printf("  GET    /api/files           - List files")
+	log.Printf("  GET    /api/download/dir    - Download directory as ZIP (prefix=xxx)")
+	log.Printf("  GET    /api/files           - List files (prefix=xxx for dir)")
 	log.Printf("  GET    /api/files/{id}      - File info")
+	log.Printf("  DELETE /api/files/{id}      - Delete file")
+	log.Printf("  DELETE /api/files           - Delete directory (prefix=xxx)")
+	log.Printf("  POST   /api/files/mkdir     - Create directory (path=xxx)")
+	log.Printf("  POST   /api/files/rename    - Rename/move file (id, new_filename)")
 	log.Printf("  GET    /api/health          - Health check")
 	log.Printf("  GET    /web/                - Web console (static)")
 

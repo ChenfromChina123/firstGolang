@@ -550,3 +550,50 @@ func escapeLikePrefix(s string) string {
 	}
 	return string(out)
 }
+
+// DeleteFile 删除单个文件记录（按 ID）。返回受影响行数。
+func (db *DB) DeleteFile(id string) (int64, error) {
+	res, err := db.conn.Exec(`DELETE FROM files WHERE id = ?`, id)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteFilesByPrefix 删除指定前缀下所有文件（递归匹配子目录）。返回删除文件列表。
+// 路径枚举方案：用 LIKE 'prefix%' ESCAPE '\' 匹配。调用方负责删除存储文件。
+func (db *DB) DeleteFilesByPrefix(prefix string) ([]model.FileRecord, error) {
+	// 先查询出待删除文件（调用方需要 storage_path 删除存储）
+	files, err := db.ListFiles(prefix)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return files, nil
+	}
+	// 批量删除数据库记录（事务）
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range files {
+		if _, err := tx.Exec(`DELETE FROM files WHERE id = ?`, f.ID); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// UpdateFilename 更新文件名（含路径前缀），用于重命名/移动。
+// newFilename 必须通过 validateFilePath 校验（由 handler 层保证）。
+func (db *DB) UpdateFilename(id, newFilename string) error {
+	_, err := db.conn.Exec(
+		`UPDATE files SET filename = ?, updated_at = ? WHERE id = ?`,
+		newFilename, time.Now().Format(time.RFC3339), id,
+	)
+	return err
+}

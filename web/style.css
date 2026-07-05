@@ -454,6 +454,30 @@ body::after {
 }
 .dl-btn:hover { background: var(--accent-dim); border-color: var(--accent); }
 
+/* 文件库头部操作按钮组 */
+.files-head-ops { display: flex; gap: 8px; align-items: center; }
+
+/* 树形行操作按钮组 */
+.tree-ops { display: flex; gap: 6px; align-items: center; }
+
+/* 树形操作按钮（ZIP/下载/重命名/删除等） */
+.op-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--fg-1);
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 10px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+.op-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.op-btn.danger { color: var(--err); border-color: rgba(248, 81, 73, 0.4); }
+.op-btn.danger:hover { background: var(--err-dim); border-color: var(--err); color: var(--err); }
+
 /* === 按钮 === */
 .ghost-btn {
     background: none;
@@ -515,6 +539,52 @@ body::after {
 .opt-btn span { font-family: var(--mono); font-size: 10px; color: var(--fg-3); }
 .modal-foot { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .apply-all { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2); cursor: pointer; }
+.modal-foot-right { display: flex; justify-content: flex-end; gap: 8px; border-top: none; padding-top: 0; margin-top: 20px; }
+
+/* 对话框输入框 */
+.modal-input-wrap { margin: 8px 0 4px; }
+.modal-input {
+    width: 100%;
+    background: var(--bg-1);
+    color: var(--fg-0);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 13px;
+    transition: border-color 0.15s;
+}
+.modal-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+
+/* 主要按钮（确认操作） */
+.primary-btn {
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 6px 16px;
+    border-radius: var(--radius-sm);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.primary-btn:hover { background: var(--accent); color: var(--bg-0); }
+
+/* 危险按钮（删除等不可逆操作） */
+.danger-btn {
+    background: var(--err-dim);
+    border: 1px solid var(--err);
+    color: var(--err);
+    padding: 6px 16px;
+    border-radius: var(--radius-sm);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.danger-btn:hover { background: var(--err); color: var(--fg-0); }
 
 /* === Toast === */
 .toast-wrap {
