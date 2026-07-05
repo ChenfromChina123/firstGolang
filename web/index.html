@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706b">
+    <link rel="stylesheet" href="/web/style.css?v=20260706c">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -67,7 +67,7 @@
                             <option value="12">12</option>
                         </select>
                     </label>
-                    <button class="pick-btn" id="pick-btn" type="button" title="选择文件上传">+ 选择文件</button>
+                    <label class="pick-btn" for="file-input" title="选择文件上传">+ 选择文件</label>
                     <input type="file" id="file-input" multiple hidden>
                 </div>
             </div>
@@ -89,6 +89,10 @@
                 <div class="files-head-ops">
                     <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
                     <button class="ghost-btn" id="refresh-files">刷新</button>
+                    <span class="batch-ops" id="batch-ops" hidden>
+                        <span class="batch-count" id="batch-count">已选 0 项</span>
+                        <button class="danger-btn" id="batch-delete-btn">批量删除</button>
+                    </span>
                 </div>
             </div>
             <div class="files-tree-wrap">
@@ -167,6 +171,25 @@
         </div>
     </div>
 
+    <!-- 移动目录对话框 -->
+    <div class="modal" id="move-dir-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>移动目录</h3>
+                <span class="modal-tag" id="move-dir-name">—</span>
+            </div>
+            <p class="modal-desc">输入新的目录路径（如 docs/sub/）。末尾 / 可省略。目录下所有文件将一并移动。</p>
+            <div class="modal-input-wrap">
+                <input type="text" id="move-dir-input" class="modal-input" autocomplete="off" />
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="move-dir-cancel">取消</button>
+                <button class="primary-btn" id="move-dir-confirm">确认移动</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 通用确认对话框 -->
     <div class="modal" id="confirm-modal" hidden>
         <div class="modal-backdrop"></div>
@@ -185,6 +208,6 @@
     <!-- Toast 提示 -->
     <div class="toast-wrap" id="toast-wrap"></div>
 
-    <script src="/web/app.js?v=20260706b"></script>
+    <script src="/web/app.js?v=20260706c"></script>
 </body>
 </html>

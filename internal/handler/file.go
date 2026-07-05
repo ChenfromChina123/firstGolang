@@ -113,6 +113,12 @@ func (h *FileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/api/files/rename" && r.Method == http.MethodPost:
 		h.Rename(w, r)
 		return
+	case path == "/api/files/move-dir" && r.Method == http.MethodPost:
+		h.MoveDir(w, r)
+		return
+	case path == "/api/files/batch-delete" && r.Method == http.MethodPost:
+		h.BatchDelete(w, r)
+		return
 	case path == "/api/files" && r.Method == http.MethodDelete:
 		h.DeleteDir(w, r) // DELETE /api/files?prefix=xxx 删除目录
 		return
@@ -345,6 +351,123 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 		"id":           req.ID,
 		"old_filename": f.Filename,
 		"new_filename": req.NewFilename,
+	})
+}
+
+// MoveDir 移动目录（POST /api/files/move-dir）。
+// 批量更新目录下所有文件的 filename 前缀，实现目录移动。
+// 存储文件不移动（storage_path 不变），仅改 filename 虚拟路径。
+// 请求体：{"old_prefix":"old_dir/","new_prefix":"new_dir/"}
+func (h *FileHandler) MoveDir(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OldPrefix string `json:"old_prefix"`
+		NewPrefix string `json:"new_prefix"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	req.OldPrefix = normalizeDirPath(req.OldPrefix)
+	req.NewPrefix = normalizeDirPath(req.NewPrefix)
+	if req.OldPrefix == "" || req.NewPrefix == "" {
+		http.Error(w, "old_prefix and new_prefix required", http.StatusBadRequest)
+		return
+	}
+	if req.OldPrefix == req.NewPrefix {
+		http.Error(w, "old_prefix and new_prefix are the same", http.StatusBadRequest)
+		return
+	}
+
+	// 获取源目录下所有文件
+	files, err := h.db.ListFiles(req.OldPrefix)
+	if err != nil {
+		http.Error(w, "failed to list files", http.StatusInternalServerError)
+		return
+	}
+	if len(files) == 0 {
+		http.Error(w, "source directory is empty or not found", http.StatusNotFound)
+		return
+	}
+
+	// 检查目标目录是否已有同名文件（冲突检查）
+	targetFiles, _ := h.db.ListFiles(req.NewPrefix)
+	if len(targetFiles) > 0 {
+		http.Error(w, "target directory already has files", http.StatusConflict)
+		return
+	}
+
+	// 批量更新 filename 前缀
+	var successCount, failCount int
+	for _, f := range files {
+		newFilename := req.NewPrefix + strings.TrimPrefix(f.Filename, req.OldPrefix)
+		if err := h.db.UpdateFilename(f.ID, newFilename); err != nil {
+			log.Printf("move file %s error: %v", f.ID, err)
+			failCount++
+			continue
+		}
+		// 同步更新 Redis 冲突检查集合
+		if h.redis != nil {
+			h.redis.UnmarkFileExists(r.Context(), f.Filename)
+			h.redis.MarkFileExists(r.Context(), newFilename)
+		}
+		successCount++
+	}
+
+	log.Printf("move-dir: %s -> %s (%d success, %d fail)", req.OldPrefix, req.NewPrefix, successCount, failCount)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"moved":      true,
+		"old_prefix": req.OldPrefix,
+		"new_prefix": req.NewPrefix,
+		"success":    successCount,
+		"fail":       failCount,
+	})
+}
+
+// BatchDelete 批量删除文件（POST /api/files/batch-delete）。
+// 请求体：{"ids":["id1","id2",...]}
+// 逐个删除文件（存储 + 数据库 + Redis），返回成功/失败计数。
+func (h *FileHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	if len(req.IDs) == 0 {
+		http.Error(w, "ids required", http.StatusBadRequest)
+		return
+	}
+
+	var successCount, failCount int
+	for _, fileID := range req.IDs {
+		f, err := h.db.GetFile(fileID)
+		if err != nil {
+			log.Printf("batch-delete: file %s not found: %v", fileID, err)
+			failCount++
+			continue
+		}
+		if err := h.storage.DeleteFile(f.StoragePath); err != nil {
+			log.Printf("batch-delete: storage delete %s error: %v", f.StoragePath, err)
+		}
+		if _, err := h.db.DeleteFile(fileID); err != nil {
+			log.Printf("batch-delete: db delete %s error: %v", fileID, err)
+			failCount++
+			continue
+		}
+		if h.redis != nil {
+			h.redis.UnmarkFileExists(r.Context(), f.Filename)
+		}
+		successCount++
+	}
+
+	log.Printf("batch-delete: %d success, %d fail", successCount, failCount)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"deleted": true,
+		"success": successCount,
+		"fail":    failCount,
 	})
 }
 

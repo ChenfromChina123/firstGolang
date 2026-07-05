@@ -444,6 +444,16 @@ body::after {
 }
 .tree-row.file .tree-icon { color: var(--fg-3); }
 
+/* 文件行多选 checkbox（替代目录图标列，保持 20px 列对齐） */
+.file-check {
+    margin: 0;
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    accent-color: var(--accent);
+    justify-self: center;
+}
+
 .tree-name {
     font-family: var(--mono);
     color: var(--fg-0);
@@ -488,6 +498,23 @@ body::after {
 
 /* 文件库头部操作按钮组 */
 .files-head-ops { display: flex; gap: 8px; align-items: center; }
+
+/* 批量操作栏（多选文件时显示） */
+.batch-ops {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 8px;
+    border: 1px dashed var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent-dim);
+}
+.batch-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    white-space: nowrap;
+}
 
 /* 树形行操作按钮组 */
 .tree-ops { display: flex; gap: 6px; align-items: center; }

@@ -16,6 +16,8 @@
         files: '/api/files',
         filesMkdir: '/api/files/mkdir',
         filesRename: '/api/files/rename',
+        filesMoveDir: '/api/files/move-dir',
+        filesBatchDelete: '/api/files/batch-delete',
         download: '/api/download',
         downloadDir: '/api/download/dir',
         health: '/api/health',
@@ -547,6 +549,7 @@
                     <span class="tree-meta"></span>
                     <span class="tree-ops">
                         <button class="op-btn" data-action="zip" data-prefix="${escapeHtml(dirPrefix)}" title="打包下载 ZIP">ZIP</button>
+                        <button class="op-btn" data-action="move-dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="移动目录">移动</button>
                         <button class="op-btn danger" data-action="rmdir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="删除目录">删除</button>
                     </span>
                 </div>
@@ -555,7 +558,7 @@
         for (const f of files) {
             items.push(`
                 <div class="tree-row file" data-id="${escapeHtml(f.id)}" data-filename="${escapeHtml(f.filename)}">
-                    <span class="tree-icon" aria-hidden="true">▪</span>
+                    <input type="checkbox" class="file-check" data-id="${escapeHtml(f.id)}" aria-label="选择文件">
                     <span class="tree-name">${escapeHtml(f.filename.split('/').pop())}</span>
                     <span class="tree-meta num">${fmtSize(f.size)}</span>
                     <span class="tree-meta">${fmtDate(f.created_at)}</span>
@@ -592,6 +595,8 @@
                 const action = btn.dataset.action;
                 if (action === 'zip') {
                     window.location.href = `${API.downloadDir}?prefix=${encodeURIComponent(btn.dataset.prefix)}`;
+                } else if (action === 'move-dir') {
+                    openMoveDirDialog(btn.dataset.prefix, btn.dataset.name);
                 } else if (action === 'rmdir') {
                     confirmDeleteDir(btn.dataset.prefix, btn.dataset.name);
                 } else if (action === 'rmfile') {
@@ -600,6 +605,12 @@
                     openRenameDialog(btn.dataset.id, btn.dataset.filename);
                 }
             });
+        });
+
+        // checkbox 多选：change 时更新批量操作栏
+        tree.querySelectorAll('.file-check').forEach(cb => {
+            cb.addEventListener('change', updateBatchOps);
+            cb.addEventListener('click', e => e.stopPropagation()); // 防止点击 checkbox 触发目录进入
         });
     }
 
@@ -749,18 +760,125 @@
         };
     }
 
+    /**
+     * 打开移动目录对话框。
+     * 后端 MoveDir handler 会批量更新目录下所有文件的 filename 前缀，
+     * storage_path 不变（仅改虚拟路径），目标目录已有文件时返回 409 冲突。
+     * @param {string} prefix - 源目录完整前缀（如 "docs/sub/"）
+     * @param {string} dirName - 目录显示名（如 "sub"）
+     */
+    function openMoveDirDialog(prefix, dirName) {
+        const modal = document.getElementById('move-dir-modal');
+        const nameEl = document.getElementById('move-dir-name');
+        const input = document.getElementById('move-dir-input');
+        const confirmBtn = document.getElementById('move-dir-confirm');
+        const cancelBtn = document.getElementById('move-dir-cancel');
+
+        nameEl.textContent = dirName + '/';
+        // 默认填入源目录去掉末尾 / 的路径，方便用户在原基础上修改
+        input.value = prefix.replace(/\/$/, '');
+        modal.hidden = false;
+        input.focus();
+        input.select();
+
+        const submit = async () => {
+            const rawPath = input.value.trim();
+            if (!rawPath) { toast('目录路径不能为空', 'err'); return; }
+            if (rawPath === prefix.replace(/\/$/, '')) { toast('新路径与原路径相同', 'err'); return; }
+            try {
+                const res = await apiFetch(API.filesMoveDir, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ old_prefix: prefix, new_prefix: rawPath }),
+                });
+                if (res.status === 409) {
+                    const txt = await res.text().catch(() => '目标目录已有文件');
+                    toast(`移动失败: ${txt}`, 'err');
+                    return;
+                }
+                if (res.status === 404) { toast('源目录为空或不存在', 'err'); return; }
+                if (res.status === 400) {
+                    const txt = await res.text();
+                    toast(`路径非法: ${txt}`, 'err'); return;
+                }
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json().catch(() => ({}));
+                toast(`目录已移动到「${rawPath}」（成功 ${data.success || 0}，失败 ${data.fail || 0}）`, 'ok');
+                cleanup();
+                loadFiles();
+            } catch (e) {
+                toast(`移动目录失败: ${e.message}`, 'err');
+            }
+        };
+        const cleanup = () => {
+            modal.hidden = true;
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+            input.onkeydown = null;
+        };
+        cancelBtn.onclick = cleanup;
+        confirmBtn.onclick = submit;
+        input.onkeydown = e => {
+            if (e.key === 'Enter') { e.preventDefault(); submit(); }
+            else if (e.key === 'Escape') { e.preventDefault(); cleanup(); }
+        };
+    }
+
+    /**
+     * 更新批量操作栏状态。
+     * 统计当前选中的 .file-check 数量，更新 batch-count 文本，
+     * 选中数 > 0 时显示 batch-ops 栏，否则隐藏。
+     * 每次 checkbox 状态变化时调用。
+     */
+    function updateBatchOps() {
+        const checked = document.querySelectorAll('.file-check:checked');
+        const bar = document.getElementById('batch-ops');
+        const countEl = document.getElementById('batch-count');
+        if (checked.length > 0) {
+            bar.hidden = false;
+            countEl.textContent = `已选 ${checked.length} 项`;
+        } else {
+            bar.hidden = true;
+        }
+    }
+
+    /**
+     * 批量删除选中文件。
+     * 收集所有选中 checkbox 的 data-id，弹出确认对话框，
+     * 确认后调用 POST /api/files/batch-delete。
+     * 后端逐个删除（存储 + 数据库 + Redis），返回成功/失败计数。
+     */
+    function batchDelete() {
+        const checked = document.querySelectorAll('.file-check:checked');
+        if (checked.length === 0) { toast('请先选择文件', 'err'); return; }
+        const ids = Array.from(checked).map(cb => cb.dataset.id);
+
+        openConfirmDialog(`确认批量删除选中的 ${ids.length} 个文件？此操作不可恢复。`, async () => {
+            try {
+                const res = await apiFetch(API.filesBatchDelete, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids }),
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json().catch(() => ({}));
+                toast(`批量删除完成（成功 ${data.success || 0}，失败 ${data.fail || 0}）`, 'ok');
+                loadFiles();
+            } catch (e) {
+                toast(`批量删除失败: ${e.message}`, 'err');
+            }
+        });
+    }
+
     // === 事件绑定 ===
 
-    /** 绑定选择文件、拖拽上传等事件。
-     *  拖拽绑定到整个 upload-panel（而非已移除的 dropzone），
-     *  拖入文件时高亮面板边框，drop 时触发上传。 */
+    /** 绑定选择文件、拖拽上传、持久化配置等事件。
+     *  选择文件按钮改为 label[for=file-input]，点击自动触发文件选择，无需 JS。
+     *  拖拽绑定到整个 upload-panel（而非已移除的 dropzone）。
+     *  分片大小和并发数持久化到 localStorage，下次打开保留用户选择。 */
     function bindEvents() {
         const uploadPanel = document.querySelector('.upload-panel');
         const fileInput = document.getElementById('file-input');
-        const pickBtn = document.getElementById('pick-btn');
-
-        // 点击"选择文件"按钮触发文件选择对话框
-        pickBtn.addEventListener('click', () => fileInput.click());
 
         // 拖拽：绑定到整个 upload-panel
         if (uploadPanel) {
@@ -791,6 +909,16 @@
             fileInput.value = ''; // 允许重复选择同一文件
         });
 
+        // 持久化分片大小和并发数到 localStorage（下次打开保留用户选择）
+        const chunkSizeSelect = document.getElementById('chunk-size');
+        const concurrencySelect = document.getElementById('concurrency');
+        const savedChunkSize = localStorage.getItem('filesync:chunkSize');
+        const savedConcurrency = localStorage.getItem('filesync:concurrency');
+        if (savedChunkSize) chunkSizeSelect.value = savedChunkSize;
+        if (savedConcurrency) concurrencySelect.value = savedConcurrency;
+        chunkSizeSelect.addEventListener('change', () => localStorage.setItem('filesync:chunkSize', chunkSizeSelect.value));
+        concurrencySelect.addEventListener('change', () => localStorage.setItem('filesync:concurrency', concurrencySelect.value));
+
         // 冲突对话框按钮
         document.querySelectorAll('.opt-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -803,6 +931,12 @@
 
         // 新建目录
         document.getElementById('mkdir-btn').addEventListener('click', mkdir);
+
+        // 批量删除选中文件
+        const batchDeleteBtn = document.getElementById('batch-delete-btn');
+        if (batchDeleteBtn) {
+            batchDeleteBtn.addEventListener('click', batchDelete);
+        }
 
         // 清除已完成
         document.getElementById('clear-done').addEventListener('click', () => {
