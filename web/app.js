@@ -39,10 +39,15 @@
         return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     }
 
-    /** 简单 SHA-256 计算（用于断点续传标识，失败时降级为 name+size） */
+    /** 简单 SHA-256 计算（用于断点续传标识，失败时降级为 name+size）
+     *  注：file.slice().arrayBuffer() 与 crypto.subtle.digest 本身异步，
+     *  但对 8MB 数据计算仍可能阻塞主线程几百毫秒。在两个耗时阶段之间
+     *  插入 setTimeout(0) 让出主线程，让 UI 有机会响应。 */
     async function calcFileHash(file) {
         try {
             const buf = await file.slice(0, Math.min(file.size, 8 * 1024 * 1024)).arrayBuffer();
+            // 让出主线程一次，避免 8MB ArrayBuffer 切片阻塞 UI 渲染
+            await new Promise(r => setTimeout(r, 0));
             const hashBuf = await crypto.subtle.digest('SHA-256', buf);
             return Array.from(new Uint8Array(hashBuf)).slice(0, 16).map(b => b.toString(16).padStart(2, '0')).join('');
         } catch (e) {
@@ -114,6 +119,7 @@
             this.status = 'pending'; // pending | uploading | done | error | paused
             this.error = null;
             this.dom = null;
+            this._domUpdatePending = false; // requestAnimationFrame 节流标志
         }
 
         /** 构造上传到后端的完整文件名（含目录前缀） */
@@ -284,8 +290,30 @@
             return li;
         }
 
-        /** 更新队列 DOM 进度 */
+        /** 更新队列 DOM 进度
+         *  上传过程中每个 chunk 上传成功都会调用，大文件会产生数千次调用。
+         *  使用 requestAnimationFrame 节流：同一帧内多次调用只渲染一次，
+         *  避免频繁 DOM 操作导致主线程卡顿。
+         *  注意：done/error 是终态，必须立即渲染以保证用户看到最终状态。 */
         updateDom() {
+            if (!this.dom) return;
+            // 终态立即更新，确保用户看到最终状态
+            if (this.status === 'done' || this.status === 'error') {
+                this._domUpdatePending = false;
+                this._renderDom();
+                return;
+            }
+            // uploading 状态：rAF 节流，同帧多次调用合并为一次渲染
+            if (this._domUpdatePending) return;
+            this._domUpdatePending = true;
+            requestAnimationFrame(() => {
+                this._domUpdatePending = false;
+                this._renderDom();
+            });
+        }
+
+        /** 实际执行 DOM 渲染（私有方法） */
+        _renderDom() {
             if (!this.dom) return;
             const pct = this.file.size > 0 ? (this.uploaded / this.file.size * 100) : 0;
             const fill = this.dom.querySelector('.qi-progress-fill');
