@@ -403,9 +403,10 @@ func (r *RedisCache) CacheSession(ctx context.Context, s *model.UploadSession) e
 	return nil
 }
 
-// CacheSessionAndMarkFile 用 Pipeline 一次 RTT 完成 session 缓存 + chunks TTL + 文件名标记。
-// 合并原 CacheSession 的 Set+Expire 与 MarkFileExists 的 SAdd，将 InitUpload 的 Redis 往返从 3 RTT 降到 1 RTT。
-func (r *RedisCache) CacheSessionAndMarkFile(ctx context.Context, s *model.UploadSession, filename string) error {
+// CacheSessionPipeline 用 Pipeline 一次 RTT 完成 session 缓存 + chunks TTL 设置。
+// 注意：本函数不再标记文件名到已完成集合。文件名标记必须在 CompleteUpload 成功后
+// 调用 MarkFileExists，否则会导致断点续传场景下未完成上传也触发 409 冲突。
+func (r *RedisCache) CacheSessionPipeline(ctx context.Context, s *model.UploadSession) error {
 	if err := r.checkHealthy(); err != nil {
 		return err
 	}
@@ -416,9 +417,8 @@ func (r *RedisCache) CacheSessionAndMarkFile(ctx context.Context, s *model.Uploa
 	pipe := r.client.Pipeline()
 	pipe.Set(ctx, sessionKey(s.ID), data, r.ttl)
 	pipe.Expire(ctx, chunksKey(s.ID), r.ttl)
-	pipe.SAdd(ctx, filesNameSet, filename)
 	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("pipeline cache session + mark file: %w", err)
+		return fmt.Errorf("pipeline cache session: %w", err)
 	}
 	return nil
 }

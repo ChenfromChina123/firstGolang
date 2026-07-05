@@ -208,9 +208,11 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Cache session in Redis for fast chunk verification
 	if h.redis != nil {
-		// Pipeline: Set session + Expire chunks + SAdd filename → 1 RTT（原 3 RTT）
-		if err := h.redis.CacheSessionAndMarkFile(r.Context(), session, req.Filename); err != nil {
-			log.Printf("redis cache session + mark file error (non-fatal): %v", err)
+		// Pipeline: Set session + Expire chunks → 1 RTT
+		// 注意：不在此处标记文件名到已完成集合，避免断点续传场景下误报 409 冲突。
+		// 文件名标记在 CompleteUpload 成功后通过 MarkFileExists 完成。
+		if err := h.redis.CacheSessionPipeline(r.Context(), session); err != nil {
+			log.Printf("redis cache session error (non-fatal): %v", err)
 		}
 	}
 
@@ -542,6 +544,12 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 
 		// Async SQLite write (atomic: file + status in same transaction)
 		h.db.AsyncCreateFileAndStatus(fileRecord, req.SessionID)
+
+		// 标记文件名到已完成集合（用于 InitUpload 冲突检查）。
+		// 必须在文件组装成功后调用，避免断点续传场景下未完成上传也触发 409 冲突。
+		if err := h.redis.MarkFileExists(r.Context(), session.Filename); err != nil {
+			log.Printf("redis mark file exists error (non-fatal): %v", err)
+		}
 
 		// Cleanup Redis + temp chunks
 		h.redis.DeleteSession(r.Context(), req.SessionID)

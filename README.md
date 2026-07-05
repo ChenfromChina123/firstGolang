@@ -852,6 +852,7 @@ CREATE TABLE files (
 - `chunks` 表的 `UNIQUE(session_id, chunk_index)` 约束 + `INSERT OR REPLACE` 语句，保证同一个分片无论上传多少次都不会产生重复记录
 - 客户端每次上传前主动查询服务端进度，而非依赖本地缓存，确保状态一致性
 - `upload_sessions` 表持久化 session 状态，服务重启后会话仍然有效
+- **文件名标记时机**：Redis 集合 `files:names` 仅在 `CompleteUpload` 成功后通过 `MarkFileExists` 标记文件名，**不在 init 阶段提前标记**。这样未完成上传的文件不会触发 409 冲突，用户可重新上传（修复了"刷新中断后再上传报同名冲突"的 bug）
 
 #### 下载断点续传
 
