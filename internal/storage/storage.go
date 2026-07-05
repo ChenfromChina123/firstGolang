@@ -13,8 +13,9 @@ type Storage interface {
 	SaveChunk(sessionID string, chunkIndex int, data io.Reader) (int64, error)
 	// ReadChunk reads a single chunk
 	ReadChunk(sessionID string, chunkIndex int) (io.ReadCloser, error)
-	// AssembleFile merges all chunks into the final file, returns the path
-	AssembleFile(sessionID string, filename string, totalChunks int) (string, error)
+	// AssembleFile merges all chunks into the final file, returns the storage path.
+	// fileID 用于生成 UUID 分片存储键（与 filename 解耦），filename 仅用于取扩展名。
+	AssembleFile(sessionID string, fileID string, filename string, totalChunks int) (string, error)
 	// DeleteTemp cleans up temporary chunk files
 	DeleteTemp(sessionID string) error
 	// ReadFile reads from the completed file at an optional offset
@@ -42,8 +43,23 @@ type AsyncStorager interface {
 // Avoids reading the assembled file a second time for hash computation.
 type HashAssembler interface {
 	// AssembleFileWithHash merges all chunks and computes SHA256 simultaneously.
-	// Returns (filePath, hash, error).
-	AssembleFileWithHash(sessionID string, filename string, totalChunks int) (string, string, error)
+	// Returns (storagePath, hash, error). fileID 用于生成 UUID 分片存储键。
+	AssembleFileWithHash(sessionID string, fileID string, filename string, totalChunks int) (string, string, error)
+}
+
+// ShardPath 根据 fileID 生成分片存储相对路径。
+// 格式：<fileID前2字符>/<fileID第3-4字符>/<fileID>.<ext>
+// 例：fileID="abcdef1234567890", filename="report.pdf" → "ab/cd/abcdef1234567890.pdf"
+// 这种两级分片避免单目录文件过多（每目录最多 256*256=65536 个子目录），
+// 是 S3/OSS/七牛等对象存储的主流做法（content-addressable storage 的简化版）。
+func ShardPath(fileID, filename string) string {
+	if len(fileID) < 4 {
+		// 兼容异常 fileID：直接用 fileID 作为文件名，不分片
+		ext := filepath.Ext(filename)
+		return fileID + ext
+	}
+	ext := filepath.Ext(filename)
+	return filepath.Join(fileID[:2], fileID[2:4], fileID+ext)
 }
 
 // tempDir returns the temporary directory for chunk storage

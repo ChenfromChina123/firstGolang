@@ -151,23 +151,26 @@ func (s *LocalStorage) ReadChunk(sessionID string, chunkIndex int) (io.ReadClose
 	return f, nil
 }
 
-func (s *LocalStorage) AssembleFile(sessionID string, filename string, totalChunks int) (string, error) {
-	return s.assembleFile(sessionID, filename, totalChunks, nil)
+func (s *LocalStorage) AssembleFile(sessionID string, fileID string, filename string, totalChunks int) (string, error) {
+	return s.assembleFile(sessionID, fileID, filename, totalChunks, nil)
 }
 
 // AssembleFileWithHash merges all chunks and computes SHA256 simultaneously.
 // Uses io.MultiWriter to write file + hash in a single pass (saves 1x full file read).
-func (s *LocalStorage) AssembleFileWithHash(sessionID string, filename string, totalChunks int) (string, string, error) {
+func (s *LocalStorage) AssembleFileWithHash(sessionID string, fileID string, filename string, totalChunks int) (string, string, error) {
 	hasher := sha256.New()
-	path, err := s.assembleFile(sessionID, filename, totalChunks, hasher)
+	path, err := s.assembleFile(sessionID, fileID, filename, totalChunks, hasher)
 	if err != nil {
 		return "", "", err
 	}
 	return path, hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-func (s *LocalStorage) assembleFile(sessionID, filename string, totalChunks int, hasher io.Writer) (string, error) {
-	destPath := filepath.Join(s.basePath, filename)
+func (s *LocalStorage) assembleFile(sessionID, fileID, filename string, totalChunks int, hasher io.Writer) (string, error) {
+	// 存储键用 fileID 生成分片路径，与 filename 解耦：
+	// filename 仅用于取扩展名，磁盘文件名 = fileID（UUID）
+	relPath := ShardPath(fileID, filename)
+	destPath := filepath.Join(s.basePath, relPath)
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return "", fmt.Errorf("create parent dir: %w", err)
 	}

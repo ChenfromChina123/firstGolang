@@ -240,10 +240,11 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 创建 .keep 占位文件
+	// 创建 .keep 占位文件（存储键用 fileID 分片命名，与 filename 解耦）
 	filename := dirPath + ".keep"
 	sessionID := generateID()
-	storagePath, err := h.storage.AssembleFile(sessionID, filename, 0)
+	fileID := generateID()
+	storagePath, err := h.storage.AssembleFile(sessionID, fileID, filename, 0)
 	if err != nil {
 		log.Printf("mkdir assemble file %s error: %v", filename, err)
 		http.Error(w, "failed to create directory", http.StatusInternalServerError)
@@ -252,7 +253,7 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	fileRecord := &model.FileRecord{
-		ID:          generateID(),
+		ID:          fileID,
 		Filename:    filename,
 		Size:        0,
 		Hash:        "",

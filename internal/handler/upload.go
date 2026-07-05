@@ -555,10 +555,11 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var filePath, hash string
+		fileID := generateID()
 		if assembler, ok := h.storage.(storage.HashAssembler); ok {
-			filePath, hash, err = assembler.AssembleFileWithHash(req.SessionID, session.Filename, session.TotalChunks)
+			filePath, hash, err = assembler.AssembleFileWithHash(req.SessionID, fileID, session.Filename, session.TotalChunks)
 		} else {
-			filePath, err = h.storage.AssembleFile(req.SessionID, session.Filename, session.TotalChunks)
+			filePath, err = h.storage.AssembleFile(req.SessionID, fileID, session.Filename, session.TotalChunks)
 			if err == nil {
 				hash, _ = h.storage.HashFile(filePath)
 			}
@@ -569,7 +570,6 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		fileID := generateID()
 		fileSize, _ := h.storage.FileSize(filePath)
 
 		fileRecord := &model.FileRecord{
@@ -623,7 +623,8 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filePath, err := h.storage.AssembleFile(req.SessionID, session.Filename, session.TotalChunks)
+	fileID := generateID()
+	filePath, err := h.storage.AssembleFile(req.SessionID, fileID, session.Filename, session.TotalChunks)
 	if err != nil {
 		log.Printf("assemble error: %v", err)
 		http.Error(w, "failed to assemble file", http.StatusInternalServerError)
@@ -631,7 +632,6 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hash, _ := h.storage.HashFile(filePath)
-	fileID := generateID()
 	fileSize, _ := h.storage.FileSize(filePath)
 
 	fileRecord := &model.FileRecord{

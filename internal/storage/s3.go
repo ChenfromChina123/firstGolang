@@ -86,11 +86,13 @@ func (s *S3Storage) ReadChunk(sessionID string, chunkIndex int) (io.ReadCloser, 
 // AssembleFile downloads all chunks from S3, assembles them locally, and uploads the
 // complete file back to S3. This approach avoids S3's 5 MB minimum part size restriction
 // that applies to ComposeObject and UploadPartCopy APIs.
-// Returns the S3 object key of the assembled file.
-func (s *S3Storage) AssembleFile(sessionID string, filename string, totalChunks int) (string, error) {
+// Returns the S3 object key of the assembled file (用 fileID 分片命名，与 filename 解耦)。
+func (s *S3Storage) AssembleFile(sessionID string, fileID string, filename string, totalChunks int) (string, error) {
 	ctx := context.Background()
 
-	log.Printf("[S3] Assembling: session=%s filename=%s chunks=%d", sessionID, filename, totalChunks)
+	// S3 object key 用 fileID 分片命名（与 local 存储一致）
+	objectKey := ShardPath(fileID, filename)
+	log.Printf("[S3] Assembling: session=%s fileID=%s key=%s chunks=%d", sessionID, fileID, objectKey, totalChunks)
 
 	// Create a local temp file to assemble chunks into
 	tmpFile, err := os.CreateTemp("", "s3-assemble-*")
@@ -123,14 +125,14 @@ func (s *S3Storage) AssembleFile(sessionID string, filename string, totalChunks 
 		return "", fmt.Errorf("seek temp file: %w", err)
 	}
 
-	_, err = s.client.PutObject(ctx, s.bucket, filename, tmpFile, -1, minio.PutObjectOptions{})
+	_, err = s.client.PutObject(ctx, s.bucket, objectKey, tmpFile, -1, minio.PutObjectOptions{})
 	tmpFile.Close()
 	if err != nil {
 		return "", fmt.Errorf("put assembled file: %w", err)
 	}
 
-	log.Printf("[S3] File assembled: key=%s", filename)
-	return filename, nil
+	log.Printf("[S3] File assembled: key=%s", objectKey)
+	return objectKey, nil
 }
 
 // DeleteTemp lists and removes all objects under the session's chunk prefix.
