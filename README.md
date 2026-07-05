@@ -573,6 +573,34 @@ curl http://127.0.0.1:8888/api/health  # 应返回 healthy:true
 | Sentinel 返回 Docker 内网 IP | bridge 网络模式下 master 地址不可达 | 改用 `host` 网络模式 |
 | `healthy:false` | filesync 无法连接 master | 检查 Sentinel 报告的 master 地址是否宿主机可达 |
 
+## 性能测试
+
+filesync 自带 `cmd/bench` 压测工具，支持 InitUpload / UploadChunk / GetUploadStatus / CompleteUpload 四类接口在多并发度下的 QPS、P50/P90/P99、错误率统计。
+
+### 快速压测
+
+```bash
+# 服务器本机回环测试（排除网络延迟）
+cd /opt/filesync
+./bench -server http://127.0.0.1:8888
+# 结果保存到 bench_result_YYYYMMDD_HHMMSS.json
+```
+
+### 实测结果（2026-07-05，1.8GB 内存小规格服务器）
+
+| 接口 | 峰值 QPS | 最优并发 | P99（最优并发） | 错误率 |
+|------|----------|----------|-----------------|--------|
+| GetUploadStatus | 8769 | 500 | 142ms | 0% |
+| UploadChunk | 5594 | 1000 | 448ms | 0% |
+| InitUpload | 4328 | 500 | 308ms | 0% |
+| CompleteUpload | 842 | 30 | 45ms | 0% |
+
+- 全部 16 个测试用例（并发 5~2000）**零错误**
+- Redis Sentinel failover 后服务自动恢复，性能无损
+- 最优并发区间：**500-1000**
+
+详细报告见 [doc/性能测试报告_20260705.md](doc/性能测试报告_20260705.md)。
+
 ## 设计要点
 
 ### 分片上传流程
