@@ -320,7 +320,7 @@ func (r *RedisCache) WatchdogStats() map[string]interface{} {
 	}
 }
 
-// Close shuts down the watchdog and Redis connection.
+// Close shuts down the watchdog and Redis connections.
 func (r *RedisCache) Close() error {
 	r.watchdogCancel()
 	return r.client.Close()

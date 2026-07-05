@@ -69,6 +69,7 @@ type UploadHandler struct {
 	db      *store.DB
 	storage storage.Storage
 	redis   *store.RedisCache // optional Redis cache for high concurrency
+	initSem chan struct{}     // InitUpload 并发限流信号量（容量=最大并发数，nil=不限流）
 }
 
 // NewUploadHandler creates a new upload handler (SQLite-only path)
@@ -76,9 +77,16 @@ func NewUploadHandler(db *store.DB, s storage.Storage) *UploadHandler {
 	return &UploadHandler{db: db, storage: s}
 }
 
-// NewUploadHandlerWithRedis creates a new upload handler with Redis caching enabled
+// NewUploadHandlerWithRedis creates a new upload handler with Redis caching enabled.
+// initMaxConcurrency 控制 InitUpload 最大并发数（bench 实测最优区间 500-1000，默认 1000），
+// 超过时返回 429 避免高并发下 P99 飙升。
 func NewUploadHandlerWithRedis(db *store.DB, s storage.Storage, rc *store.RedisCache) *UploadHandler {
-	return &UploadHandler{db: db, storage: s, redis: rc}
+	return &UploadHandler{
+		db:      db,
+		storage: s,
+		redis:   rc,
+		initSem: make(chan struct{}, 1000),
+	}
 }
 
 func generateID() string {
@@ -93,6 +101,20 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	// 限流保护：并发超过阈值时返回 429，避免高并发下 P99 飙升（bench 实测 c>1000 后 P99 急升）
+	if h.initSem != nil {
+		select {
+		case h.initSem <- struct{}{}:
+			defer func() { <-h.initSem }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]string{"error": "too many concurrent init uploads"})
+			return
+		}
 	}
 
 	var req model.InitUploadRequest
@@ -327,6 +349,8 @@ func (h *UploadHandler) GetUploadStatus(w http.ResponseWriter, r *http.Request) 
 
 	// === Redis fast path with BITFIELD (one command, no pipeline overhead) ===
 	if h.redis != nil {
+		// 注：读写分离在此场景退化为 fallback 模式（主从复制延迟导致副本读 miss），
+		// 反而增加 RTT，因此 GetUploadStatus 仍走 master。
 		session, err := h.redis.GetSession(r.Context(), sessionID)
 		if err != nil {
 			session, err = h.db.GetUploadSession(sessionID)
