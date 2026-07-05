@@ -22,8 +22,12 @@ func NewFileHandler(db *store.DB) *FileHandler {
 
 // ListFiles returns all completed files
 // GET /api/files
+// ListFiles 列出已完成文件。支持 prefix 查询参数按虚拟目录过滤（路径枚举）。
+// 例：GET /api/files?prefix=docs/ 返回 docs/ 目录下所有文件（递归）。
+// 注：必须用 fastQueryParam 解码（encodeURIComponent 编码 / 为 %2F）。
 func (h *FileHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
-	files, err := h.db.ListFiles()
+	prefix := fastQueryParam(r.URL.RawQuery, "prefix")
+	files, err := h.db.ListFiles(prefix)
 	if err != nil {
 		http.Error(w, "failed to list files", http.StatusInternalServerError)
 		return
@@ -49,6 +53,13 @@ func (h *FileHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 // GetFileInfo returns details of a single file
 // GET /api/files/{fileID}
 func (h *FileHandler) GetFileInfo(w http.ResponseWriter, r *http.Request) {
+	// If path is exactly /api/files or /api/files/, list all files
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	if path == "/api/files" {
+		h.ListFiles(w, r)
+		return
+	}
+
 	fileID := strings.TrimPrefix(r.URL.Path, "/api/files/")
 	fileID = strings.TrimSuffix(fileID, "/")
 

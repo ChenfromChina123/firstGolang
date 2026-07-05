@@ -103,6 +103,7 @@
             this.chunkSize = opts.chunkSize;
             this.concurrency = opts.concurrency;
             this.strategy = opts.strategy || null; // 'skip' | 'overwrite' | 'rename' | null
+            this.targetDir = opts.targetDir || ''; // 目标目录前缀（如 "docs/"）
             this.sessionId = null;
             this.totalChunks = 0;
             this.received = new Set(); // 已上传分片索引
@@ -110,6 +111,16 @@
             this.status = 'pending'; // pending | uploading | done | error | paused
             this.error = null;
             this.dom = null;
+        }
+
+        /** 构造上传到后端的完整文件名（含目录前缀） */
+        getUploadFilename() {
+            return this.targetDir ? this.targetDir + this.file.name : this.file.name;
+        }
+
+        /** 获取用于 UI 展示的文件名（含目录前缀） */
+        getDisplayName() {
+            return this.getUploadFilename();
         }
 
         /** 初始化上传 session，处理冲突 */
@@ -121,11 +132,12 @@
             if (this.strategy === 'rename') url += '?rename=true';
 
             // 文件元信息通过 JSON body 传递（后端 InitUploadRequest 解析）
+            const uploadName = this.getUploadFilename();
             const res = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    filename: this.file.name,
+                    filename: uploadName,
                     file_size: this.file.size,
                     chunk_size: this.chunkSize,
                     storage: 'local',
@@ -135,7 +147,7 @@
             if (res.status === 409) {
                 // 冲突：需要用户决策
                 const data = await res.json().catch(() => ({}));
-                const strategy = await askConflict(this.file.name, data);
+                const strategy = await askConflict(uploadName, data);
                 if (strategy === 'skip') {
                     this.status = 'done';
                     this.error = '已跳过';
@@ -239,12 +251,12 @@
                 this.updateDom();
                 await this.uploadAll();
                 await this.complete();
-                toast(`「${this.file.name}」上传完成`, 'ok');
+                toast(`「${this.getDisplayName()}」上传完成`, 'ok');
             } catch (e) {
                 this.status = 'error';
                 this.error = e.message;
                 this.updateDom();
-                toast(`「${this.file.name}」上传失败: ${e.message}`, 'err');
+                toast(`「${this.getDisplayName()}」上传失败: ${e.message}`, 'err');
             }
         }
 
@@ -254,7 +266,7 @@
             li.className = 'queue-item uploading';
             li.innerHTML = `
                 <div class="qi-head">
-                    <span class="qi-name">${escapeHtml(this.file.name)}</span>
+                    <span class="qi-name">${escapeHtml(this.getDisplayName())}</span>
                     <span class="qi-status uploading">上传中</span>
                 </div>
                 <div class="qi-progress"><div class="qi-progress-fill" style="width:0%"></div></div>
@@ -319,33 +331,119 @@
         });
     }
 
-    // === 文件列表 ===
+    // === 文件列表（树形：路径枚举方案） ===
 
-    /** 加载并渲染文件列表 */
+    // 当前所在目录路径（末尾带 /，空字符串表示根目录）
+    let currentPath = '';
+
+    /**
+     * 从扁平文件列表中提取当前目录的直接子项。
+     * 路径枚举方案：filename 中的 / 作为虚拟目录分隔符。
+     * @param {Array} files - 后端返回的扁平文件列表（已按 prefix 过滤）
+     * @param {string} prefix - 当前目录前缀（如 "docs/" 或 ""）
+     * @returns {{dirs: Map<string, number>, files: Array}} 子目录名→文件数，子文件列表
+     */
+    function buildChildren(files, prefix) {
+        const dirs = new Map();
+        const fileList = [];
+        for (const f of files) {
+            const rel = prefix ? f.filename.slice(prefix.length) : f.filename;
+            if (!rel) continue;
+            const slashIdx = rel.indexOf('/');
+            if (slashIdx === -1) {
+                fileList.push(f);
+            } else {
+                const dirName = rel.slice(0, slashIdx);
+                dirs.set(dirName, (dirs.get(dirName) || 0) + 1);
+            }
+        }
+        return { dirs, files: fileList };
+    }
+
+    /** 渲染面包屑导航（根目录 > docs > sub） */
+    function renderBreadcrumb() {
+        const bc = document.getElementById('breadcrumb');
+        const parts = currentPath.split('/').filter(Boolean);
+        let html = `<span class="crumb${parts.length === 0 ? ' current' : ''}" data-path="">根目录</span>`;
+        let acc = '';
+        for (let i = 0; i < parts.length; i++) {
+            acc += parts[i] + '/';
+            const isLast = i === parts.length - 1;
+            html += `<span class="crumb-sep">/</span>`;
+            html += `<span class="crumb${isLast ? ' current' : ''}" data-path="${escapeHtml(acc)}">${escapeHtml(parts[i])}</span>`;
+        }
+        bc.innerHTML = html;
+        bc.querySelectorAll('.crumb').forEach(el => {
+            el.addEventListener('click', () => {
+                currentPath = el.dataset.path || '';
+                loadFiles();
+            });
+        });
+    }
+
+    /** 加载并渲染当前目录的子项（目录 + 文件） */
     async function loadFiles() {
-        const body = document.getElementById('files-body');
-        body.innerHTML = '<tr class="empty-row"><td colspan="6">加载中…</td></tr>';
+        const tree = document.getElementById('file-tree');
+        renderBreadcrumb();
+        tree.innerHTML = '<div class="tree-empty">加载中…</div>';
         try {
-            const res = await fetch(API.files);
+            const url = currentPath
+                ? `${API.files}?prefix=${encodeURIComponent(currentPath)}`
+                : API.files;
+            const res = await fetch(url);
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const files = await res.json();
             if (!files || files.length === 0) {
-                body.innerHTML = '<tr class="empty-row"><td colspan="6">暂无文件，请上传</td></tr>';
+                tree.innerHTML = '<div class="tree-empty">暂无文件，请上传</div>';
                 return;
             }
-            body.innerHTML = files.map(f => `
-                <tr>
-                    <td class="fname">${escapeHtml(f.filename)}</td>
-                    <td class="num fsize">${fmtSize(f.size)}</td>
-                    <td class="num fsize">${Math.ceil(f.size / 524288)}</td>
-                    <td class="fdate">${fmtDate(f.created_at)}</td>
-                    <td><span class="fstore">${escapeHtml(f.storage_type || 'local')}</span></td>
-                    <td class="ops"><a class="dl-btn" href="${API.download}/${f.id}" download="${escapeHtml(f.filename)}">下载</a></td>
-                </tr>
-            `).join('');
+            const { dirs, files: fileList } = buildChildren(files, currentPath);
+            renderTree(dirs, fileList);
         } catch (e) {
-            body.innerHTML = `<tr class="empty-row"><td colspan="6" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</td></tr>`;
+            tree.innerHTML = `<div class="tree-empty" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</div>`;
         }
+    }
+
+    /**
+     * 渲染树形列表：子目录在前，文件在后
+     * @param {Map<string, number>} dirs - 子目录名→文件数
+     * @param {Array} files - 子文件列表
+     */
+    function renderTree(dirs, files) {
+        const tree = document.getElementById('file-tree');
+        const items = [];
+        for (const [name, count] of dirs) {
+            items.push(`
+                <div class="tree-row dir" data-dir="${escapeHtml(name)}" tabindex="0">
+                    <span class="tree-icon" aria-hidden="true">▸</span>
+                    <span class="tree-name">${escapeHtml(name)}/</span>
+                    <span class="tree-meta">${count} 个文件</span>
+                </div>
+            `);
+        }
+        for (const f of files) {
+            items.push(`
+                <div class="tree-row file">
+                    <span class="tree-icon" aria-hidden="true">▪</span>
+                    <span class="tree-name">${escapeHtml(f.filename.split('/').pop())}</span>
+                    <span class="tree-meta num">${fmtSize(f.size)}</span>
+                    <span class="tree-meta">${fmtDate(f.created_at)}</span>
+                    <span class="tree-meta"><span class="fstore">${escapeHtml(f.storage_type || 'local')}</span></span>
+                    <a class="dl-btn" href="${API.download}/${f.id}" download="${escapeHtml(f.filename)}">下载</a>
+                </div>
+            `);
+        }
+        tree.innerHTML = items.join('');
+        tree.querySelectorAll('.tree-row.dir').forEach(el => {
+            const enter = () => {
+                currentPath += el.dataset.dir + '/';
+                loadFiles();
+            };
+            el.addEventListener('click', enter);
+            el.addEventListener('keydown', e => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); enter(); }
+            });
+        });
     }
 
     // === 事件绑定 ===
@@ -402,6 +500,16 @@
         });
     }
 
+    /**
+     * 规范化目标目录路径：去除开头 /、合并连续 //、非空时末尾补 /。
+     * 例："docs" → "docs/"，"/docs/" → "docs/"，"" → ""，"a//b" → "a/b/"
+     */
+    function normalizeTargetDir(raw) {
+        let s = (raw || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/{2,}/g, '/');
+        if (s && !s.endsWith('/')) s += '/';
+        return s;
+    }
+
     /** 处理选择的文件列表，加入上传队列 */
     async function handleFiles(files) {
         const queue = document.getElementById('queue');
@@ -410,10 +518,11 @@
 
         const chunkSize = parseInt(document.getElementById('chunk-size').value, 10);
         const concurrency = parseInt(document.getElementById('concurrency').value, 10);
+        const targetDir = normalizeTargetDir(document.getElementById('target-dir').value);
 
         // 创建任务并依次启动（避免同时上传多个大文件导致内存压力）
         for (const file of files) {
-            const task = new UploadTask(file, { chunkSize, concurrency });
+            const task = new UploadTask(file, { chunkSize, concurrency, targetDir });
             const dom = task.createDom();
             list.appendChild(dom);
             task.run().then(() => {

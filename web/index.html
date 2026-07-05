@@ -37,6 +37,10 @@
             <div class="panel-head">
                 <h2><span class="idx">01</span> 上传文件</h2>
                 <div class="upload-controls">
+                    <label class="target-dir">
+                        目标目录
+                        <input type="text" id="target-dir" placeholder="留空=根目录，如 docs/" />
+                    </label>
                     <label class="chunk-size">
                         分片大小
                         <select id="chunk-size">
@@ -81,28 +85,19 @@
             </div>
         </section>
 
-        <!-- 文件列表 -->
+        <!-- 文件列表（树形：路径枚举方案） -->
         <section class="panel files-panel">
             <div class="panel-head">
                 <h2><span class="idx">02</span> 文件库</h2>
                 <button class="ghost-btn" id="refresh-files">刷新</button>
             </div>
-            <div class="files-table-wrap">
-                <table class="files-table">
-                    <thead>
-                        <tr>
-                            <th>文件名</th>
-                            <th class="num">大小</th>
-                            <th class="num">分片</th>
-                            <th>上传时间</th>
-                            <th>存储</th>
-                            <th class="ops">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="files-body">
-                        <tr class="empty-row"><td colspan="6">加载中…</td></tr>
-                    </tbody>
-                </table>
+            <div class="files-tree-wrap">
+                <!-- 面包屑导航：根目录 > docs > sub -->
+                <nav class="breadcrumb" id="breadcrumb" aria-label="文件路径导航"></nav>
+                <!-- 树形容器：目录项 + 文件项 -->
+                <div class="file-tree" id="file-tree">
+                    <div class="tree-empty">加载中…</div>
+                </div>
             </div>
         </section>
     </main>

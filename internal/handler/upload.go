@@ -128,6 +128,13 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 文件名路径校验（路径枚举方案：允许 / 作为虚拟目录分隔符，但禁止危险路径）
+	// 参考 S3/OSS 命名规范：不允许开头 /、连续 //、.. 路径段、反斜杠
+	if err := validateFilePath(req.Filename); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	if req.ChunkSize <= 0 {
 		req.ChunkSize = 512 * 1024 // default 512KB
 	}
@@ -629,4 +636,32 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// validateFilePath 校验文件名路径（路径枚举方案）。
+// 允许 / 作为虚拟目录分隔符，但禁止危险路径，防止目录穿越和存储异常。
+// 规则：非空、不以 / 开头、无连续 //、无 .. 段、无反斜杠、长度 1-1024。
+func validateFilePath(filename string) error {
+	if filename == "" {
+		return fmt.Errorf("filename is empty")
+	}
+	if len(filename) > 1024 {
+		return fmt.Errorf("filename too long (max 1024 bytes)")
+	}
+	if strings.HasPrefix(filename, "/") {
+		return fmt.Errorf("filename must not start with '/'")
+	}
+	if strings.Contains(filename, "\\") {
+		return fmt.Errorf("filename must not contain backslash")
+	}
+	if strings.Contains(filename, "//") {
+		return fmt.Errorf("filename must not contain consecutive '/'")
+	}
+	segments := strings.Split(filename, "/")
+	for _, seg := range segments {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("invalid path segment: '%s'", seg)
+		}
+	}
+	return nil
 }

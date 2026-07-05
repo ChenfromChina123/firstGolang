@@ -183,8 +183,8 @@ body::after {
 }
 
 /* === 上传控制区 === */
-.upload-controls { display: flex; gap: 16px; align-items: center; }
-.chunk-size, .concurrency {
+.upload-controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.chunk-size, .concurrency, .target-dir {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -192,7 +192,7 @@ body::after {
     font-size: 11px;
     color: var(--fg-2);
 }
-.chunk-size select, .concurrency select {
+.chunk-size select, .concurrency select, .target-dir input {
     background: var(--bg-3);
     color: var(--fg-1);
     border: 1px solid var(--border);
@@ -202,7 +202,8 @@ body::after {
     font-size: 11px;
     cursor: pointer;
 }
-.chunk-size select:focus, .concurrency select:focus {
+.target-dir input { width: 180px; cursor: text; }
+.chunk-size select:focus, .concurrency select:focus, .target-dir input:focus {
     outline: none;
     border-color: var(--accent);
 }
@@ -340,37 +341,96 @@ body::after {
 }
 .qi-actions button:hover { border-color: var(--accent); color: var(--accent); }
 
-/* === 文件列表表格 === */
-.files-table-wrap { padding: 0 20px 20px; overflow-x: auto; }
-.files-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-}
-.files-table th {
-    text-align: left;
-    padding: 10px 12px;
+/* === 文件列表树形 === */
+.files-tree-wrap { padding: 0 20px 20px; }
+
+/* 面包屑导航 */
+.breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 10px 0 14px;
     font-family: var(--mono);
-    font-size: 10px;
-    font-weight: 500;
-    color: var(--fg-3);
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    flex-wrap: wrap;
+}
+.crumb {
+    color: var(--fg-2);
+    cursor: pointer;
+    padding: 3px 8px;
+    border-radius: 3px;
+    transition: all 0.15s;
+}
+.crumb:hover { color: var(--accent); background: var(--accent-dim); }
+.crumb.current { color: var(--fg-0); cursor: default; background: var(--bg-3); }
+.crumb.current:hover { color: var(--fg-0); background: var(--bg-3); }
+.crumb-sep { color: var(--fg-3); user-select: none; }
+
+/* 树形容器 */
+.file-tree {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
     background: var(--bg-1);
 }
-.files-table th.num, .files-table td.num { text-align: right; }
-.files-table td {
-    padding: 12px;
-    border-bottom: 1px solid var(--border-soft);
-    color: var(--fg-1);
+.tree-empty {
+    padding: 32px 16px;
+    text-align: center;
+    color: var(--fg-3);
+    font-family: var(--mono);
+    font-size: 12px;
 }
-.files-table tbody tr { transition: background 0.15s; }
-.files-table tbody tr:hover { background: rgba(0, 217, 255, 0.04); }
-.files-table .fname { font-family: var(--mono); color: var(--fg-0); }
-.files-table .fsize { font-family: var(--mono); color: var(--fg-2); }
-.files-table .fdate { font-family: var(--mono); font-size: 11px; color: var(--fg-3); }
-.files-table .fstore {
+
+/* 树形行（目录 / 文件） */
+.tree-row {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto auto auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 13px;
+    transition: background 0.15s;
+}
+.tree-row:last-child { border-bottom: none; }
+.tree-row.dir {
+    cursor: pointer;
+    color: var(--fg-0);
+}
+.tree-row.dir:hover { background: rgba(0, 217, 255, 0.05); }
+.tree-row.dir:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.tree-row.file { color: var(--fg-1); }
+.tree-row.file:hover { background: rgba(0, 217, 255, 0.04); }
+
+.tree-icon {
+    font-family: var(--mono);
+    color: var(--accent);
+    font-size: 12px;
+    text-align: center;
+}
+.tree-row.file .tree-icon { color: var(--fg-3); }
+
+.tree-name {
+    font-family: var(--mono);
+    color: var(--fg-0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tree-row.dir .tree-name { color: var(--accent); font-weight: 500; }
+
+.tree-meta {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-3);
+    white-space: nowrap;
+}
+.tree-meta.num { text-align: right; min-width: 72px; }
+
+/* 存储类型标签（在树形中复用） */
+.fstore {
     font-family: var(--mono);
     font-size: 10px;
     padding: 2px 6px;
@@ -378,7 +438,8 @@ body::after {
     background: var(--bg-3);
     color: var(--fg-2);
 }
-.empty-row td { text-align: center; color: var(--fg-3); padding: 24px; }
+
+/* 下载按钮（在树形中复用） */
 .dl-btn {
     background: none;
     border: 1px solid var(--border);
@@ -388,6 +449,7 @@ body::after {
     font-family: var(--mono);
     font-size: 11px;
     cursor: pointer;
+    text-decoration: none;
     transition: all 0.15s;
 }
 .dl-btn:hover { background: var(--accent-dim); border-color: var(--accent); }
@@ -490,6 +552,9 @@ body::after {
     .layout { padding: 16px; }
     .upload-controls { flex-wrap: wrap; gap: 8px; }
     .panel-head { flex-wrap: wrap; gap: 8px; }
-    .files-table { font-size: 12px; }
-    .files-table th, .files-table td { padding: 8px; }
+    .target-dir input { width: 140px; }
+    /* 窄屏下隐藏树形行中的"上传时间"和"存储"列，避免拥挤 */
+    .tree-row { grid-template-columns: 20px minmax(0, 1fr) auto auto; gap: 8px; padding: 8px 10px; }
+    .tree-row .tree-meta:nth-of-type(3),
+    .tree-row .tree-meta:nth-of-type(4) { display: none; }
 }
