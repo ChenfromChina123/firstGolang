@@ -414,6 +414,165 @@ tail -f /opt/filesync/server.log   # 应用日志
 
 > **注意**：若 Redis 启用了认证（`requirepass`），务必配置正确的 `REDIS_PASSWORD`，否则 watchdog 会持续报 `WRONGPASS` 并降级到 SQLite 模式。
 
+## Redis Sentinel 高可用集群部署
+
+filesync 支持 Redis Sentinel 模式，实现 Redis 高可用（主节点宕机自动切换）。以下是在服务器上部署 Sentinel 集群的步骤。
+
+### 1. 准备配置目录
+
+```bash
+mkdir -p /opt/redis-sentinel && cd /opt/redis-sentinel
+```
+
+### 2. 编写 docker-compose.yml（host 网络模式）
+
+> **关键**：使用 `network_mode: host` 避免 Docker 网络隔离问题。若服务器 6379 已被占用，需改用其他端口（如 16379/16380/16381 + 36379/36380/36381）。
+
+```yaml
+services:
+  redis-master:
+    image: redis:7-alpine
+    container_name: filesync-redis-master
+    restart: unless-stopped
+    network_mode: host
+    command: >
+      redis-server --appendonly yes
+      --port 16379 --requirepass redis123
+
+  redis-replica-1:
+    image: redis:7-alpine
+    container_name: filesync-redis-replica-1
+    restart: unless-stopped
+    network_mode: host
+    command: >
+      redis-server --appendonly yes
+      --port 16380 --slaveof 127.0.0.1 16379
+      --requirepass redis123 --masterauth redis123
+    depends_on:
+      - redis-master
+
+  redis-replica-2:
+    image: redis:7-alpine
+    container_name: filesync-redis-replica-2
+    restart: unless-stopped
+    network_mode: host
+    command: >
+      redis-server --appendonly yes
+      --port 16381 --slaveof 127.0.0.1 16379
+      --requirepass redis123 --masterauth redis123
+    depends_on:
+      - redis-master
+
+  sentinel-1:
+    image: redis:7-alpine
+    container_name: filesync-sentinel-1
+    restart: unless-stopped
+    network_mode: host
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel-1.conf:/etc/redis/sentinel.conf
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+
+  sentinel-2:
+    image: redis:7-alpine
+    container_name: filesync-sentinel-2
+    restart: unless-stopped
+    network_mode: host
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel-2.conf:/etc/redis/sentinel.conf
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+
+  sentinel-3:
+    image: redis:7-alpine
+    container_name: filesync-sentinel-3
+    restart: unless-stopped
+    network_mode: host
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./sentinel-3.conf:/etc/redis/sentinel.conf
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+```
+
+### 3. 编写 sentinel.conf（3 个文件，端口不同）
+
+**sentinel-1.conf**：
+```ini
+port 36379
+sentinel monitor mymaster 127.0.0.1 16379 2
+sentinel auth-pass mymaster redis123
+sentinel down-after-milliseconds mymaster 5000
+sentinel failover-timeout mymaster 15000
+sentinel parallel-syncs mymaster 1
+```
+
+**sentinel-2.conf** / **sentinel-3.conf**：同上，但 `port` 分别改为 `36380` / `36381`。
+
+```bash
+# 确保配置文件可写（Sentinel 运行时会重写）
+chmod 666 sentinel-*.conf
+```
+
+### 4. 启动集群
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+### 5. 验证集群
+
+```bash
+# Sentinel quorum 检查（应返回 OK 3 usable Sentinels）
+redis-cli -h 127.0.0.1 -p 36379 sentinel ckquorum mymaster
+
+# Master 地址（应返回 127.0.0.1 16379）
+redis-cli -h 127.0.0.1 -p 36379 sentinel get-master-addr-by-name mymaster
+
+# 数据同步测试
+redis-cli -h 127.0.0.1 -p 16379 -a redis123 set test "ha_ok"
+redis-cli -h 127.0.0.1 -p 16380 -a redis123 get test  # 应返回 ha_ok
+```
+
+### 6. 配置 filesync 使用 Sentinel
+
+修改 `/etc/systemd/system/filesync.service` 的环境变量：
+
+```ini
+# 注释或删除单机模式
+# Environment=REDIS_ADDR=127.0.0.1:6379
+
+# 启用 Sentinel 模式
+Environment=REDIS_SENTINEL_ADDRS=127.0.0.1:36379,127.0.0.1:36380,127.0.0.1:36381
+Environment=REDIS_SENTINEL_MASTER=mymaster
+Environment=REDIS_PASSWORD=redis123
+Environment=REDIS_DB=0
+```
+
+```bash
+systemctl daemon-reload
+systemctl restart filesync
+curl http://127.0.0.1:8888/api/health  # 应返回 healthy:true
+```
+
+### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| `NOQUORUM` | Sentinel 之间无法互发现 | 用 `host` 网络模式，不要用 `sentinel announce-ip` |
+| `WRONGPASS` | 密码不匹配或连接到错误的 Redis | 确认 `REDIS_PASSWORD` 与 `--requirepass` 一致 |
+| Sentinel 返回 Docker 内网 IP | bridge 网络模式下 master 地址不可达 | 改用 `host` 网络模式 |
+| `healthy:false` | filesync 无法连接 master | 检查 Sentinel 报告的 master 地址是否宿主机可达 |
+
 ## 设计要点
 
 ### 分片上传流程
