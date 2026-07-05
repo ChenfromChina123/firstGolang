@@ -35,14 +35,26 @@ func main() {
 	}
 
 	// Initialize database
-	dbPath := filepath.Join(absDataDir, "filesync.db")
-	db, err := store.New(dbPath)
-	if err != nil {
-		log.Fatalf("init db: %v", err)
+	// 优先级：MYSQL_DSN > SQLite（默认）
+	// 双驱动共存：MYSQL_DSN 环境变量存在则用 MySQL，否则用 SQLite
+	var db *store.DB
+	mysqlDSN := os.Getenv("MYSQL_DSN")
+	if mysqlDSN != "" {
+		db, err = store.NewMySQL(mysqlDSN)
+		if err != nil {
+			log.Fatalf("init mysql: %v", err)
+		}
+	} else {
+		dbPath := filepath.Join(absDataDir, "filesync.db")
+		db, err = store.New(dbPath)
+		if err != nil {
+			log.Fatalf("init sqlite: %v", err)
+		}
 	}
 	defer db.Close()
 
 	// Enable async batch write (bypasses SQLite SetMaxOpenConns(1) bottleneck)
+	// MySQL 模式下也启用，批量写入减少 RTT
 	db.EnableAsyncWrite()
 
 	// Initialize storage backend

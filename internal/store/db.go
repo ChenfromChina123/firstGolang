@@ -9,14 +9,16 @@ import (
 
 	"filesync/internal/model"
 
+	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps SQLite for metadata persistence
+// DB wraps SQL database (SQLite or MySQL) for metadata persistence
 type DB struct {
 	conn      *sql.DB
 	asyncQ    *AsyncWriteQueue // async batch write channel (nil if not enabled)
 	asyncOnce sync.Once
+	dialect   string // "sqlite" | "mysql"
 }
 
 // writeJob is a single job in the async write queue.
@@ -34,10 +36,11 @@ type writeJob struct {
 // A single background goroutine consumes jobs and writes them in transactions,
 // bypassing the SetMaxOpenConns(1) bottleneck at the HTTP handler level.
 type AsyncWriteQueue struct {
-	ch     chan writeJob
-	db     *sql.DB
-	ticker *time.Ticker
-	closed chan struct{}
+	ch      chan writeJob
+	db      *sql.DB
+	dialect string // "sqlite" | "mysql"，用于切换 INSERT OR IGNORE / INSERT IGNORE
+	ticker  *time.Ticker
+	closed  chan struct{}
 }
 
 const asyncQSize = 2000
@@ -47,14 +50,33 @@ const asyncQSize = 2000
 func (db *DB) EnableAsyncWrite() {
 	db.asyncOnce.Do(func() {
 		db.asyncQ = &AsyncWriteQueue{
-			ch:     make(chan writeJob, asyncQSize),
-			db:     db.conn,
-			ticker: time.NewTicker(10 * time.Millisecond),
-			closed: make(chan struct{}),
+			ch:      make(chan writeJob, asyncQSize),
+			db:      db.conn,
+			dialect: db.dialect,
+			ticker:  time.NewTicker(10 * time.Millisecond),
+			closed:  make(chan struct{}),
 		}
 		go db.asyncQ.run()
-		log.Printf("[AsyncSQLite] Batch write queue enabled (capacity=%d, interval=10ms, batch=500)", asyncQSize)
+		log.Printf("[AsyncWrite] Batch write queue enabled (dialect=%s, capacity=%d, interval=10ms, batch=500)", db.dialect, asyncQSize)
 	})
+}
+
+// insertIgnorePrefix 返回 dialect 对应的 INSERT IGNORE 前缀
+// SQLite: "INSERT OR IGNORE"  MySQL: "INSERT IGNORE"
+func (q *AsyncWriteQueue) insertIgnorePrefix() string {
+	if q.dialect == "mysql" {
+		return "INSERT IGNORE"
+	}
+	return "INSERT OR IGNORE"
+}
+
+// replaceIntoPrefix 返回 dialect 对应的 REPLACE 前缀
+// SQLite: "INSERT OR REPLACE"  MySQL: "REPLACE"
+func (db *DB) replaceIntoPrefix() string {
+	if db.dialect == "mysql" {
+		return "REPLACE"
+	}
+	return "INSERT OR REPLACE"
 }
 
 // Close shuts down the async queue and the DB connection.
@@ -118,7 +140,7 @@ func (q *AsyncWriteQueue) flush(jobs []writeJob) {
 		switch j.kind {
 		case "session":
 			_, execErr = tx.Exec(
-				`INSERT OR IGNORE INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at)
+				q.insertIgnorePrefix()+` INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				j.s.ID, j.s.Filename, j.s.FileSize, j.s.FileHash,
 				j.s.ChunkSize, j.s.TotalChunks, j.s.Status, j.s.StorageType,
@@ -126,12 +148,12 @@ func (q *AsyncWriteQueue) flush(jobs []writeJob) {
 			)
 		case "chunk":
 			_, execErr = tx.Exec(
-				`INSERT OR IGNORE INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
+				q.insertIgnorePrefix()+` INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
 				j.sid, j.idx, j.size, j.hash, time.Now().Format(time.RFC3339),
 			)
 		case "file":
 			_, execErr = tx.Exec(
-				`INSERT OR IGNORE INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
+				q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
 				j.f.ChunkSize, j.f.TotalChunks, j.f.Status,
@@ -144,7 +166,7 @@ func (q *AsyncWriteQueue) flush(jobs []writeJob) {
 			)
 		case "file_and_status":
 			_, execErr = tx.Exec(
-				`INSERT OR IGNORE INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
+				q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
 				j.f.ChunkSize, j.f.TotalChunks, j.f.Status,
@@ -185,7 +207,7 @@ func (q *AsyncWriteQueue) execSync(j writeJob) {
 	switch j.kind {
 	case "session":
 		_, err = q.db.Exec(
-			`INSERT OR IGNORE INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at)
+			q.insertIgnorePrefix()+` INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			j.s.ID, j.s.Filename, j.s.FileSize, j.s.FileHash,
 			j.s.ChunkSize, j.s.TotalChunks, j.s.Status, j.s.StorageType,
@@ -193,12 +215,12 @@ func (q *AsyncWriteQueue) execSync(j writeJob) {
 		)
 	case "chunk":
 		_, err = q.db.Exec(
-			`INSERT OR IGNORE INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
+			q.insertIgnorePrefix()+` INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
 			j.sid, j.idx, j.size, j.hash, time.Now().Format(time.RFC3339),
 		)
 	case "file":
 		_, err = q.db.Exec(
-			`INSERT OR IGNORE INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
+			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
 			j.f.ChunkSize, j.f.TotalChunks, j.f.Status,
@@ -211,7 +233,7 @@ func (q *AsyncWriteQueue) execSync(j writeJob) {
 		)
 	case "file_and_status":
 		_, err = q.db.Exec(
-			`INSERT OR IGNORE INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
+			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
 			j.f.ChunkSize, j.f.TotalChunks, j.f.Status,
@@ -294,7 +316,7 @@ func (db *DB) AsyncCreateFileAndStatus(f *model.FileRecord, sessionID string) {
 	}
 }
 
-// New opens or creates the database.
+// New opens or creates the SQLite database.
 //
 // 关键 PRAGMA 配置：
 //   - synchronous=NORMAL：事务提交不再 fsync 等待，崩溃时只丢最近事务
@@ -304,7 +326,7 @@ func (db *DB) AsyncCreateFileAndStatus(f *model.FileRecord, sessionID string) {
 func New(dbPath string) (*DB, error) {
 	conn, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	conn.SetMaxOpenConns(1) // SQLite doesn't support concurrent writes well
 
@@ -321,7 +343,7 @@ func New(dbPath string) (*DB, error) {
 		}
 	}
 
-	db := &DB{conn: conn}
+	db := &DB{conn: conn, dialect: "sqlite"}
 	if err := db.migrate(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -329,48 +351,151 @@ func New(dbPath string) (*DB, error) {
 	return db, nil
 }
 
+// NewMySQL opens or creates a MySQL database connection.
+// dsn 格式：filesync:password@tcp(127.0.0.1:13306)/filesync?parseTime=true&loc=Local&charset=utf8mb4
+// MySQL 支持并发写入，无需 SetMaxOpenConns(1) 限制。
+func NewMySQL(dsn string) (*DB, error) {
+	conn, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open mysql: %w", err)
+	}
+	// MySQL 支持并发，配置合理的连接池
+	conn.SetMaxOpenConns(20)
+	conn.SetMaxIdleConns(5)
+	conn.SetConnMaxLifetime(5 * time.Minute)
+
+	// 验证连接
+	if err := conn.Ping(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("ping mysql: %w", err)
+	}
+
+	db := &DB{conn: conn, dialect: "mysql"}
+	if err := db.migrate(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	log.Printf("[MySQL] connected, dialect=mysql, dsn=%s", maskDSN(dsn))
+	return db, nil
+}
+
+// maskDSN 脱敏 DSN 中的密码，仅用于日志输出
+func maskDSN(dsn string) string {
+	// 简单脱敏：把 :password@ 替换为 :***@
+	for i := 0; i < len(dsn)-1; i++ {
+		if dsn[i] == ':' && i+1 < len(dsn) {
+			if j := indexOf(dsn, '@', i+1); j > 0 {
+				return dsn[:i+1] + "***" + dsn[j:]
+			}
+		}
+	}
+	return dsn
+}
+
+// indexOf 返回字符 c 在 s 中从 start 位置开始查找的索引，找不到返回 -1
+func indexOf(s string, c byte, start int) int {
+	for i := start; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// migrate 根据 dialect 执行对应的 schema
+// MySQL 不支持单 Exec 多语句，需拆分；SQLite 支持
 func (db *DB) migrate() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS upload_sessions (
-		id TEXT PRIMARY KEY,
-		filename TEXT NOT NULL,
-		file_size INTEGER NOT NULL,
-		file_hash TEXT DEFAULT '',
-		chunk_size INTEGER NOT NULL,
-		total_chunks INTEGER NOT NULL,
-		status TEXT NOT NULL DEFAULT 'active',
-		storage_type TEXT NOT NULL DEFAULT 'local',
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	);
+	var statements []string
+	switch db.dialect {
+	case "mysql":
+		statements = []string{
+			`CREATE TABLE IF NOT EXISTS upload_sessions (
+				id VARCHAR(64) PRIMARY KEY,
+				filename VARCHAR(1024) NOT NULL,
+				file_size BIGINT NOT NULL,
+				file_hash VARCHAR(128) NOT NULL DEFAULT '',
+				chunk_size BIGINT NOT NULL,
+				total_chunks INT NOT NULL,
+				status VARCHAR(32) NOT NULL DEFAULT 'active',
+				storage_type VARCHAR(32) NOT NULL DEFAULT 'local',
+				created_at VARCHAR(32) NOT NULL,
+				updated_at VARCHAR(32) NOT NULL,
+				INDEX idx_sessions_hash (file_hash),
+				INDEX idx_sessions_status (status)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`CREATE TABLE IF NOT EXISTS chunks (
+				id BIGINT AUTO_INCREMENT PRIMARY KEY,
+				session_id VARCHAR(64) NOT NULL,
+				chunk_index INT NOT NULL,
+				size BIGINT NOT NULL DEFAULT 0,
+				hash VARCHAR(128) NOT NULL DEFAULT '',
+				created_at VARCHAR(32) NOT NULL,
+				UNIQUE KEY uk_session_chunk (session_id, chunk_index),
+				INDEX idx_chunks_session (session_id)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`CREATE TABLE IF NOT EXISTS files (
+				id VARCHAR(64) PRIMARY KEY,
+				filename VARCHAR(1024) NOT NULL,
+				size BIGINT NOT NULL,
+				hash VARCHAR(128) NOT NULL DEFAULT '',
+				storage_path VARCHAR(1024) NOT NULL,
+				storage_type VARCHAR(32) NOT NULL DEFAULT 'local',
+				chunk_size BIGINT NOT NULL,
+				total_chunks INT NOT NULL,
+				status VARCHAR(32) NOT NULL DEFAULT 'completed',
+				created_at VARCHAR(32) NOT NULL,
+				updated_at VARCHAR(32) NOT NULL,
+				INDEX idx_files_filename (filename(255)),
+				INDEX idx_files_status (status)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		}
+	default: // sqlite 支持多语句
+		statements = []string{
+			`CREATE TABLE IF NOT EXISTS upload_sessions (
+				id TEXT PRIMARY KEY,
+				filename TEXT NOT NULL,
+				file_size INTEGER NOT NULL,
+				file_hash TEXT DEFAULT '',
+				chunk_size INTEGER NOT NULL,
+				total_chunks INTEGER NOT NULL,
+				status TEXT NOT NULL DEFAULT 'active',
+				storage_type TEXT NOT NULL DEFAULT 'local',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);
 
-	CREATE TABLE IF NOT EXISTS chunks (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		session_id TEXT NOT NULL,
-		chunk_index INTEGER NOT NULL,
-		size INTEGER NOT NULL DEFAULT 0,
-		hash TEXT DEFAULT '',
-		created_at TEXT NOT NULL,
-		FOREIGN KEY (session_id) REFERENCES upload_sessions(id),
-		UNIQUE(session_id, chunk_index)
-	);
+			CREATE TABLE IF NOT EXISTS chunks (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL,
+				chunk_index INTEGER NOT NULL,
+				size INTEGER NOT NULL DEFAULT 0,
+				hash TEXT DEFAULT '',
+				created_at TEXT NOT NULL,
+				FOREIGN KEY (session_id) REFERENCES upload_sessions(id),
+				UNIQUE(session_id, chunk_index)
+			);
 
-	CREATE TABLE IF NOT EXISTS files (
-		id TEXT PRIMARY KEY,
-		filename TEXT NOT NULL,
-		size INTEGER NOT NULL,
-		hash TEXT DEFAULT '',
-		storage_path TEXT NOT NULL,
-		storage_type TEXT NOT NULL DEFAULT 'local',
-		chunk_size INTEGER NOT NULL,
-		total_chunks INTEGER NOT NULL,
-		status TEXT NOT NULL DEFAULT 'completed',
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	);
-	`
-	_, err := db.conn.Exec(schema)
-	return err
+			CREATE TABLE IF NOT EXISTS files (
+				id TEXT PRIMARY KEY,
+				filename TEXT NOT NULL,
+				size INTEGER NOT NULL,
+				hash TEXT DEFAULT '',
+				storage_path TEXT NOT NULL,
+				storage_type TEXT NOT NULL DEFAULT 'local',
+				chunk_size INTEGER NOT NULL,
+				total_chunks INTEGER NOT NULL,
+				status TEXT NOT NULL DEFAULT 'completed',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			);`,
+		}
+	}
+	for _, stmt := range statements {
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CreateUploadSession inserts a new upload session
@@ -477,7 +602,7 @@ func (db *DB) UpdateUploadSessionStatus(id, status string) error {
 // SaveChunk records a received chunk
 func (db *DB) SaveChunk(sessionID string, chunkIndex int, size int64, hash string) error {
 	_, err := db.conn.Exec(
-		`INSERT OR REPLACE INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
+		db.replaceIntoPrefix()+` INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
 		sessionID, chunkIndex, size, hash, time.Now().Format(time.RFC3339),
 	)
 	return err
@@ -549,9 +674,10 @@ func (db *DB) ListFiles(prefix string) ([]model.FileRecord, error) {
 			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at
 		     FROM files WHERE status = 'completed' ORDER BY created_at DESC`)
 	} else {
+		// ESCAPE '|': 用 | 作为 LIKE 转义符，避免 MySQL 对 '\' 的歧义解析
 		rows, err = db.conn.Query(
 			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at
-		     FROM files WHERE status = 'completed' AND filename LIKE ? ESCAPE '\' ORDER BY created_at DESC`,
+		     FROM files WHERE status = 'completed' AND filename LIKE ? ESCAPE '|' ORDER BY created_at DESC`,
 			escapeLikePrefix(prefix)+"%")
 	}
 	if err != nil {
@@ -574,13 +700,14 @@ func (db *DB) ListFiles(prefix string) ([]model.FileRecord, error) {
 	return files, rows.Err()
 }
 
-// escapeLikePrefix 转义 LIKE 模式中的特殊字符（% _ \），防止前缀注入。
+// escapeLikePrefix 转义 LIKE 模式中的特殊字符（% _ |），防止前缀注入。
+// 转义符使用 |（与 SQL 中的 ESCAPE '|' 对应），避免 MySQL 对 '\' 的歧义解析。
 func escapeLikePrefix(s string) string {
 	out := make([]byte, 0, len(s)*2)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c == '%' || c == '_' || c == '\\' {
-			out = append(out, '\\')
+		if c == '%' || c == '_' || c == '|' {
+			out = append(out, '|')
 		}
 		out = append(out, c)
 	}
@@ -597,7 +724,7 @@ func (db *DB) DeleteFile(id string) (int64, error) {
 }
 
 // DeleteFilesByPrefix 删除指定前缀下所有文件（递归匹配子目录）。返回删除文件列表。
-// 路径枚举方案：用 LIKE 'prefix%' ESCAPE '\' 匹配。调用方负责删除存储文件。
+// 路径枚举方案：用 LIKE 'prefix%' ESCAPE '|' 匹配。调用方负责删除存储文件。
 func (db *DB) DeleteFilesByPrefix(prefix string) ([]model.FileRecord, error) {
 	// 先查询出待删除文件（调用方需要 storage_path 删除存储）
 	files, err := db.ListFiles(prefix)
