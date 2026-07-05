@@ -222,32 +222,29 @@ body::after {
     border-color: var(--accent);
 }
 
-/* === 拖拽区 === */
-.dropzone {
-    margin: 20px;
-    padding: 40px 20px;
-    border: 1.5px dashed var(--border);
-    border-radius: var(--radius);
-    text-align: center;
+/* === 选择文件按钮（普通按钮，不突出） === */
+.pick-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--fg-1);
+    padding: 5px 12px;
+    border-radius: var(--radius-sm);
+    font-family: var(--mono);
+    font-size: 11px;
     cursor: pointer;
-    transition: all 0.2s ease;
-    background: var(--bg-1);
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
-.dropzone:hover, .dropzone:focus {
+.pick-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pick-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* 拖拽高亮：绑定到 upload-panel，整个面板边框高亮 */
+.upload-panel.dragover {
     border-color: var(--accent);
-    background: rgba(0, 217, 255, 0.04);
+    box-shadow: 0 0 0 1px var(--accent-glow);
 }
-.dropzone.dragover {
-    border-color: var(--accent);
-    border-style: solid;
-    background: var(--accent-dim);
-    transform: scale(1.005);
-}
-.dropzone-inner { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.drop-icon { color: var(--fg-3); transition: color 0.2s; }
-.dropzone:hover .drop-icon, .dropzone.dragover .drop-icon { color: var(--accent); }
-.drop-title { font-size: 15px; font-weight: 500; color: var(--fg-0); }
-.drop-sub { font-size: 12px; color: var(--fg-2); }
 .link-btn {
     background: none; border: none; color: var(--accent);
     font-family: var(--sans); font-size: 12px;
@@ -394,15 +391,22 @@ body::after {
 .crumb.current:hover { color: var(--fg-0); background: var(--bg-3); }
 .crumb-sep { color: var(--fg-3); user-select: none; }
 
-/* 树形容器 */
+/* 树形容器（固定高度，文件多时滚动而非撑开页面） */
 .file-tree {
     display: flex;
     flex-direction: column;
     border: 1px solid var(--border-soft);
     border-radius: var(--radius-sm);
-    overflow: hidden;
     background: var(--bg-1);
+    max-height: 60vh;      /* 视口高度的 60%，避免文件多时撑开页面 */
+    overflow-y: auto;      /* 超出滚动 */
+    overflow-x: hidden;    /* 横向隐藏，文件名超长用 ellipsis */
 }
+/* 文件列表滚动条样式（与队列滚动条一致） */
+.file-tree::-webkit-scrollbar { width: 6px; }
+.file-tree::-webkit-scrollbar-track { background: var(--bg-3); border-radius: 3px; }
+.file-tree::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.file-tree::-webkit-scrollbar-thumb:hover { background: var(--fg-3); }
 .tree-empty {
     padding: 32px 16px;
     text-align: center;

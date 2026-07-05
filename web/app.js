@@ -751,32 +751,38 @@
 
     // === 事件绑定 ===
 
-    /** 绑定拖拽、选择、上传控制等事件 */
+    /** 绑定选择文件、拖拽上传等事件。
+     *  拖拽绑定到整个 upload-panel（而非已移除的 dropzone），
+     *  拖入文件时高亮面板边框，drop 时触发上传。 */
     function bindEvents() {
-        const dropzone = document.getElementById('dropzone');
+        const uploadPanel = document.querySelector('.upload-panel');
         const fileInput = document.getElementById('file-input');
         const pickBtn = document.getElementById('pick-btn');
 
-        // 点击拖拽区触发选择
-        dropzone.addEventListener('click', e => {
-            if (e.target !== pickBtn) fileInput.click();
-        });
-        dropzone.addEventListener('keydown', e => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
-        });
-        pickBtn.addEventListener('click', e => { e.stopPropagation(); fileInput.click(); });
+        // 点击"选择文件"按钮触发文件选择对话框
+        pickBtn.addEventListener('click', () => fileInput.click());
 
-        // 拖拽
-        ['dragenter', 'dragover'].forEach(ev => {
-            dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('dragover'); });
-        });
-        ['dragleave', 'drop'].forEach(ev => {
-            dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('dragover'); });
-        });
-        dropzone.addEventListener('drop', e => {
-            const files = Array.from(e.dataTransfer.files);
-            if (files.length) handleFiles(files);
-        });
+        // 拖拽：绑定到整个 upload-panel
+        if (uploadPanel) {
+            ['dragenter', 'dragover'].forEach(ev => {
+                uploadPanel.addEventListener(ev, e => {
+                    e.preventDefault();
+                    uploadPanel.classList.add('dragover');
+                });
+            });
+            ['dragleave', 'drop'].forEach(ev => {
+                uploadPanel.addEventListener(ev, e => {
+                    e.preventDefault();
+                    // dragleave 时检查是否真的离开了面板（避免子元素进出误触发）
+                    if (ev === 'dragleave' && e.relatedTarget && uploadPanel.contains(e.relatedTarget)) return;
+                    uploadPanel.classList.remove('dragover');
+                });
+            });
+            uploadPanel.addEventListener('drop', e => {
+                const files = Array.from(e.dataTransfer.files);
+                if (files.length) handleFiles(files);
+            });
+        }
 
         // 选择文件
         fileInput.addEventListener('change', e => {

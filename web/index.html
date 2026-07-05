@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706a">
+    <link rel="stylesheet" href="/web/style.css?v=20260706b">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -67,18 +67,7 @@
                             <option value="12">12</option>
                         </select>
                     </label>
-                </div>
-            </div>
-
-            <!-- 拖拽区 -->
-            <div class="dropzone" id="dropzone" tabindex="0">
-                <div class="dropzone-inner">
-                    <svg class="drop-icon" width="48" height="48" viewBox="0 0 48 48" fill="none">
-                        <path d="M24 32V12M24 12L16 20M24 12L32 20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M8 32V38C8 39.1046 8.89543 40 10 40H38C39.1046 40 40 39.1046 40 38V32" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                    </svg>
-                    <p class="drop-title">拖拽文件到此处</p>
-                    <p class="drop-sub">或 <button class="link-btn" id="pick-btn">点击选择</button> · 支持大文件分片上传与断点续传</p>
+                    <button class="pick-btn" id="pick-btn" type="button" title="选择文件上传">+ 选择文件</button>
                     <input type="file" id="file-input" multiple hidden>
                 </div>
             </div>
@@ -196,6 +185,6 @@
     <!-- Toast 提示 -->
     <div class="toast-wrap" id="toast-wrap"></div>
 
-    <script src="/web/app.js?v=20260706a"></script>
+    <script src="/web/app.js?v=20260706b"></script>
 </body>
 </html>
