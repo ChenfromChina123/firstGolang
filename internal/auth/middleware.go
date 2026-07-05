@@ -21,22 +21,41 @@ const (
 
 // Middleware 返回 JWT 认证中间件
 // 白名单中的路径不需要认证（如 /api/login, /web/, /api/health）
+//
+// 匹配规则：
+//   - "/" 根路径：精确匹配（避免前缀匹配所有路径）
+//   - 以 "/" 结尾的其他路径（如 "/web/"）：前缀匹配
+//   - 不以 "/" 结尾的路径（如 "/api/login"）：精确匹配
 func (m *JWTManager) Middleware(whitelist []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
 		// 白名单检查
 		for _, p := range whitelist {
-			if strings.HasPrefix(path, p) {
-				next.ServeHTTP(w, r)
-				return
+			if p == "/" {
+				if path == "/" {
+					next.ServeHTTP(w, r)
+					return
+				}
+			} else if strings.HasSuffix(p, "/") {
+				if strings.HasPrefix(path, p) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			} else {
+				if path == p {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 		}
 
 		// 从 Cookie 读取 token
 		tokenString := m.ReadTokenFromRequest(r)
 		if tokenString == "" {
-			http.Error(w, `{"error":"unauthorized","message":"login required"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","message":"login required"}`))
 			return
 		}
 
@@ -44,7 +63,9 @@ func (m *JWTManager) Middleware(whitelist []string, next http.Handler) http.Hand
 		claims, err := m.ParseToken(tokenString)
 		if err != nil {
 			log.Printf("[Auth] token verify failed: %v path=%s", err, path)
-			http.Error(w, `{"error":"unauthorized","message":"invalid or expired token"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","message":"invalid or expired token"}`))
 			return
 		}
 

@@ -102,10 +102,20 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 // Me 返回当前登录用户信息
 // GET /api/me
+// 双重保障：即使中间件配置错误放行了未认证请求，
+// 此处也会因 userID 为空而返回 401
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	username := auth.UsernameFromContext(r.Context())
 	role := auth.RoleFromContext(r.Context())
+
+	// 双重保障：userID 为空说明未经过认证
+	if userID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"unauthorized","message":"login required"}`))
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
