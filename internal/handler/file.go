@@ -17,11 +17,12 @@ import (
 type FileHandler struct {
 	db      *store.DB
 	storage storage.Storage
+	redis   *store.RedisCache // 可选 Redis 缓存（用于删除文件时同步清理冲突检查集合）
 }
 
-// NewFileHandler creates a new file handler
-func NewFileHandler(db *store.DB, s storage.Storage) *FileHandler {
-	return &FileHandler{db: db, storage: s}
+// NewFileHandler creates a new file handler. rc 可为 nil（无 Redis 时）。
+func NewFileHandler(db *store.DB, s storage.Storage, rc *store.RedisCache) *FileHandler {
+	return &FileHandler{db: db, storage: s, redis: rc}
 }
 
 // ListFiles returns all completed files
@@ -151,6 +152,13 @@ func (h *FileHandler) DeleteFileByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 同步清理 Redis 冲突检查集合中的文件名，否则删除后再上传同名文件会误报 409 冲突
+	if h.redis != nil {
+		if err := h.redis.UnmarkFileExists(r.Context(), f.Filename); err != nil {
+			log.Printf("redis unmark file %s error (non-fatal): %v", f.Filename, err)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"deleted": true,
@@ -175,12 +183,18 @@ func (h *FileHandler) DeleteDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 逐个删除存储文件
+	// 逐个删除存储文件 + 清理 Redis 冲突检查集合
 	var storageErrors int
 	for _, f := range files {
 		if err := h.storage.DeleteFile(f.StoragePath); err != nil {
 			log.Printf("delete storage file %s error: %v", f.StoragePath, err)
 			storageErrors++
+		}
+		// 同步清理 Redis 集合中的文件名
+		if h.redis != nil {
+			if err := h.redis.UnmarkFileExists(r.Context(), f.Filename); err != nil {
+				log.Printf("redis unmark file %s error (non-fatal): %v", f.Filename, err)
+			}
 		}
 	}
 
@@ -311,6 +325,16 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 		log.Printf("rename file %s error: %v", req.ID, err)
 		http.Error(w, "failed to rename file", http.StatusInternalServerError)
 		return
+	}
+
+	// 同步更新 Redis 冲突检查集合：旧文件名移除，新文件名加入
+	if h.redis != nil {
+		if err := h.redis.UnmarkFileExists(r.Context(), f.Filename); err != nil {
+			log.Printf("redis unmark old file %s error (non-fatal): %v", f.Filename, err)
+		}
+		if err := h.redis.MarkFileExists(r.Context(), req.NewFilename); err != nil {
+			log.Printf("redis mark new file %s error (non-fatal): %v", req.NewFilename, err)
+		}
 	}
 
 	log.Printf("rename: %s -> %s", f.Filename, req.NewFilename)

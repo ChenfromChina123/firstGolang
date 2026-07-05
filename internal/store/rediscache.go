@@ -613,6 +613,15 @@ func (r *RedisCache) MarkFileExists(ctx context.Context, filename string) error 
 	return r.client.SAdd(ctx, filesNameSet, filename).Err()
 }
 
+// UnmarkFileExists removes a filename from the completed files set.
+// 用于删除文件后清理 Redis 冲突检查集合，否则删除后再上传同名文件会误报 409 冲突。
+func (r *RedisCache) UnmarkFileExists(ctx context.Context, filename string) error {
+	if err := r.checkHealthy(); err != nil {
+		return err
+	}
+	return r.client.SRem(ctx, filesNameSet, filename).Err()
+}
+
 // ========================================================================
 // Distributed lock via SET NX
 // ========================================================================

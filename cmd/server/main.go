@@ -114,7 +114,7 @@ func main() {
 
 	// Register handlers
 	downloadHandler := handler.NewDownloadHandler(db, st)
-	fileHandler := handler.NewFileHandler(db, st)
+	fileHandler := handler.NewFileHandler(db, st, rc)
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/upload/", uploadHandler)
