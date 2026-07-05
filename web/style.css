@@ -32,6 +32,9 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* 确保所有 hidden 属性生效（防止 display:flex 等覆盖） */
+[hidden] { display: none !important; }
+
 html, body {
     height: 100%;
     background: var(--bg-0);
