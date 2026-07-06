@@ -29,6 +29,7 @@
         trash: '/api/trash', // 回收站（列出/清空）
         trashRestore: '/api/trash', // 回收站恢复：/api/trash/{id}/restore（前缀，拼接用）
         trashDelete: '/api/trash', // 回收站永久删除：/api/trash/{id}（前缀，拼接用）
+        preview: '/api/preview', // 文件预览（元数据/缩略图/原始内容流）
     };
 
     // === 认证：路由守卫 + 401 拦截 ===
@@ -985,6 +986,15 @@
             }
         });
 
+        // 双击文件行：打开预览（目录双击无效果，单击已进入子目录）
+        if (row.dataset.type === 'file') {
+            row.addEventListener('dblclick', e => {
+                e.preventDefault();
+                e.stopPropagation();
+                previewFile(row.dataset.id, row.dataset.filename);
+            });
+        }
+
         // checkbox change：切换选中（不影响目录进入）
         if (cb) {
             cb.addEventListener('click', e => e.stopPropagation());
@@ -1154,6 +1164,7 @@
             // 单选：根据类型显示完整操作
             const it = items[0];
             if (it.type === 'file') {
+                menu.push({ label: '预览', action: () => previewFile(it.id, it.filename) });
                 menu.push({ label: '下载', action: () => downloadSelected() });
                 menu.push({ label: '分享', action: () => shareSelected() });
                 menu.push({ label: '重命名 / 移动', action: () => renameSelected() });
@@ -1179,6 +1190,181 @@
     }
 
     // === 操作执行（基于当前选中项） ===
+
+    // === 文件预览 ===
+
+    /**
+     * 打开文件预览 Modal。
+     * 调用 /api/preview/{fileID} 获取元数据，根据 type 分发到对应渲染器。
+     * @param {string} fileID - 文件 ID
+     * @param {string} filename - 文件名（用于显示）
+     */
+    async function previewFile(fileID, filename) {
+        const modal = document.getElementById('preview-modal');
+        const body = document.getElementById('preview-body');
+        const nameEl = document.getElementById('preview-name');
+        const qualitySel = document.getElementById('preview-quality');
+        const downloadBtn = document.getElementById('preview-download');
+
+        if (!modal) return;
+        nameEl.textContent = filename || '—';
+        body.innerHTML = '<div class="preview-loading">加载中…</div>';
+        qualitySel.hidden = true;
+        qualitySel.onchange = null;
+        downloadBtn.dataset.fileId = fileID || '';
+        modal.hidden = false;
+
+        try {
+            const res = await apiFetch(`${API.preview}/${fileID}`);
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const meta = await res.json();
+
+            if (!meta.supported) {
+                body.innerHTML = `<div class="preview-empty">此文件类型暂不支持预览<br><span style="font-size:12px;color:var(--fg-3)">${escapeHtml(meta.filename)}</span></div>`;
+                return;
+            }
+
+            switch (meta.type) {
+                case 'image': renderImage(meta); break;
+                case 'pdf': renderPdf(meta); break;
+                case 'text':
+                case 'code': renderText(meta); break;
+                case 'audio': renderAudio(meta); break;
+                case 'video': renderVideo(meta); break;
+                default:
+                    body.innerHTML = `<div class="preview-empty">暂不支持 ${escapeHtml(meta.type)} 类型预览</div>`;
+            }
+        } catch (e) {
+            body.innerHTML = `<div class="preview-empty" style="color:var(--err)">预览失败: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    /** 关闭预览 Modal 并清空内容（停止视频/音频播放） */
+    function closePreview() {
+        const modal = document.getElementById('preview-modal');
+        const body = document.getElementById('preview-body');
+        const qualitySel = document.getElementById('preview-quality');
+        if (!modal) return;
+        modal.hidden = true;
+        body.innerHTML = '';
+        qualitySel.hidden = true;
+        qualitySel.onchange = null;
+    }
+
+    /** 渲染图片预览：3 档分辨率切换 + 点击缩放 */
+    function renderImage(meta) {
+        const body = document.getElementById('preview-body');
+        const qualitySel = document.getElementById('preview-quality');
+
+        qualitySel.hidden = false;
+        qualitySel.value = 'medium';
+
+        const update = () => {
+            const size = qualitySel.value;
+            const url = meta.urls[`thumb_${size}`] || meta.urls.original;
+            body.innerHTML = `<img src="${url}" alt="${escapeHtml(meta.filename)}">`;
+            const img = body.querySelector('img');
+            if (img) {
+                img.addEventListener('click', () => img.classList.toggle('zoomed'));
+                img.addEventListener('error', () => {
+                    body.innerHTML = `<div class="preview-empty" style="color:var(--err)">图片加载失败</div>`;
+                });
+            }
+        };
+
+        qualitySel.onchange = update;
+        update();
+    }
+
+    /** 渲染 PDF 预览：iframe 依赖浏览器内置 PDF 查看器 */
+    function renderPdf(meta) {
+        const body = document.getElementById('preview-body');
+        body.innerHTML = `<iframe src="${meta.urls.original}"></iframe>`;
+    }
+
+    /** 渲染文本/代码预览：fetch 内容 + prism.js 语法高亮 */
+    function renderText(meta) {
+        const body = document.getElementById('preview-body');
+        body.innerHTML = '<div class="preview-loading">加载内容…</div>';
+
+        fetch(meta.urls.original)
+            .then(res => {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.text();
+            })
+            .then(text => {
+                // 限制预览大小（避免大文件卡死浏览器）
+                const MAX = 1024 * 1024; // 1MB
+                let truncated = false;
+                if (text.length > MAX) {
+                    text = text.slice(0, MAX);
+                    truncated = true;
+                }
+
+                // 根据扩展名确定 prism 语言类
+                const ext = meta.filename.split('.').pop().toLowerCase();
+                const langMap = {
+                    js: 'javascript', ts: 'typescript', go: 'go', py: 'python',
+                    java: 'java', c: 'c', cpp: 'cpp', rs: 'rust', rb: 'ruby',
+                    php: 'php', sh: 'bash', sql: 'sql', html: 'markup', htm: 'markup',
+                    css: 'css', json: 'json', xml: 'markup', yml: 'yaml', yaml: 'yaml',
+                    md: 'markdown', txt: 'none', log: 'none', csv: 'none'
+                };
+                const lang = langMap[ext] || 'none';
+
+                // 动态加载语言包（核心已含 markup/css/clike/javascript）
+                loadPrismLang(lang, () => {
+                    body.innerHTML = `<pre><code class="language-${lang}">${escapeHtml(text)}</code></pre>`;
+                    if (truncated) {
+                        body.innerHTML += '<div class="preview-empty">（文件过大，仅显示前 1MB 内容）</div>';
+                    }
+                    if (window.Prism) Prism.highlightAllUnder(body);
+                });
+            })
+            .catch(e => {
+                body.innerHTML = `<div class="preview-empty" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</div>`;
+            });
+    }
+
+    /** 动态加载 prism.js 语言包（核心已含 markup/css/clike/javascript） */
+    function loadPrismLang(lang, callback) {
+        if (lang === 'none' || lang === 'markup' || lang === 'css' || lang === 'javascript' || lang === 'clike') {
+            if (callback) callback();
+            return;
+        }
+        // 已加载则直接回调
+        if (window.Prism && Prism.languages[lang]) {
+            if (callback) callback();
+            return;
+        }
+        const compMap = {
+            typescript: 'typescript', go: 'go', python: 'python', java: 'java',
+            c: 'c', cpp: 'cpp', rust: 'rust', ruby: 'ruby', php: 'php',
+            bash: 'bash', sql: 'sql', json: 'json', yaml: 'yaml', markdown: 'markdown'
+        };
+        const comp = compMap[lang];
+        if (!comp) {
+            if (callback) callback();
+            return;
+        }
+        const script = document.createElement('script');
+        script.src = `/web/lib/prism/components_prism-${comp}.min.js`;
+        script.onload = () => { if (callback) callback(); };
+        script.onerror = () => { if (callback) callback(); }; // 加载失败也回调（不高亮）
+        document.head.appendChild(script);
+    }
+
+    /** 渲染音频预览：原生 HTML5 audio 控件 */
+    function renderAudio(meta) {
+        const body = document.getElementById('preview-body');
+        body.innerHTML = `<audio controls src="${meta.urls.original}"></audio>`;
+    }
+
+    /** 渲染视频预览：原生 HTML5 video 控件（第二阶段加 poster + plyr 增强） */
+    function renderVideo(meta) {
+        const body = document.getElementById('preview-body');
+        body.innerHTML = `<video controls src="${meta.urls.original}"></video>`;
+    }
 
     /** 下载选中的文件（单选直接下载，多选逐个触发批量下载） */
     function downloadSelected() {
@@ -2057,6 +2243,12 @@
         document.addEventListener('keydown', e => {
             if (e.key === 'Escape') {
                 hideContextMenu();
+                // 预览 modal 打开时优先关闭预览
+                const previewModal = document.getElementById('preview-modal');
+                if (previewModal && !previewModal.hidden) {
+                    closePreview();
+                    return;
+                }
                 // ESC 也清空选择（便于快速退出多选模式）
                 if (selectedItems.size > 0) clearSelection();
             }
@@ -2112,6 +2304,26 @@
         if (logoutBtn) {
             logoutBtn.addEventListener('click', () => {
                 logout();
+            });
+        }
+
+        // === 文件预览 Modal 事件绑定 ===
+        const previewModal = document.getElementById('preview-modal');
+        const previewCloseBtn = document.getElementById('preview-close');
+        const previewDownloadBtn = document.getElementById('preview-download');
+        const previewBackdrop = previewModal ? previewModal.querySelector('.modal-backdrop') : null;
+        if (previewCloseBtn) {
+            previewCloseBtn.addEventListener('click', closePreview);
+        }
+        if (previewBackdrop) {
+            previewBackdrop.addEventListener('click', closePreview);
+        }
+        if (previewDownloadBtn) {
+            previewDownloadBtn.addEventListener('click', () => {
+                const id = previewDownloadBtn.dataset.fileId;
+                if (id) {
+                    window.open(`${API.download}/${id}`, '_blank');
+                }
             });
         }
     }

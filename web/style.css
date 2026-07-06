@@ -704,6 +704,115 @@ body::after {
 }
 .primary-btn:hover { background: var(--accent); color: var(--bg-0); }
 
+/* === 文件预览 Modal === */
+.preview-modal { z-index: 200; }
+.preview-card {
+    position: relative;
+    width: 90vw;
+    max-width: 1400px;
+    height: 90vh;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: modal-in 0.2s ease;
+}
+.preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--bg-1);
+    flex-shrink: 0;
+}
+.preview-name {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--fg-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 50%;
+}
+.preview-toolbar { display: flex; align-items: center; gap: 8px; }
+.preview-toolbar select {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    color: var(--fg-1);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+}
+.preview-body {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-0);
+    position: relative;
+}
+.preview-body img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    cursor: zoom-in;
+    transition: transform 0.15s;
+}
+.preview-body img.zoomed { cursor: zoom-out; transform: scale(2); }
+.preview-body iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: #fff;
+}
+.preview-body pre {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 20px;
+    overflow: auto;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    text-align: left;
+    display: block;
+    white-space: pre;
+}
+.preview-body pre code { background: transparent; padding: 0; font-family: var(--mono); }
+.preview-body audio { width: 80%; max-width: 600px; }
+.preview-body video { max-width: 100%; max-height: 100%; }
+.preview-empty {
+    color: var(--fg-3);
+    font-size: 14px;
+    text-align: center;
+    padding: 40px;
+}
+.preview-loading {
+    color: var(--fg-2);
+    font-family: var(--mono);
+    font-size: 13px;
+}
+.preview-loading::before {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    margin-right: 8px;
+    vertical-align: -2px;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* 危险按钮（删除等不可逆操作） */
 .danger-btn {
     background: none;

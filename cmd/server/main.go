@@ -215,6 +215,8 @@ func main() {
 	forgotLimiter := auth.NewLoginRateLimiter(0.0083, 5)
 
 	authHandler := handler.NewAuthHandler(db, jwtManager, mailer, appBaseURL)
+	// 预览 handler：图片缩略图/PDF/文本/音频预览（第一阶段）
+	previewHandler := handler.NewPreviewHandler(db, st, appBaseURL)
 
 	mux := http.NewServeMux()
 
@@ -268,6 +270,8 @@ func main() {
 	mux.Handle("/api/s/", shareHandler)
 	// 用户配置同步（需认证）：跨浏览器同步分片大小和并发数
 	mux.Handle("/api/settings", settingsHandler)
+	// 文件预览（需认证）：元数据/缩略图/原始内容流，权限同下载
+	mux.Handle("/api/preview/", previewHandler)
 
 	// 静态文件服务：前端 Web 控制台（/web/ 路径 + 根路径重定向）
 	// 前端仅做页面展示，所有业务方法走 /api/* 后端（规则15）
@@ -362,6 +366,9 @@ func main() {
 	log.Printf("  POST   /api/s/{id}/batch    - Batch download shared files as ZIP (public, paths[])")
 	log.Printf("  GET    /api/settings        - Get user settings (auth)")
 	log.Printf("  POST   /api/settings        - Save user settings (auth)")
+	log.Printf("  GET    /api/preview/{id}          - Preview metadata (auth)")
+	log.Printf("  GET    /api/preview/{id}/thumb    - Image thumbnail (auth, ?size=small|medium|large)")
+	log.Printf("  GET    /api/preview/{id}/content  - Stream file content (auth, supports Range)")
 	log.Printf("  GET    /api/health          - Health check (public)")
 	log.Printf("  GET    /web/                - Web console (public static)")
 

@@ -9,7 +9,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260707j">
+    <link rel="stylesheet" href="/web/style.css?v=20260708a">
+    <link rel="stylesheet" href="/web/lib/prism/themes_prism-tomorrow.min.css">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -311,6 +312,26 @@
         </div>
     </div>
 
+    <!-- 文件预览对话框：图片/PDF/文本/音频 -->
+    <div class="modal preview-modal" id="preview-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="preview-card">
+            <div class="preview-head">
+                <span class="preview-name" id="preview-name">—</span>
+                <div class="preview-toolbar">
+                    <select id="preview-quality" hidden>
+                        <option value="small">小</option>
+                        <option value="medium" selected>中</option>
+                        <option value="large">大</option>
+                    </select>
+                    <button class="ghost-btn" id="preview-download">下载</button>
+                    <button class="ghost-btn" id="preview-close">关闭</button>
+                </div>
+            </div>
+            <div class="preview-body" id="preview-body"></div>
+        </div>
+    </div>
+
     <!-- Toast 提示 -->
     <div class="toast-wrap" id="toast-wrap"></div>
 
@@ -377,6 +398,8 @@
     <!-- 上下文菜单容器（右键菜单动态填充） -->
     <div class="ctx-menu" id="ctx-menu" hidden></div>
 
-    <script src="/web/app.js?v=20260707j"></script>
+    <!-- Prism.js 代码高亮（按需加载语言包在 app.js 中动态注入） -->
+    <script src="/web/lib/prism/prism.min.js"></script>
+    <script src="/web/app.js?v=20260708a"></script>
 </body>
 </html>
