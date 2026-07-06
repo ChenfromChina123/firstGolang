@@ -427,10 +427,10 @@ body::after {
     font-size: 12px;
 }
 
-/* 树形行（目录 / 文件）：grid 列 = 图标 + checkbox + 名称 + 大小 + 日期 + 存储 */
+/* 树形行（目录 / 文件）：grid 列 = 图标 + 名称 + 大小 + 日期 + 存储 + checkbox */
 .tree-row {
     display: grid;
-    grid-template-columns: 24px 22px minmax(0, 1fr) auto auto auto;
+    grid-template-columns: 24px minmax(0, 1fr) auto auto auto 22px;
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
@@ -461,9 +461,10 @@ body::after {
     display: flex;
     align-items: center;
     justify-content: center;
+    width: 16px;
+    height: 16px;
     color: var(--accent);
 }
-.tree-icon svg { width: 16px; height: 16px; display: block; }
 .tree-row.file .tree-icon { color: var(--fg-3); }
 /* 不同文件类型的图标颜色（按类型区分） */
 .tree-icon.icon-image { color: #79c0ff; }
@@ -1209,7 +1210,7 @@ body::after {
     .panel-head { flex-wrap: wrap; gap: 8px; }
     .target-dir-display { min-width: 100px; max-width: 160px; }
     /* 窄屏下隐藏树形行中的"上传时间"和"存储"列，避免拥挤 */
-    .tree-row { grid-template-columns: 24px 22px minmax(0, 1fr) auto; gap: 8px; padding: 8px 10px; }
+    .tree-row { grid-template-columns: 24px minmax(0, 1fr) auto 22px; gap: 8px; padding: 8px 10px; }
     .tree-row .tree-meta:nth-of-type(2),
     .tree-row .tree-meta:nth-of-type(3) { display: none; }
     /* 窄屏下隐藏角色标签，用户名截断 */
@@ -1248,9 +1249,9 @@ body::after {
         max-width: calc(100vw - 32px);
         padding: 16px;
     }
-    /* 树形行紧凑化：仅保留 icon + checkbox + name */
+    /* 树形行紧凑化：仅保留 icon + name + checkbox */
     .tree-row {
-        grid-template-columns: 24px 22px minmax(0, 1fr);
+        grid-template-columns: 24px minmax(0, 1fr) 22px;
         gap: 6px;
         padding: 8px 8px;
     }

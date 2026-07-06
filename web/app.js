@@ -686,11 +686,11 @@
             items.push(`
                 <div class="tree-row dir" data-type="dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" tabindex="0">
                     <svg class="tree-icon"><use href="#icon-folder"></use></svg>
-                    <input type="checkbox" class="row-check" data-type="dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" aria-label="选择目录 ${escapeHtml(name)}">
                     <span class="tree-name">${escapeHtml(name)}/</span>
                     <span class="tree-meta">${count} 个文件</span>
                     <span class="tree-meta"></span>
                     <span class="tree-meta"></span>
+                    <input type="checkbox" class="row-check" data-type="dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" aria-label="选择目录 ${escapeHtml(name)}">
                 </div>
             `);
         }
@@ -700,11 +700,11 @@
             items.push(`
                 <div class="tree-row file" data-type="file" data-id="${escapeHtml(f.id)}" data-filename="${escapeHtml(f.filename)}" data-name="${escapeHtml(baseName)}" tabindex="0">
                     <svg class="tree-icon ${iconClass}"><use href="#${iconClass}"></use></svg>
-                    <input type="checkbox" class="row-check" data-type="file" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(baseName)}" aria-label="选择文件 ${escapeHtml(baseName)}">
                     <span class="tree-name">${escapeHtml(baseName)}</span>
                     <span class="tree-meta num">${fmtSize(f.size)}</span>
                     <span class="tree-meta">${fmtDate(f.created_at)}</span>
                     <span class="tree-meta"><span class="fstore">${escapeHtml(f.storage_type || 'local')}</span></span>
+                    <input type="checkbox" class="row-check" data-type="file" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(baseName)}" aria-label="选择文件 ${escapeHtml(baseName)}">
                 </div>
             `);
         }
