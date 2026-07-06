@@ -23,6 +23,8 @@
         health: '/api/health',
         me: '/api/me',
         logout: '/api/logout',
+        settings: '/api/settings',
+        share: '/api/share',
     };
 
     // === 认证：路由守卫 + 401 拦截 ===
@@ -872,6 +874,43 @@
 
     // === 事件绑定 ===
 
+    /** 从服务器拉取用户配置并覆盖本地（跨浏览器同步）
+     *  仅当服务器有记录时才覆盖，避免覆盖用户刚做的本地修改。
+     *  静默失败：网络错误不影响用户体验。 */
+    async function syncSettingsFromServer(chunkSizeSelect, concurrencySelect) {
+        try {
+            const res = await apiFetch(API.settings);
+            if (!res.ok) return;
+            const s = await res.json();
+            if (s.chunk_size) {
+                chunkSizeSelect.value = s.chunk_size;
+                localStorage.setItem('filesync:chunkSize', s.chunk_size);
+            }
+            if (s.concurrency) {
+                concurrencySelect.value = s.concurrency;
+                localStorage.setItem('filesync:concurrency', s.concurrency);
+            }
+        } catch (e) {
+            // 静默失败：网络错误不影响用户体验
+        }
+    }
+
+    /** 异步同步当前配置到服务器（跨浏览器同步）
+     *  静默失败：网络错误不影响用户体验。 */
+    async function syncSettingsToServer() {
+        try {
+            const chunkSize = parseInt(document.getElementById('chunk-size').value, 10);
+            const concurrency = parseInt(document.getElementById('concurrency').value, 10);
+            await apiFetch(API.settings, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chunk_size: chunkSize, concurrency }),
+            });
+        } catch (e) {
+            // 静默失败：网络错误不影响用户体验
+        }
+    }
+
     /** 绑定选择文件、拖拽上传、持久化配置等事件。
      *  选择文件按钮用 JS 触发 fileInput.click()，比 label[for] 更可靠（兼容所有浏览器）。
      *  拖拽绑定到整个 upload-panel（而非已移除的 dropzone）。
@@ -917,15 +956,25 @@
             fileInput.value = ''; // 允许重复选择同一文件
         });
 
-        // 持久化分片大小和并发数到 localStorage（下次打开保留用户选择）
+        // 持久化分片大小和并发数：localStorage 即时响应 + 服务器跨浏览器同步
         const chunkSizeSelect = document.getElementById('chunk-size');
         const concurrencySelect = document.getElementById('concurrency');
+        // 1. 先读 localStorage 立即渲染（避免等待网络）
         const savedChunkSize = localStorage.getItem('filesync:chunkSize');
         const savedConcurrency = localStorage.getItem('filesync:concurrency');
         if (savedChunkSize) chunkSizeSelect.value = savedChunkSize;
         if (savedConcurrency) concurrencySelect.value = savedConcurrency;
-        chunkSizeSelect.addEventListener('change', () => localStorage.setItem('filesync:chunkSize', chunkSizeSelect.value));
-        concurrencySelect.addEventListener('change', () => localStorage.setItem('filesync:concurrency', concurrencySelect.value));
+        // 2. 后台从服务器拉取覆盖（跨浏览器同步）
+        syncSettingsFromServer(chunkSizeSelect, concurrencySelect);
+        // 3. 变更时同时写 localStorage 和服务器
+        chunkSizeSelect.addEventListener('change', () => {
+            localStorage.setItem('filesync:chunkSize', chunkSizeSelect.value);
+            syncSettingsToServer();
+        });
+        concurrencySelect.addEventListener('change', () => {
+            localStorage.setItem('filesync:concurrency', concurrencySelect.value);
+            syncSettingsToServer();
+        });
 
         // 冲突对话框按钮
         document.querySelectorAll('.opt-btn').forEach(btn => {
