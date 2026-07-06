@@ -25,6 +25,7 @@
         logout: '/api/logout',
         settings: '/api/settings',
         share: '/api/share',
+        check: '/api/upload/check', // 秒传检查（上传前检查哈希是否已存在）
     };
 
     // === 认证：路由守卫 + 401 拦截 ===
@@ -135,7 +136,54 @@
         }
     }
 
-    /** Toast 提示 */
+    /**
+     * 计算完整文件 SHA256（用于秒传检查）。
+     * 使用 Web Worker 在后台线程计算，避免阻塞主线程 UI。
+     * Worker 文件：/web/sha256.worker.js（纯 JS 实现 FIPS 180-4 增量 SHA256）。
+     * 失败时抛出异常，由调用方降级为正常上传。
+     * @param {File} file - 待计算文件
+     * @param {(percent:number)=>void} [onProgress] - 进度回调（0-100）
+     * @returns {Promise<string>} 64 字符 hex SHA256
+     */
+    function calcFullFileHash(file, onProgress) {
+        return new Promise((resolve, reject) => {
+            let worker;
+            try {
+                worker = new Worker('/web/sha256.worker.js');
+            } catch (e) {
+                reject(new Error('Worker 创建失败: ' + e.message));
+                return;
+            }
+            const chunkSize = 4 * 1024 * 1024; // 4MB 分块读取
+            const timeoutMs = 10 * 60 * 1000; // 10 分钟超时（超大文件兜底）
+            const timer = setTimeout(() => {
+                worker.terminate();
+                reject(new Error('SHA256 计算超时'));
+            }, timeoutMs);
+            worker.onmessage = function (e) {
+                const msg = e.data;
+                if (!msg) return;
+                if (msg.type === 'progress' && typeof onProgress === 'function') {
+                    onProgress(msg.percent);
+                } else if (msg.type === 'done') {
+                    clearTimeout(timer);
+                    worker.terminate();
+                    resolve(msg.hash);
+                } else if (msg.type === 'error') {
+                    clearTimeout(timer);
+                    worker.terminate();
+                    reject(new Error(msg.error || 'SHA256 计算失败'));
+                }
+            };
+            worker.onerror = function (e) {
+                clearTimeout(timer);
+                worker.terminate();
+                reject(new Error('Worker 错误: ' + (e.message || 'unknown')));
+            };
+            worker.postMessage({ type: 'hash', file: file, chunkSize: chunkSize }, [file]);
+        });
+    }
+
     function toast(msg, type = '') {
         const wrap = document.getElementById('toast-wrap');
         const el = document.createElement('div');
@@ -200,6 +248,7 @@
             this.error = null;
             this.dom = null;
             this._domUpdatePending = false; // requestAnimationFrame 节流标志
+            this.fullHash = null; // 完整文件 SHA256（秒传检查用，null=未计算）
         }
 
         /** 构造上传到后端的完整文件名（含目录前缀） */
@@ -210,6 +259,33 @@
         /** 获取用于 UI 展示的文件名（含目录前缀） */
         getDisplayName() {
             return this.getUploadFilename();
+        }
+
+        /**
+         * 秒传检查：调用 /api/upload/check 检查文件哈希是否已存在。
+         * 命中时后端会复制存储文件并创建新记录，整个上传流程被跳过。
+         * @returns {Promise<boolean>} true=秒传成功，false=未命中（需正常上传）
+         */
+        async tryInstantUpload() {
+            if (!this.fullHash) return false;
+            const uploadName = this.getUploadFilename();
+            const res = await apiFetch(API.check, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filename: uploadName,
+                    file_size: this.file.size,
+                    file_hash: this.fullHash,
+                }),
+            });
+            // 409 表示目标文件名已存在（非秒传源文件冲突），降级为正常上传让 init 处理冲突
+            if (res.status === 409) return false;
+            if (!res.ok) {
+                const txt = await res.text().catch(() => '');
+                throw new Error(`秒传检查失败: HTTP ${res.status} ${txt}`);
+            }
+            const data = await res.json();
+            return data.instant_upload === true;
         }
 
         /** 初始化上传 session，处理冲突 */
@@ -343,6 +419,32 @@
             try {
                 this.status = 'uploading';
                 this.updateDom();
+
+                // === 秒传检查 ===
+                // 计算完整文件 SHA256（Worker 后台线程，不阻塞 UI），然后调用 /api/upload/check。
+                // 命中则跳过整个上传流程；失败（Worker 不支持、哈希不匹配、网络错误）降级为正常上传。
+                // 注：秒传检查失败是非致命的，不应中断上传流程。
+                try {
+                    this.fullHash = await calcFullFileHash(this.file, (percent) => {
+                        // 进度回调：更新 UI 显示"计算哈希中..."
+                        if (this.dom && this.status === 'uploading') {
+                            const text = this.dom.querySelector('.qi-progress-text');
+                            if (text) text.textContent = `计算哈希 ${percent.toFixed(0)}%`;
+                        }
+                    });
+                    const instantOk = await this.tryInstantUpload();
+                    if (instantOk) {
+                        this.status = 'done';
+                        this.uploaded = this.file.size;
+                        this.updateDom();
+                        toast(`「${this.getDisplayName()}」秒传成功`, 'ok');
+                        return;
+                    }
+                } catch (e) {
+                    console.warn('[Upload] 秒传检查失败，降级为正常上传:', e.message);
+                }
+
+                // === 正常上传流程 ===
                 const ok = await this.init();
                 if (!ok) return; // 跳过
                 await this.checkResumable();
@@ -456,6 +558,38 @@
     // 当前所在目录路径（末尾带 /，空字符串表示根目录）
     let currentPath = '';
 
+    // === 选择状态管理 ===
+    // selectedItems: key → { type:'file'|'dir', id?, prefix?, name, filename? }
+    // key 唯一标识：文件用 'file:'+id，目录用 'dir:'+prefix
+    const selectedItems = new Map();
+    // 多选模式标志（长按触发后置 true，用户取消后置 false）
+    let selectionMode = false;
+    // touch 长按计时器和起点（用于移动端长按多选）
+    let touchTimer = null;
+    let touchStartXY = null;
+    let touchStartRow = null;
+    // shift 范围选择起点
+    let shiftAnchorRow = null;
+
+    /**
+     * 根据文件名扩展名返回对应的 SVG 图标 symbol id。
+     * @param {string} filename - 文件名（含扩展名）
+     * @returns {string} icon-image|icon-video|icon-audio|icon-pdf|icon-code|icon-text|icon-archive|icon-file
+     */
+    function getIconForFile(filename) {
+        const dot = filename.lastIndexOf('.');
+        if (dot < 0) return 'icon-file';
+        const ext = filename.slice(dot + 1).toLowerCase();
+        if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp', 'ico', 'tiff'].includes(ext)) return 'icon-image';
+        if (['mp4', 'avi', 'mkv', 'webm', 'mov', 'flv', 'wmv', 'm4v'].includes(ext)) return 'icon-video';
+        if (['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'opus', 'wma'].includes(ext)) return 'icon-audio';
+        if (ext === 'pdf') return 'icon-pdf';
+        if (['js', 'ts', 'py', 'go', 'java', 'c', 'cpp', 'h', 'html', 'css', 'json', 'xml', 'sh', 'rb', 'php', 'rs', 'kt', 'swift', 'yml', 'yaml', 'toml'].includes(ext)) return 'icon-code';
+        if (['txt', 'md', 'log', 'csv', 'rtf', 'doc', 'docx'].includes(ext)) return 'icon-text';
+        if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz'].includes(ext)) return 'icon-archive';
+        return 'icon-file';
+    }
+
     /**
      * 从扁平文件列表中提取当前目录的直接子项。
      * 路径枚举方案：filename 中的 / 作为虚拟目录分隔符。
@@ -538,7 +672,9 @@
     }
 
     /**
-     * 渲染树形列表：子目录在前，文件在后
+     * 渲染树形列表：子目录在前，文件在后。
+     * 改为"选择→操作"模式：移除行内按钮，统一用 checkbox 选择，
+     * 选中后顶部工具栏显示对应操作，也可右键弹出上下文菜单。
      * @param {Map<string, number>} dirs - 子目录名→文件数
      * @param {Array} files - 子文件列表
      */
@@ -548,84 +684,496 @@
         for (const [name, count] of dirs) {
             const dirPrefix = currentPath + name + '/';
             items.push(`
-                <div class="tree-row dir" data-dir="${escapeHtml(name)}" tabindex="0">
-                    <span class="tree-icon" aria-hidden="true">▸</span>
+                <div class="tree-row dir" data-type="dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" tabindex="0">
+                    <svg class="tree-icon"><use href="#icon-folder"></use></svg>
+                    <input type="checkbox" class="row-check" data-type="dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" aria-label="选择目录 ${escapeHtml(name)}">
                     <span class="tree-name">${escapeHtml(name)}/</span>
                     <span class="tree-meta">${count} 个文件</span>
                     <span class="tree-meta"></span>
                     <span class="tree-meta"></span>
-                    <span class="tree-ops">
-                        <button class="op-btn" data-action="zip" data-prefix="${escapeHtml(dirPrefix)}" title="打包下载 ZIP">ZIP</button>
-                        <button class="op-btn" data-action="share-dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="分享目录">分享</button>
-                        <button class="op-btn" data-action="move-dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="移动目录">移动</button>
-                        <button class="op-btn danger" data-action="rmdir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="删除目录">删除</button>
-                    </span>
                 </div>
             `);
         }
         for (const f of files) {
+            const baseName = f.filename.split('/').pop();
+            const iconClass = getIconForFile(baseName);
             items.push(`
-                <div class="tree-row file" data-id="${escapeHtml(f.id)}" data-filename="${escapeHtml(f.filename)}">
-                    <input type="checkbox" class="file-check" data-id="${escapeHtml(f.id)}" aria-label="选择文件">
-                    <span class="tree-name">${escapeHtml(f.filename.split('/').pop())}</span>
+                <div class="tree-row file" data-type="file" data-id="${escapeHtml(f.id)}" data-filename="${escapeHtml(f.filename)}" data-name="${escapeHtml(baseName)}" tabindex="0">
+                    <svg class="tree-icon ${iconClass}"><use href="#${iconClass}"></use></svg>
+                    <input type="checkbox" class="row-check" data-type="file" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(baseName)}" aria-label="选择文件 ${escapeHtml(baseName)}">
+                    <span class="tree-name">${escapeHtml(baseName)}</span>
                     <span class="tree-meta num">${fmtSize(f.size)}</span>
                     <span class="tree-meta">${fmtDate(f.created_at)}</span>
                     <span class="tree-meta"><span class="fstore">${escapeHtml(f.storage_type || 'local')}</span></span>
-                    <span class="tree-ops">
-                        <a class="op-btn" href="${API.download}/${f.id}" download="${escapeHtml(f.filename)}" title="下载文件">下载</a>
-                        <button class="op-btn" data-action="share-file" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(f.filename)}" title="分享文件">分享</button>
-                        <button class="op-btn" data-action="rename" data-id="${escapeHtml(f.id)}" data-filename="${escapeHtml(f.filename)}" title="重命名/移动">重命名</button>
-                        <button class="op-btn danger" data-action="rmfile" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(f.filename.split('/').pop())}" title="删除文件">删除</button>
-                    </span>
                 </div>
             `);
         }
         tree.innerHTML = items.join('');
+        // 列表刷新后选择已失效，清空选中状态
+        clearSelection();
+        // 绑定行事件：click/contextmenu/touch（统一处理）
+        tree.querySelectorAll('.tree-row').forEach(row => bindRowEvents(row));
+    }
 
-        // 目录行：点击进入目录（操作按钮 stopPropagation）
-        tree.querySelectorAll('.tree-row.dir').forEach(el => {
-            const enter = () => {
-                currentPath += el.dataset.dir + '/';
-                loadFiles();
+    // === 选择管理 ===
+
+    /** 生成选择项的唯一 key */
+    function selectionKey(type, idOrPrefix) {
+        return type === 'file' ? 'file:' + idOrPrefix : 'dir:' + idOrPrefix;
+    }
+
+    /** 从 DOM 行元素提取选择项信息 */
+    function rowToItem(row) {
+        const type = row.dataset.type;
+        if (type === 'file') {
+            return {
+                key: selectionKey('file', row.dataset.id),
+                type: 'file',
+                id: row.dataset.id,
+                name: row.dataset.name,
+                filename: row.dataset.filename,
+                row,
             };
-            el.addEventListener('click', e => {
-                if (e.target.closest('.tree-ops')) return; // 点击操作按钮不进入目录
-                enter();
-            });
-            el.addEventListener('keydown', e => {
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); enter(); }
-            });
-        });
+        }
+        return {
+            key: selectionKey('dir', row.dataset.prefix),
+            type: 'dir',
+            prefix: row.dataset.prefix,
+            name: row.dataset.name,
+            row,
+        };
+    }
 
-        // 操作按钮事件
-        tree.querySelectorAll('.op-btn[data-action]').forEach(btn => {
-            btn.addEventListener('click', e => {
-                e.stopPropagation();
-                const action = btn.dataset.action;
-                if (action === 'zip') {
-                    window.location.href = `${API.downloadDir}?prefix=${encodeURIComponent(btn.dataset.prefix)}`;
-                } else if (action === 'move-dir') {
-                    openMoveDirDialog(btn.dataset.prefix, btn.dataset.name);
-                } else if (action === 'rmdir') {
-                    confirmDeleteDir(btn.dataset.prefix, btn.dataset.name);
-                } else if (action === 'rmfile') {
-                    confirmDeleteFile(btn.dataset.id, btn.dataset.name);
-                } else if (action === 'rename') {
-                    openRenameDialog(btn.dataset.id, btn.dataset.filename);
-                } else if (action === 'share-dir') {
-                    openShareDialog(null, btn.dataset.prefix, btn.dataset.name || '目录', 'dir');
-                } else if (action === 'share-file') {
-                    openShareDialog(btn.dataset.id, null, btn.dataset.name || '文件', 'file');
-                }
-            });
-        });
+    /** 切换某行的选中状态（单选模式：清空其他）
+     * @param {HTMLElement} row - 树形行元素
+     * @param {boolean} [addToExisting] - 是否追加到已选（Shift/Ctrl+click 时为 true）
+     */
+    function toggleSelection(row, addToExisting) {
+        const item = rowToItem(row);
+        const cb = row.querySelector('.row-check');
+        if (selectedItems.has(item.key)) {
+            // 已选中 → 取消
+            selectedItems.delete(item.key);
+            row.classList.remove('selected');
+            if (cb) cb.checked = false;
+        } else {
+            // 未选中 → 选中
+            if (!addToExisting) {
+                // 单选模式：清空其他
+                clearSelection(false);
+            }
+            selectedItems.set(item.key, item);
+            row.classList.add('selected');
+            if (cb) cb.checked = true;
+        }
+        updateToolbar();
+    }
 
-        // checkbox 多选：change 时更新批量操作栏
-        tree.querySelectorAll('.file-check').forEach(cb => {
-            cb.addEventListener('change', updateBatchOps);
-            cb.addEventListener('click', e => e.stopPropagation()); // 防止点击 checkbox 触发目录进入
+    /** 范围选择：从 anchor 到当前行的所有行全部选中
+     * @param {HTMLElement} targetRow - Shift+click 的目标行
+     */
+    function selectRange(targetRow) {
+        const tree = document.getElementById('file-tree');
+        const rows = Array.from(tree.querySelectorAll('.tree-row'));
+        const anchorIdx = shiftAnchorRow ? rows.indexOf(shiftAnchorRow) : -1;
+        const targetIdx = rows.indexOf(targetRow);
+        if (anchorIdx < 0 || targetIdx < 0) {
+            // 无 anchor 或找不到：退化为单选
+            toggleSelection(targetRow, false);
+            shiftAnchorRow = targetRow;
+            return;
+        }
+        const [from, to] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+        for (let i = from; i <= to; i++) {
+            const r = rows[i];
+            const item = rowToItem(r);
+            if (!selectedItems.has(item.key)) {
+                selectedItems.set(item.key, item);
+                r.classList.add('selected');
+                const cb = r.querySelector('.row-check');
+                if (cb) cb.checked = true;
+            }
+        }
+        updateToolbar();
+    }
+
+    /** 清空所有选中状态
+     * @param {boolean} [updateUi=true] - 是否同步更新工具栏 UI
+     */
+    function clearSelection(updateUi) {
+        selectedItems.forEach(item => {
+            if (item.row) {
+                item.row.classList.remove('selected');
+                const cb = item.row.querySelector('.row-check');
+                if (cb) cb.checked = false;
+            }
+        });
+        selectedItems.clear();
+        selectionMode = false;
+        shiftAnchorRow = null;
+        if (updateUi !== false) updateToolbar();
+    }
+
+    /**
+     * 更新顶部工具栏：根据选中项的类型和数量显示/隐藏对应操作按钮。
+     * - 0 项：显示 default-ops，隐藏 selection-ops
+     * - 1 项文件：显示 下载/分享/重命名/删除
+     * - 1 项目录：显示 ZIP 下载/分享/移动/删除
+     * - N≥2 项：显示 ZIP 下载/删除（仅当全为目录时可 ZIP；含文件时也支持 ZIP 打包）
+     */
+    function updateToolbar() {
+        const defaultOps = document.getElementById('default-ops');
+        const selectionOps = document.getElementById('selection-ops');
+        const countEl = document.getElementById('selection-count');
+        const n = selectedItems.size;
+        if (n === 0) {
+            if (defaultOps) defaultOps.hidden = false;
+            if (selectionOps) selectionOps.hidden = true;
+            return;
+        }
+        if (defaultOps) defaultOps.hidden = true;
+        if (selectionOps) selectionOps.hidden = false;
+        if (countEl) countEl.textContent = `已选 ${n} 项`;
+        // 统计类型
+        const items = Array.from(selectedItems.values());
+        const files = items.filter(it => it.type === 'file');
+        const dirs = items.filter(it => it.type === 'dir');
+        const selDownload = document.getElementById('sel-download');
+        const selZip = document.getElementById('sel-zip');
+        const selShare = document.getElementById('sel-share');
+        const selRename = document.getElementById('sel-rename');
+        const selMove = document.getElementById('sel-move');
+        // 下载：仅当选中恰好 1 个文件时显示
+        if (selDownload) selDownload.hidden = !(n === 1 && files.length === 1);
+        // ZIP 下载：1 个目录 或 多项（混合）均可打包
+        if (selZip) selZip.hidden = !(n === 1 && dirs.length === 1) && n < 2;
+        // 实际上目录 ZIP 用单独 API，多项混合暂不支持 ZIP（后端无对应 API）
+        // 简化：仅当选中 1 个目录时显示 ZIP 下载
+        if (selZip) selZip.hidden = !(n === 1 && dirs.length === 1);
+        // 分享：仅当选中恰好 1 项时显示
+        if (selShare) selShare.hidden = n !== 1;
+        // 重命名：仅当选中恰好 1 个文件时显示
+        if (selRename) selRename.hidden = !(n === 1 && files.length === 1);
+        // 移动：仅当选中恰好 1 个目录时显示
+        if (selMove) selMove.hidden = !(n === 1 && dirs.length === 1);
+    }
+
+    /** 批量删除选中项（支持文件和目录混合）
+     *  文件用 batch-delete API，目录用 DELETE /api/files?prefix= 逐个删除 */
+    function batchDeleteSelected() {
+        if (selectedItems.size === 0) { toast('请先选择要删除的项目', 'err'); return; }
+        const items = Array.from(selectedItems.values());
+        const files = items.filter(it => it.type === 'file');
+        const dirs = items.filter(it => it.type === 'dir');
+        const msg = `确认删除选中的 ${items.length} 项（${files.length} 个文件 + ${dirs.length} 个目录）？此操作不可恢复。`;
+        openConfirmDialog(msg, async () => {
+            let success = 0, fail = 0;
+            // 1. 批量删除文件
+            if (files.length > 0) {
+                try {
+                    const res = await apiFetch(API.filesBatchDelete, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ids: files.map(f => f.id) }),
+                    });
+                    if (res.ok) {
+                        const data = await res.json().catch(() => ({}));
+                        success += data.success || files.length;
+                        fail += data.fail || 0;
+                    } else {
+                        fail += files.length;
+                    }
+                } catch (e) { fail += files.length; }
+            }
+            // 2. 逐个删除目录（递归删除）
+            for (const d of dirs) {
+                try {
+                    const res = await apiFetch(`${API.files}?prefix=${encodeURIComponent(d.prefix)}`, { method: 'DELETE' });
+                    if (res.ok) success++;
+                    else fail++;
+                } catch (e) { fail++; }
+            }
+            toast(`批量删除完成（成功 ${success}，失败 ${fail}）`, fail > 0 ? 'err' : 'ok');
+            loadFiles();
         });
     }
+
+    // === 行事件绑定 ===
+
+    /**
+     * 为单个树形行绑定事件：click、contextmenu、touch（长按多选）、keydown。
+     * @param {HTMLElement} row - .tree-row 元素
+     */
+    function bindRowEvents(row) {
+        const cb = row.querySelector('.row-check');
+
+        // click：checkbox 切换选中 / 目录行空白处进入子目录 / Shift+click 范围选择
+        row.addEventListener('click', e => {
+            // 点击 checkbox 由其自身 change 事件处理，这里不重复
+            if (e.target === cb) return;
+            if (e.shiftKey && shiftAnchorRow && selectionMode) {
+                // Shift+click 范围选择
+                e.preventDefault();
+                selectRange(row);
+                return;
+            }
+            if (selectionMode || e.ctrlKey || e.metaKey) {
+                // 多选模式或 Ctrl/Cmd+click：切换选中
+                e.preventDefault();
+                shiftAnchorRow = row;
+                toggleSelection(row, true);
+                return;
+            }
+            // 普通点击：目录行进入子目录，文件行切换选中
+            if (row.dataset.type === 'dir') {
+                currentPath += row.dataset.name + '/';
+                loadFiles();
+            } else {
+                // 文件行单击：切换选中
+                shiftAnchorRow = row;
+                toggleSelection(row, e.ctrlKey || e.metaKey);
+            }
+        });
+
+        // checkbox change：切换选中（不影响目录进入）
+        if (cb) {
+            cb.addEventListener('click', e => e.stopPropagation());
+            cb.addEventListener('change', () => {
+                shiftAnchorRow = row;
+                const item = rowToItem(row);
+                if (cb.checked) {
+                    selectedItems.set(item.key, item);
+                    row.classList.add('selected');
+                    selectionMode = true;
+                } else {
+                    selectedItems.delete(item.key);
+                    row.classList.remove('selected');
+                    if (selectedItems.size === 0) selectionMode = false;
+                }
+                updateToolbar();
+            });
+        }
+
+        // 键盘：Enter/Space 进入目录或切换选中
+        row.addEventListener('keydown', e => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                if (row.dataset.type === 'dir' && !selectionMode) {
+                    currentPath += row.dataset.name + '/';
+                    loadFiles();
+                } else {
+                    toggleSelection(row, true);
+                }
+            }
+        });
+
+        // 右键菜单：preventDefault + 弹出上下文菜单
+        row.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            // 右键时自动选中该行（如果未选中）
+            if (!selectedItems.has(rowToItem(row).key)) {
+                clearSelection(false);
+                toggleSelection(row, false);
+            }
+            const items = buildContextMenuItems();
+            showContextMenu(e.clientX, e.clientY, items);
+        });
+
+        // 长按多选（移动端）：touchstart 记录起点，500ms 后进入多选模式
+        row.addEventListener('touchstart', e => {
+            touchStartXY = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            touchStartRow = row;
+            touchTimer = setTimeout(() => {
+                // 长按 500ms 触发：进入多选模式并选中当前行
+                selectionMode = true;
+                if (navigator.vibrate) navigator.vibrate(30); // 触觉反馈
+                const item = rowToItem(row);
+                if (!selectedItems.has(item.key)) {
+                    selectedItems.set(item.key, item);
+                    row.classList.add('selected');
+                    const cbx = row.querySelector('.row-check');
+                    if (cbx) cbx.checked = true;
+                    updateToolbar();
+                }
+            }, 500);
+        }, { passive: true });
+
+        row.addEventListener('touchmove', e => {
+            if (!touchStartXY || !touchTimer) return;
+            // 移动距离超过 10px 取消长按（避免误触）
+            const dx = e.touches[0].clientX - touchStartXY.x;
+            const dy = e.touches[0].clientY - touchStartXY.y;
+            if (Math.hypot(dx, dy) > 10) {
+                clearTimeout(touchTimer);
+                touchTimer = null;
+            }
+            // 多选模式下：滑动经过的行自动选中
+            if (selectionMode) {
+                const t = e.touches[0];
+                const el = document.elementFromPoint(t.clientX, t.clientY);
+                const r = el && el.closest('.tree-row');
+                if (r && r !== touchStartRow) {
+                    const item = rowToItem(r);
+                    if (!selectedItems.has(item.key)) {
+                        selectedItems.set(item.key, item);
+                        r.classList.add('selected');
+                        const cbx = r.querySelector('.row-check');
+                        if (cbx) cbx.checked = true;
+                        updateToolbar();
+                    }
+                    touchStartRow = r;
+                }
+            }
+        }, { passive: true });
+
+        row.addEventListener('touchend', () => {
+            if (touchTimer) {
+                clearTimeout(touchTimer);
+                touchTimer = null;
+            }
+            touchStartXY = null;
+            touchStartRow = null;
+        });
+
+        row.addEventListener('touchcancel', () => {
+            if (touchTimer) {
+                clearTimeout(touchTimer);
+                touchTimer = null;
+            }
+            touchStartXY = null;
+            touchStartRow = null;
+        });
+    }
+
+    // === 上下文菜单 ===
+
+    /**
+     * 显示上下文菜单（固定定位 + 边界检测）。
+     * @param {number} x - 屏幕 x 坐标（clientX）
+     * @param {number} y - 屏幕 y 坐标（clientY）
+     * @param {Array} items - 菜单项数组 [{label, action, danger, disabled, separator}]
+     */
+    function showContextMenu(x, y, items) {
+        const menu = document.getElementById('ctx-menu');
+        if (!menu) return;
+        menu.innerHTML = items.map(it => {
+            if (it.separator) return '<div class="ctx-separator"></div>';
+            const cls = it.danger ? 'ctx-item danger' : 'ctx-item';
+            return `<button type="button" class="${cls}"${it.disabled ? ' disabled' : ''}>${escapeHtml(it.label)}</button>`;
+        }).join('');
+        menu.hidden = false;
+        // 边界检测：避免菜单超出视口
+        const rect = menu.getBoundingClientRect();
+        const winW = window.innerWidth, winH = window.innerHeight;
+        let left = x, top = y;
+        if (x + rect.width > winW - 8) left = winW - rect.width - 8;
+        if (y + rect.height > winH - 8) top = winH - rect.height - 8;
+        menu.style.left = Math.max(8, left) + 'px';
+        menu.style.top = Math.max(8, top) + 'px';
+        // 绑定菜单项点击：同步遍历 items 和 DOM（跳过 separator）
+        const btns = menu.querySelectorAll('.ctx-item');
+        let btnIdx = 0;
+        for (const it of items) {
+            if (it.separator) continue;
+            const btn = btns[btnIdx++];
+            if (!btn || it.disabled) continue;
+            btn.addEventListener('click', () => {
+                hideContextMenu();
+                if (typeof it.action === 'function') it.action();
+            });
+        }
+    }
+
+    /** 隐藏上下文菜单 */
+    function hideContextMenu() {
+        const menu = document.getElementById('ctx-menu');
+        if (menu) { menu.hidden = true; menu.innerHTML = ''; }
+    }
+
+    /**
+     * 根据当前选中项构建上下文菜单项。
+     * @returns {Array} 菜单项数组
+     */
+    function buildContextMenuItems() {
+        const items = Array.from(selectedItems.values());
+        const n = items.length;
+        const files = items.filter(it => it.type === 'file');
+        const dirs = items.filter(it => it.type === 'dir');
+        const menu = [];
+        if (n === 1) {
+            // 单选：根据类型显示完整操作
+            const it = items[0];
+            if (it.type === 'file') {
+                menu.push({ label: '下载', action: () => downloadSelected() });
+                menu.push({ label: '分享', action: () => shareSelected() });
+                menu.push({ label: '重命名 / 移动', action: () => renameSelected() });
+                menu.push({ separator: true });
+                menu.push({ label: '删除', danger: true, action: () => batchDeleteSelected() });
+            } else {
+                menu.push({ label: 'ZIP 下载', action: () => zipDownloadSelected() });
+                menu.push({ label: '分享', action: () => shareSelected() });
+                menu.push({ label: '移动目录', action: () => moveSelected() });
+                menu.push({ separator: true });
+                menu.push({ label: '删除', danger: true, action: () => batchDeleteSelected() });
+            }
+        } else if (n > 1) {
+            // 多选：仅显示删除
+            menu.push({ label: `删除 ${n} 项`, danger: true, action: () => batchDeleteSelected() });
+        }
+        return menu;
+    }
+
+    // === 操作执行（基于当前选中项） ===
+
+    /** 下载选中的单个文件 */
+    function downloadSelected() {
+        const items = Array.from(selectedItems.values());
+        const file = items.find(it => it.type === 'file');
+        if (file) {
+            window.location.href = `${API.download}/${file.id}`;
+        }
+    }
+
+    /** ZIP 下载选中的单个目录 */
+    function zipDownloadSelected() {
+        const items = Array.from(selectedItems.values());
+        const dir = items.find(it => it.type === 'dir');
+        if (dir) {
+            window.location.href = `${API.downloadDir}?prefix=${encodeURIComponent(dir.prefix)}`;
+        }
+    }
+
+    /** 分享选中的单项（文件或目录） */
+    function shareSelected() {
+        const items = Array.from(selectedItems.values());
+        if (items.length !== 1) return;
+        const it = items[0];
+        if (it.type === 'file') {
+            openShareDialog(it.id, null, it.name || '文件', 'file');
+        } else {
+            openShareDialog(null, it.prefix, it.name || '目录', 'dir');
+        }
+    }
+
+    /** 重命名选中的单个文件 */
+    function renameSelected() {
+        const items = Array.from(selectedItems.values());
+        const file = items.find(it => it.type === 'file');
+        if (file) {
+            openRenameDialog(file.id, file.filename);
+        }
+    }
+
+    /** 移动选中的单个目录 */
+    function moveSelected() {
+        const items = Array.from(selectedItems.values());
+        const dir = items.find(it => it.type === 'dir');
+        if (dir) {
+            openMoveDirDialog(dir.prefix, dir.name);
+        }
+    }
+
+
 
     // === 分享功能 ===
 
@@ -981,52 +1529,6 @@
         };
     }
 
-    /**
-     * 更新批量操作栏状态。
-     * 统计当前选中的 .file-check 数量，更新 batch-count 文本，
-     * 选中数 > 0 时显示 batch-ops 栏，否则隐藏。
-     * 每次 checkbox 状态变化时调用。
-     */
-    function updateBatchOps() {
-        const checked = document.querySelectorAll('.file-check:checked');
-        const bar = document.getElementById('batch-ops');
-        const countEl = document.getElementById('batch-count');
-        if (checked.length > 0) {
-            bar.hidden = false;
-            countEl.textContent = `已选 ${checked.length} 项`;
-        } else {
-            bar.hidden = true;
-        }
-    }
-
-    /**
-     * 批量删除选中文件。
-     * 收集所有选中 checkbox 的 data-id，弹出确认对话框，
-     * 确认后调用 POST /api/files/batch-delete。
-     * 后端逐个删除（存储 + 数据库 + Redis），返回成功/失败计数。
-     */
-    function batchDelete() {
-        const checked = document.querySelectorAll('.file-check:checked');
-        if (checked.length === 0) { toast('请先选择文件', 'err'); return; }
-        const ids = Array.from(checked).map(cb => cb.dataset.id);
-
-        openConfirmDialog(`确认批量删除选中的 ${ids.length} 个文件？此操作不可恢复。`, async () => {
-            try {
-                const res = await apiFetch(API.filesBatchDelete, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ids }),
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const data = await res.json().catch(() => ({}));
-                toast(`批量删除完成（成功 ${data.success || 0}，失败 ${data.fail || 0}）`, 'ok');
-                loadFiles();
-            } catch (e) {
-                toast(`批量删除失败: ${e.message}`, 'err');
-            }
-        });
-    }
-
     // === 事件绑定 ===
 
     /** 从服务器拉取用户配置并覆盖本地（跨浏览器同步）
@@ -1144,11 +1646,59 @@
         // 新建目录
         document.getElementById('mkdir-btn').addEventListener('click', mkdir);
 
-        // 批量删除选中文件
-        const batchDeleteBtn = document.getElementById('batch-delete-btn');
-        if (batchDeleteBtn) {
-            batchDeleteBtn.addEventListener('click', batchDelete);
+        // === 选择操作栏按钮（selection-ops）===
+        // 取消选择：清空选中状态
+        const selCancelBtn = document.getElementById('sel-cancel');
+        if (selCancelBtn) {
+            selCancelBtn.addEventListener('click', () => clearSelection());
         }
+        // 下载选中文件
+        const selDownloadBtn = document.getElementById('sel-download');
+        if (selDownloadBtn) {
+            selDownloadBtn.addEventListener('click', downloadSelected);
+        }
+        // ZIP 下载选中目录
+        const selZipBtn = document.getElementById('sel-zip');
+        if (selZipBtn) {
+            selZipBtn.addEventListener('click', zipDownloadSelected);
+        }
+        // 分享选中项
+        const selShareBtn = document.getElementById('sel-share');
+        if (selShareBtn) {
+            selShareBtn.addEventListener('click', shareSelected);
+        }
+        // 重命名选中文件
+        const selRenameBtn = document.getElementById('sel-rename');
+        if (selRenameBtn) {
+            selRenameBtn.addEventListener('click', renameSelected);
+        }
+        // 移动选中目录
+        const selMoveBtn = document.getElementById('sel-move');
+        if (selMoveBtn) {
+            selMoveBtn.addEventListener('click', moveSelected);
+        }
+        // 批量删除选中项
+        const selDeleteBtn = document.getElementById('sel-delete');
+        if (selDeleteBtn) {
+            selDeleteBtn.addEventListener('click', batchDeleteSelected);
+        }
+
+        // === 上下文菜单：点击空白处或 ESC 关闭 ===
+        document.addEventListener('click', e => {
+            const menu = document.getElementById('ctx-menu');
+            if (menu && !menu.hidden && !menu.contains(e.target)) {
+                hideContextMenu();
+            }
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') {
+                hideContextMenu();
+                // ESC 也清空选择（便于快速退出多选模式）
+                if (selectedItems.size > 0) clearSelection();
+            }
+        });
+        // 窗口尺寸变化时隐藏菜单（避免定位错乱）
+        window.addEventListener('resize', hideContextMenu);
 
         // 分享管理
         const shareManageBtn = document.getElementById('share-manage-btn');

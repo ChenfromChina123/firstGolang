@@ -193,3 +193,21 @@ type UserSettings struct {
 	Concurrency int       `json:"concurrency"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
+
+// CheckUploadRequest 秒传检查请求（上传前检查哈希是否已存在）。
+// 客户端计算完整文件 SHA256 后调用 /api/upload/check，命中则跳过整个上传流程。
+type CheckUploadRequest struct {
+	Filename string `json:"filename"` // 目标文件名（含路径前缀，如 "docs/report.pdf"）
+	FileSize int64  `json:"file_size"` // 文件大小（字节）
+	FileHash string `json:"file_hash"` // 完整 SHA256 hex（64 字符）
+}
+
+// CheckUploadResponse 秒传检查响应。
+// InstantUpload=true 表示秒传成功，文件已创建；false 表示未命中，需正常上传。
+type CheckUploadResponse struct {
+	InstantUpload bool   `json:"instant_upload"`           // true=秒传成功，false=需正常上传
+	FileID        string `json:"file_id,omitempty"`        // 秒传成功时的新文件 ID
+	Filename      string `json:"filename,omitempty"`       // 实际文件名
+	Size          int64  `json:"size,omitempty"`           // 文件大小
+	Hash          string `json:"hash,omitempty"`           // 文件 SHA256
+}

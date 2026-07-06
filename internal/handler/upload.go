@@ -2,6 +2,7 @@ package handler
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -707,9 +708,121 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.GetUploadStatus(w, r)
 	case "/complete":
 		h.CompleteUpload(w, r)
+	case "/check":
+		h.CheckUpload(w, r)
 	default:
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// CheckUpload 检查文件哈希是否已存在，命中则秒传（复制存储文件，创建新引用记录）。
+// POST /api/upload/check
+// 权限：需认证。秒传范围仅限当前 owner（同用户），不跨用户（防哈希侧信道探测）。
+// 命中条件：hash + file_size 双重匹配，且 owner = 当前用户。
+// 命中后流程：生成新 fileID → CopyFile 复制存储 → CreateFile 创建记录 → 返回 instant_upload=true
+// 失败回滚：CopyFile 失败不建 DB；CreateFile 失败删存储文件（与 saveShareToMyFiles 一致）
+func (h *UploadHandler) CheckUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req model.CheckUploadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+
+	// 参数校验
+	if err := validateFilePath(req.Filename); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"invalid_filename","message":"%s"}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if req.FileSize <= 0 {
+		http.Error(w, `{"error":"invalid_file_size"}`, http.StatusBadRequest)
+		return
+	}
+	if len(req.FileHash) != 64 {
+		http.Error(w, `{"error":"invalid_file_hash","message":"file_hash must be 64 hex chars (SHA256)"}`, http.StatusBadRequest)
+		return
+	}
+
+	username := auth.UsernameFromContext(r.Context())
+	if username == "" {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// 秒传范围仅限当前 owner（admin 也只查自己的，不跨用户）
+	srcFile, err := h.db.GetFileByHash(req.FileHash, username, req.FileSize)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 未命中，需正常上传
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(model.CheckUploadResponse{InstantUpload: false})
+			return
+		}
+		log.Printf("[Upload] check instant upload error: %v", err)
+		http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 命中：检查文件名冲突（同 owner 已有同名活跃文件则不秒传，让前端走冲突处理流程）
+	existing, _ := h.db.FindFileByName(req.Filename, username)
+	if existing != nil && existing.ID != srcFile.ID {
+		http.Error(w, `{"error":"filename_conflict","message":"目标文件名已存在"}`, http.StatusConflict)
+		return
+	}
+
+	// 生成新 fileID 和 storage_path，复制存储文件
+	newFileID := generateID()
+	dstStoragePath := h.storage.StoragePathFor(newFileID, req.Filename)
+	if err := h.storage.CopyFile(srcFile.StoragePath, dstStoragePath); err != nil {
+		log.Printf("[Upload] instant upload copy file error: src=%s dst=%s err=%v", srcFile.StoragePath, dstStoragePath, err)
+		http.Error(w, `{"error":"copy_failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 创建新的 DB 记录（失败则回滚存储文件）
+	now := time.Now()
+	newRecord := &model.FileRecord{
+		ID:          newFileID,
+		Filename:    req.Filename,
+		Size:        srcFile.Size,
+		Hash:        srcFile.Hash,
+		StoragePath: dstStoragePath,
+		StorageType: srcFile.StorageType,
+		ChunkSize:   srcFile.ChunkSize,
+		TotalChunks: srcFile.TotalChunks,
+		Status:      "completed",
+		Owner:       username,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := h.db.CreateFile(newRecord); err != nil {
+		log.Printf("[Upload] instant upload create file record error: %v, rolling back storage", err)
+		h.storage.DeleteFile(dstStoragePath) // 回滚
+		http.Error(w, `{"error":"db_create_failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Redis 标记文件存在（若启用 Redis，保持冲突检查集合一致）
+	if h.redis != nil {
+		h.redis.MarkFileExists(r.Context(), req.Filename)
+	}
+
+	log.Printf("[Upload] instant upload success: user=%s file=%s hash=%s src=%s",
+		username, req.Filename, req.FileHash[:16], srcFile.ID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(model.CheckUploadResponse{
+		InstantUpload: true,
+		FileID:        newFileID,
+		Filename:      req.Filename,
+		Size:          srcFile.Size,
+		Hash:          srcFile.Hash,
+	})
 }
 
 // validateFilePath 校验文件名路径（路径枚举方案）。

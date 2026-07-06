@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706g">
+    <link rel="stylesheet" href="/web/style.css?v=20260706h">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -89,13 +89,23 @@
             <div class="panel-head">
                 <h2><span class="idx">02</span> 文件库</h2>
                 <div class="files-head-ops">
-                    <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
-                    <button class="ghost-btn" id="share-manage-btn">分享管理</button>
-                    <button class="ghost-btn" id="refresh-files">刷新</button>
-                    <span class="batch-ops" id="batch-ops" hidden>
-                        <span class="batch-count" id="batch-count">已选 0 项</span>
-                        <button class="danger-btn" id="batch-delete-btn">批量删除</button>
-                    </span>
+                    <!-- 默认操作（选中 0 项时显示） -->
+                    <div class="default-ops" id="default-ops">
+                        <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
+                        <button class="ghost-btn" id="share-manage-btn">分享管理</button>
+                        <button class="ghost-btn" id="refresh-files">刷新</button>
+                    </div>
+                    <!-- 选择操作（选中 ≥1 项时显示，按钮按选中类型动态显示/隐藏） -->
+                    <div class="selection-ops" id="selection-ops" hidden>
+                        <span class="selection-count" id="selection-count">已选 0 项</span>
+                        <button class="ghost-btn" id="sel-download" hidden>下载</button>
+                        <button class="ghost-btn" id="sel-zip" hidden>ZIP 下载</button>
+                        <button class="ghost-btn" id="sel-share" hidden>分享</button>
+                        <button class="ghost-btn" id="sel-rename" hidden>重命名</button>
+                        <button class="ghost-btn" id="sel-move" hidden>移动</button>
+                        <button class="danger-btn" id="sel-delete">删除</button>
+                        <button class="ghost-btn" id="sel-cancel">取消选择</button>
+                    </div>
                 </div>
             </div>
             <div class="files-tree-wrap">
@@ -259,6 +269,69 @@
     <!-- Toast 提示 -->
     <div class="toast-wrap" id="toast-wrap"></div>
 
-    <script src="/web/app.js?v=20260706g"></script>
+    <!-- SVG 图标 sprite：定义所有文件类型图标，通过 <use href="#icon-xxx"> 引用 -->
+    <svg style="display:none" aria-hidden="true">
+        <!-- 文件夹图标（目录用，accent 色） -->
+        <symbol id="icon-folder" viewBox="0 0 16 16">
+            <path d="M1.5 3.5h4l1.5 2h7.5v7a1 1 0 0 1-1 1H2.5a1 1 0 0 1-1-1V3.5z"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </symbol>
+        <!-- 图片图标：山+太阳 -->
+        <symbol id="icon-image" viewBox="0 0 16 16">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <circle cx="5" cy="6" r="1.2" fill="currentColor"/>
+            <path d="M2 12l3.5-3.5 2.5 2.5 3-3L14 11" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </symbol>
+        <!-- 视频图标：播放三角 -->
+        <symbol id="icon-video" viewBox="0 0 16 16">
+            <rect x="1.5" y="3" width="9" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M10.5 6.5l4-2.5v8l-4-2.5z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </symbol>
+        <!-- 音频图标：音符 -->
+        <symbol id="icon-audio" viewBox="0 0 16 16">
+            <path d="M3 12V4l9-2v9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <circle cx="3" cy="12" r="1.8" fill="currentColor"/>
+            <circle cx="12" cy="11" r="1.8" fill="currentColor"/>
+            <path d="M4.8 12V4.4l7.2-1.6v8.2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        </symbol>
+        <!-- PDF 图标：文档+PDF 字样 -->
+        <symbol id="icon-pdf" viewBox="0 0 16 16">
+            <path d="M3 1.5h7l3 3V14a.5.5 0 0 1-.5.5h-9.5A.5.5 0 0 1 2.5 14V2.5A1 1 0 0 1 3 1.5z"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <path d="M10 1.5V4.5h3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <text x="8" y="11.5" font-size="3" font-family="monospace" font-weight="700"
+                  text-anchor="middle" fill="currentColor">PDF</text>
+        </symbol>
+        <!-- 代码图标：</> 尖括号 -->
+        <symbol id="icon-code" viewBox="0 0 16 16">
+            <path d="M5 4L1 8l4 4M11 4l4 4-4 4M9.5 2.5L6.5 13.5"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <!-- 文本图标：文档+横线 -->
+        <symbol id="icon-text" viewBox="0 0 16 16">
+            <path d="M3 1.5h7l3 3V14a.5.5 0 0 1-.5.5h-9.5A.5.5 0 0 1 2.5 14V2.5A1 1 0 0 1 3 1.5z"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <path d="M10 1.5V4.5h3M5 8h6M5 10.5h6M5 5.5h2"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </symbol>
+        <!-- 压缩包图标：拉链/盒子 -->
+        <symbol id="icon-archive" viewBox="0 0 16 16">
+            <rect x="2" y="3" width="12" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <rect x="2" y="3" width="12" height="3.5" fill="currentColor" opacity="0.3"/>
+            <path d="M6 3v3.5M8 3v3.5M10 3v3.5" stroke="currentColor" stroke-width="0.8"/>
+            <path d="M8 8v3M6.5 9.5h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </symbol>
+        <!-- 通用文件图标（默认） -->
+        <symbol id="icon-file" viewBox="0 0 16 16">
+            <path d="M3 1.5h7l3 3V14a.5.5 0 0 1-.5.5h-9.5A.5.5 0 0 1 2.5 14V2.5A1 1 0 0 1 3 1.5z"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <path d="M10 1.5V4.5h3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </symbol>
+    </svg>
+
+    <!-- 上下文菜单容器（右键菜单动态填充） -->
+    <div class="ctx-menu" id="ctx-menu" hidden></div>
+
+    <script src="/web/app.js?v=20260707a"></script>
 </body>
 </html>

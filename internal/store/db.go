@@ -653,6 +653,11 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("migrate files owner: %w", err)
 	}
 
+	// 增量迁移：为 files.hash 列创建索引（秒传检查加速）
+	if err := db.migrateFilesAddHashIndex(); err != nil {
+		return fmt.Errorf("migrate files hash index: %w", err)
+	}
+
 	return nil
 }
 
@@ -816,6 +821,36 @@ func (db *DB) migrateFilesAddOwner() error {
 	return nil
 }
 
+// migrateFilesAddHashIndex 为 files.hash 列创建索引（秒传检查加速）。
+// 兼容 SQLite 和 MySQL：SQLite 用 CREATE INDEX IF NOT EXISTS，MySQL 先检测再创建。
+// 索引可将秒传检查从全表扫描降为索引查找。
+func (db *DB) migrateFilesAddHashIndex() error {
+	switch db.dialect {
+	case "mysql":
+		// 检测索引是否已存在
+		var cnt int
+		err := db.conn.QueryRow(
+			`SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+			 WHERE TABLE_NAME = 'files' AND TABLE_SCHEMA = DATABASE() AND INDEX_NAME = 'idx_files_hash'`).Scan(&cnt)
+		if err != nil {
+			return fmt.Errorf("check idx_files_hash: %w", err)
+		}
+		if cnt == 0 {
+			if _, err := db.conn.Exec(`CREATE INDEX idx_files_hash ON files(hash)`); err != nil {
+				log.Printf("[DB] WARNING: create idx_files_hash failed: %v", err)
+			} else {
+				log.Printf("[DB] files table: added 'idx_files_hash' index")
+			}
+		}
+	default:
+		// SQLite 支持 IF NOT EXISTS
+		if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_files_hash ON files(hash)`); err != nil {
+			log.Printf("[DB] WARNING: create idx_files_hash failed: %v", err)
+		}
+	}
+	return nil
+}
+
 // CreateUploadSession inserts a new upload session
 func (db *DB) CreateUploadSession(session *model.UploadSession) error {
 	_, err := db.conn.Exec(
@@ -974,6 +1009,27 @@ func (db *DB) FindFileByName(filename, owner string) (*model.FileRecord, error) 
 			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
 			 FROM files WHERE filename = ? AND status = 'completed' AND owner = ? ORDER BY created_at DESC LIMIT 1`, filename, owner)
 	}
+	f := &model.FileRecord{}
+	var createdAt, updatedAt string
+	err := row.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
+		&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return f, nil
+}
+
+// GetFileByHash 按 hash + owner + size 查询已完成文件（秒传检查用）。
+// hash 必须非空（完整 SHA256 hex，64 字符）；owner 非空时按用户过滤（防跨用户哈希侧信道探测）。
+// 返回 sql.ErrNoRows 时表示未命中（调用方据此判断是否秒传）。
+// 校验条件：hash 匹配 + size 匹配 + status='completed'，三重校验避免误判。
+func (db *DB) GetFileByHash(hash, owner string, fileSize int64) (*model.FileRecord, error) {
+	row := db.conn.QueryRow(
+		`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+		 FROM files WHERE hash = ? AND size = ? AND status = 'completed' AND owner = ?
+		 ORDER BY created_at DESC LIMIT 1`, hash, fileSize, owner)
 	f := &model.FileRecord{}
 	var createdAt, updatedAt string
 	err := row.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
