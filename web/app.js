@@ -1555,13 +1555,15 @@
         const qualitySel = document.getElementById('preview-quality');
 
         // 复用顶部画质选择器，替换为视频三档选项
+        // 默认高画质：直接 fallback 到原文件流式播放，无需等待 ffmpeg 转码
+        // 用户主动选中/低画质时触发转码（首次需等待，后续命中缓存）
         qualitySel.innerHTML = `
-            <option value="high">高画质</option>
-            <option value="medium" selected>中画质</option>
+            <option value="high" selected>高画质</option>
+            <option value="medium">中画质</option>
             <option value="low">低画质</option>
         `;
         qualitySel.hidden = false;
-        qualitySel.value = 'medium';
+        qualitySel.value = 'high';
 
         const poster = meta.urls.poster ? ` poster="${meta.urls.poster}"` : '';
         body.innerHTML = `<video controls${poster} preload="metadata" style="max-width:100%;max-height:85vh;background:#000"></video>`;
@@ -1594,8 +1596,8 @@
         };
 
         qualitySel.onchange = () => loadQuality(qualitySel.value);
-        // 首次加载默认中等画质
-        loadQuality('medium');
+        // 首次加载默认高画质（原文件流式，无需转码等待）
+        loadQuality('high');
     }
 
     /** 渲染压缩包预览：列出包内文件树，单击文件触发提取预览或下载 */
