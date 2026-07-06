@@ -75,6 +75,25 @@ func (l *LoginRateLimiter) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// Allow 检查请求是否允许通过（用于 handler 内直接调用，而非中间件包装）。
+// 返回 false 表示已超限。首次调用会启动 cleanup 协程。
+func (l *LoginRateLimiter) Allow(r *http.Request) bool {
+	l.mu.Lock()
+	if len(l.visitors) == 0 {
+		// 首次使用时启动 cleanup 协程
+		go func() {
+			ticker := time.NewTicker(10 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				l.cleanup()
+			}
+		}()
+	}
+	l.mu.Unlock()
+	ip := clientIP(r)
+	return l.getLimiter(ip).Allow()
+}
+
 // clientIP 从请求中提取客户端 IP
 func clientIP(r *http.Request) string {
 	// 优先从 X-Forwarded-For 取（反代场景）

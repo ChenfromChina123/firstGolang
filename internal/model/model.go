@@ -183,6 +183,7 @@ type SharePublicInfo struct {
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	DownloadCount int        `json:"download_count"`
 	IsExpired     bool       `json:"is_expired"`
+	DownloadToken string     `json:"download_token"`           // 下载签名 token（防盗链，30 分钟有效）
 }
 
 // UserSettings 表示用户的跨浏览器配置（分片大小、并发数）

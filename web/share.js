@@ -31,6 +31,7 @@
     var currentPath = '';           // 当前浏览的子目录（相对分享根）
     var isLoggedIn = false;         // 是否已登录
     var selectedFiles = new Set();  // 选中的文件路径（相对分享根）
+    var downloadToken = '';         // 下载签名 token（防盗链，从 /api/s/{id} 获取，30 分钟有效）
 
     // === 工具函数 ===
 
@@ -250,7 +251,7 @@
         if (selectedFiles.size === 0) return;
         var paths = Array.from(selectedFiles);
         try {
-            var res = await fetch(API_BASE + shareId + '/batch', {
+            var res = await fetch(API_BASE + shareId + '/batch?token=' + encodeURIComponent(downloadToken), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ paths: paths })

@@ -2,13 +2,16 @@ package handler
 
 import (
 	"archive/zip"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,15 +21,56 @@ import (
 	"filesync/internal/storage"
 )
 
+// shareTokenTTL 分享下载 token 有效期（30 分钟）
+const shareTokenTTL = 30 * time.Minute
+
 // ShareHandler 处理分享链接的创建、管理和公开访问
 type ShareHandler struct {
-	db      *store.DB
-	storage storage.Storage
+	db              *store.DB
+	storage         storage.Storage
+	secret          []byte                  // HMAC 签名密钥（复用 JWT secret）
+	downloadLimiter *auth.LoginRateLimiter  // 分享下载频率限制（每 IP 每分钟 10 次）
 }
 
 // NewShareHandler 创建分享 handler
-func NewShareHandler(db *store.DB, st storage.Storage) *ShareHandler {
-	return &ShareHandler{db: db, storage: st}
+// secret 用于签名下载 token（防盗链），通常传入 JWT secret
+func NewShareHandler(db *store.DB, st storage.Storage, secret []byte) *ShareHandler {
+	return &ShareHandler{
+		db:              db,
+		storage:         st,
+		secret:          secret,
+		downloadLimiter: auth.NewLoginRateLimiter(0.1667, 10), // 10 次/分钟
+	}
+}
+
+// generateShareToken 生成分享下载 token（HMAC-SHA256，绑定 share_id + 过期时间）。
+// token 格式：{expire_unix}.{hmac_hex}，有效期 30 分钟。
+// 不绑定 IP 避免 NAT 环境下正常用户被拒。
+func generateShareToken(shareID string, secret []byte, ttl time.Duration) string {
+	expire := time.Now().Add(ttl).Unix()
+	msg := fmt.Sprintf("%s:%d", shareID, expire)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(msg))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return fmt.Sprintf("%d.%s", expire, sig)
+}
+
+// validateShareToken 校验 token 有效性（未过期 + 签名匹配 + share_id 绑定）。
+// 使用 hmac.Equal 做常量时间比较，防止时序攻击。
+func validateShareToken(token, shareID string, secret []byte) bool {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	expire, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || time.Now().Unix() > expire {
+		return false
+	}
+	msg := fmt.Sprintf("%s:%d", shareID, expire)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(msg))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(parts[1]), []byte(expectedSig))
 }
 
 // createShareRequest 创建分享请求体
@@ -430,6 +474,7 @@ func (h *ShareHandler) getSharePublic(w http.ResponseWriter, r *http.Request, id
 		ExpiresAt:     s.ExpiresAt,
 		DownloadCount: s.DownloadCount,
 		IsExpired:     isExpired,
+		DownloadToken: generateShareToken(s.ID, h.secret, shareTokenTTL),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(info)
@@ -438,8 +483,22 @@ func (h *ShareHandler) getSharePublic(w http.ResponseWriter, r *http.Request, id
 // downloadShare 公开下载分享的文件或目录
 // GET /api/s/{id}/download            - 下载单文件分享，或整目录 ZIP
 // GET /api/s/{id}/download?path=子路径 - 下载目录分享中的单个文件
-// 流程：检查有效性 → 设置 visitor cookie → 记录下载（去重）→ 流式下载
+// 流程：token 校验 → 频率限制 → 检查有效性 → 设置 visitor cookie → 记录下载（去重）→ 流式下载
 func (h *ShareHandler) downloadShare(w http.ResponseWriter, r *http.Request, id string) {
+	// 防盗链：校验下载 token（必须从 /api/s/{id} 获取，30 分钟有效）
+	token := r.URL.Query().Get("token")
+	if !validateShareToken(token, id, h.secret) {
+		log.Printf("[Share] download blocked: invalid token, id=%s", id)
+		http.Error(w, `{"error":"forbidden","message":"invalid or missing download token"}`, http.StatusForbidden)
+		return
+	}
+
+	// 频率限制：每 IP 每分钟最多 10 次下载
+	if !h.downloadLimiter.Allow(r) {
+		http.Error(w, `{"error":"rate_limited","message":"too many downloads, try again later"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	s, err := h.db.GetShare(id)
 	if err != nil {
 		http.Error(w, `{"error":"share_not_found"}`, http.StatusNotFound)
@@ -596,6 +655,13 @@ func (h *ShareHandler) downloadSharedDir(w http.ResponseWriter, r *http.Request,
 // 响应：{path:"子目录", dirs:[{name,file_count}], files:[{id,name,size,created_at}]}
 // 浏览不计数（仅下载计数）。
 func (h *ShareHandler) listShareDir(w http.ResponseWriter, r *http.Request, id string) {
+	// 防盗链：校验 token（防止目录枚举攻击）
+	token := r.URL.Query().Get("token")
+	if !validateShareToken(token, id, h.secret) {
+		http.Error(w, `{"error":"forbidden","message":"invalid or missing token"}`, http.StatusForbidden)
+		return
+	}
+
 	s, err := h.db.GetShare(id)
 	if err != nil {
 		http.Error(w, `{"error":"share_not_found","message":"分享不存在或已删除"}`, http.StatusNotFound)
@@ -694,6 +760,17 @@ func (h *ShareHandler) listShareDir(w http.ResponseWriter, r *http.Request, id s
 // 限制：最多 500 个文件，防止 DoS。
 // 流程：校验分享 → 记录下载 → 逐个 resolveSharePath + FindFileByName → 流式 ZIP。
 func (h *ShareHandler) batchDownloadShare(w http.ResponseWriter, r *http.Request, id string) {
+	// 防盗链：校验 token + 频率限制
+	token := r.URL.Query().Get("token")
+	if !validateShareToken(token, id, h.secret) {
+		http.Error(w, `{"error":"forbidden","message":"invalid or missing download token"}`, http.StatusForbidden)
+		return
+	}
+	if !h.downloadLimiter.Allow(r) {
+		http.Error(w, `{"error":"rate_limited","message":"too many downloads, try again later"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	s, err := h.db.GetShare(id)
 	if err != nil {
 		http.Error(w, `{"error":"share_not_found"}`, http.StatusNotFound)

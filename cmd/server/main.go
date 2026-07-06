@@ -15,6 +15,7 @@ import (
 	"filesync/internal/auth"
 	"filesync/internal/email"
 	"filesync/internal/handler"
+	"filesync/internal/middleware"
 	"filesync/internal/storage"
 	"filesync/internal/store"
 
@@ -132,7 +133,6 @@ func main() {
 	// Register handlers
 	downloadHandler := handler.NewDownloadHandler(db, st)
 	fileHandler := handler.NewFileHandler(db, st, rc)
-	shareHandler := handler.NewShareHandler(db, st)
 	settingsHandler := handler.NewSettingsHandler(db)
 
 	// === 认证系统初始化 ===
@@ -149,6 +149,9 @@ func main() {
 	enableHTTPS := domain != ""
 
 	jwtManager := auth.NewJWTManager(jwtSecret, domain, enableHTTPS)
+
+	// 分享 handler 创建：传入 JWT secret 用于签名下载 token（防盗链）
+	shareHandler := handler.NewShareHandler(db, st, []byte(jwtSecret))
 
 	// === 邮件服务初始化（用于账号注册和忘记密码） ===
 	// SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS 必填，SMTP_FROM/APP_BASE_URL 可选
@@ -283,7 +286,27 @@ func main() {
 	}
 
 	// 用 JWT 中间件包装 mux
-	authedHandler := jwtManager.Middleware(whitelist, mux)
+	jwtAuthed := jwtManager.Middleware(whitelist, mux)
+
+	// === 防盗链中间件 ===
+	// Referer 白名单：主域名 + www 子域 + 环境变量额外配置
+	allowedDomains := []string{}
+	if domain != "" {
+		allowedDomains = append(allowedDomains, domain, "www."+domain)
+	}
+	if extra := getEnv("ALLOWED_REFERERS", ""); extra != "" {
+		for _, d := range strings.Split(extra, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				allowedDomains = append(allowedDomains, d)
+			}
+		}
+	}
+	log.Printf("[Middleware] Referer whitelist: %v", allowedDomains)
+
+	// 中间件链：SecurityHeaders -> RefererCheck -> JWT -> mux
+	referered := middleware.RefererCheck(allowedDomains, jwtAuthed)
+	finalHandler := middleware.SecurityHeaders(referered)
 
 	log.Printf("API endpoints:")
 	log.Printf("  POST   /api/login               - Login (rate limited: 5/min)")
@@ -350,7 +373,7 @@ func main() {
 		// HTTPS server (443)
 		httpsServer := &http.Server{
 			Addr:         ":443",
-			Handler:      authedHandler,
+			Handler:      finalHandler,
 			TLSConfig:    manager.TLSConfig(),
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 30 * time.Minute,
@@ -386,7 +409,7 @@ func main() {
 		log.Printf("FileSync Server starting on http://0.0.0.0%s", addr)
 		server := &http.Server{
 			Addr:           addr,
-			Handler:        authedHandler,
+			Handler:        finalHandler,
 			ReadTimeout:    10 * time.Second,
 			WriteTimeout:   30 * time.Minute,
 			IdleTimeout:    60 * time.Second,
