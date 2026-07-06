@@ -19,3 +19,33 @@ data/
 .vscode/
 *.swp
 *.swo
+
+# Test data directories (auto-created)
+data_10k/
+data_bench2/
+data_sentinel/
+data_redis_test/
+data_test_redis/
+data_docker/
+download_test_redis/
+tmp/
+
+# Non-core modules
+docker-test-ssh/
+
+# Benchmark results
+bench_result_*.json
+
+# Runtime logs
+*.log
+
+# Cross-compiled binaries
+server_linux
+bench_linux
+
+# 前端压缩工具的 node_modules（不入库）
+tools/minify/node_modules/
+tools/minify/package-lock.json
+
+# 前端压缩输出（部署前用 node tools/minify/minify.js 生成）
+web/dist/

@@ -1,0 +1,14 @@
+{
+  "name": "filesync-minify",
+  "version": "1.0.0",
+  "description": "FileSync 前端压缩工具 - 将 web/ 中的 JS/CSS/HTML 压缩到 web/dist/",
+  "private": true,
+  "scripts": {
+    "minify": "node minify.js"
+  },
+  "dependencies": {
+    "terser": "^5.31.0",
+    "clean-css": "^5.3.3",
+    "html-minifier-terser": "^7.2.0"
+  }
+}
