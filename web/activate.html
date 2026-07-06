@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="color-scheme" content="dark">
     <title>FileSync · 账号激活</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706c">
+    <link rel="stylesheet" href="/web/style.css?v=20260706g">
     <style>
         .login-wrap {
             min-height: 100vh; display: flex; align-items: center; justify-content: center;
@@ -120,7 +122,7 @@
                 <div class="status-title">链接已过期</div>
                 <div class="status-message">激活链接有效期 24 小时，已过期。<br>请重新发送激活邮件。</div>
                 <div class="resend-form">
-                    <input type="email" id="resend-email" placeholder="你的注册邮箱" autocomplete="email">
+                    <input type="email" id="resend-email" placeholder="你的注册邮箱" autocomplete="email" inputmode="email" spellcheck="false">
                     <button class="resend-btn" id="resend-btn">重新发送激活邮件</button>
                 </div>
                 <a href="/web/login.html" class="action-link">返回登录</a>
@@ -134,7 +136,7 @@
                 <div class="status-title">${title}</div>
                 <div class="status-message">${message}</div>
                 <div class="resend-form">
-                    <input type="email" id="resend-email" placeholder="你的注册邮箱" autocomplete="email">
+                    <input type="email" id="resend-email" placeholder="你的注册邮箱" autocomplete="email" inputmode="email" spellcheck="false">
                     <button class="resend-btn" id="resend-btn">重新发送激活邮件</button>
                 </div>
                 <a href="/web/login.html" class="action-link">返回登录</a>

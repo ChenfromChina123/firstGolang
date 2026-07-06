@@ -1,5 +1,15 @@
 /* FileSync 前端样式 · 终端美学深色主题 */
 
+/* === 移动端全局优化 === */
+/* color-scheme: dark 让浏览器原生控件（滚动条/input/select）走暗色 */
+html { color-scheme: dark; }
+/* 移除移动端点击高亮（iOS/Android 默认灰色背景） */
+body { -webkit-tap-highlight-color: transparent; }
+/* 触摸优化：禁止双击缩放延迟（manipulation 允许 pan/zoom/pinch 但禁用双击） */
+button, a, input, select, textarea, label, [role="button"] {
+    touch-action: manipulation;
+}
+
 :root {
     /* 配色：深炭灰 + 电光青 + 终端绿 */
     --bg-0: #0a0e14;
@@ -83,7 +93,9 @@ body::after {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 24px;
+    /* safe-area-inset 适配刘海屏/状态栏（env 在非移动端为 0） */
+    padding: 0 max(24px, env(safe-area-inset-right)) 0 max(24px, env(safe-area-inset-left));
+    padding-top: env(safe-area-inset-top);
     background: rgba(13, 17, 23, 0.85);
     backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--border);
@@ -552,12 +564,16 @@ body::after {
 .ghost-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* === 冲突对话框 === */
-.modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; }
+/* overscroll-behavior: contain 防止模态框内滚动"链式"传播到背景 */
+.modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; overscroll-behavior: contain; }
 .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); }
 .modal-card {
     position: relative;
     width: 480px;
     max-width: 90vw;
+    max-height: 85vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     background: var(--bg-2);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -1149,3 +1165,83 @@ body::after {
     .user-info .role { display: none; }
     .user-info .name { max-width: 80px; }
 }
+
+/* 手机断点（< 480px）：触摸目标 ≥44px、input 字体 16px 防 iOS 自动缩放 */
+@media (max-width: 480px) {
+    /* input/textarea/select 字体 ≥16px，防止 iOS Safari 聚焦时自动放大页面 */
+    input, textarea, select {
+        font-size: 16px;
+    }
+    /* 触摸目标提升到 ≥44px（iOS HIG 最低标准） */
+    .primary-btn, .ghost-btn, .pick-btn, .dl-btn, .link-btn,
+    .qi-actions button, .tree-download-btn, .share-download-btn {
+        min-height: 44px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+    }
+    /* 复选框触摸目标放大 */
+    .file-check, .tree-cb, #select-all-cb {
+        width: 22px;
+        height: 22px;
+    }
+    /* topbar 紧凑化 */
+    .brand-text h1 { font-size: 15px; }
+    .brand-sub { display: none; }
+    /* layout 缩小边距 */
+    .layout { padding: 12px; gap: 12px; }
+    .panel-head { padding: 12px 14px; }
+    .queue, .files-tree-wrap { margin: 0 14px 14px; }
+    /* 模态框占满宽度，留 16px 边距 */
+    .modal-card {
+        width: calc(100vw - 32px);
+        max-width: calc(100vw - 32px);
+        padding: 16px;
+    }
+    /* 树形行紧凑化 */
+    .tree-row {
+        grid-template-columns: 22px minmax(0, 1fr) auto;
+        gap: 6px;
+        padding: 8px 8px;
+    }
+    /* 隐藏文件大小列，只保留名称和下载按钮 */
+    .tree-row .tree-meta:nth-of-type(2),
+    .tree-row .tree-meta:nth-of-type(3),
+    .tree-row .tree-meta:nth-of-type(4) { display: none; }
+    /* 分享页工具栏堆叠 */
+    .share-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+    .share-toolbar-actions {
+        display: flex;
+        gap: 8px;
+    }
+    .share-toolbar-actions button {
+        flex: 1;
+    }
+    /* 分享元信息网格单列 */
+    .share-meta-grid {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+    }
+    /* 健康指示器隐藏 meta 文本 */
+    .health-meta { display: none; }
+}
+
+/* === 无障碍：尊重用户的减少动画偏好 === */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+    /* 关闭进度条扫描动画 */
+    .qi-progress-fill::after { display: none; }
+    /* 关闭健康指示器脉冲 */
+    .health .dot { animation: none; }
+}
+
+/* === 底部安全区域（fixed 定位元素需手动留位） === */
+/* 例：底部固定工具栏可加 padding-bottom: env(safe-area-inset-bottom) */

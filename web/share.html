@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="color-scheme" content="dark">
     <title>FileSync · 分享</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706f">
+    <link rel="stylesheet" href="/web/style.css?v=20260706g">
 </head>
 <body>
     <!-- 顶部品牌栏（简化版：无健康状态、无用户信息、无登出按钮） -->
@@ -98,7 +100,7 @@
             </div>
             <p class="modal-desc">将选中的文件转存到你的文件中心。可指定目标目录，留空则转存到根目录。</p>
             <label class="modal-label">目标目录</label>
-            <input type="text" class="modal-input" id="save-target-dir" placeholder="如 docs/ （留空为根目录）">
+            <input type="text" class="modal-input" id="save-target-dir" placeholder="如 docs/ （留空为根目录）" inputmode="text" spellcheck="false" autocomplete="off">
             <div class="modal-result" id="save-result" hidden></div>
             <div class="modal-foot modal-foot-right">
                 <button class="ghost-btn" id="save-cancel-btn" type="button">取消</button>
@@ -107,6 +109,6 @@
         </div>
     </div>
 
-    <script src="/web/share.js?v=20260706f"></script>
+    <script src="/web/share.js?v=20260706g"></script>
 </body>
 </html>
