@@ -45,6 +45,7 @@ web_files = [
     ('activate.html', 'activate.html'),
     ('share.html', 'share.html'),
     ('share.js', 'share.js'),
+    ('sha256.worker.js', 'sha256.worker.js'),
 ]
 for local_name, remote_name in web_files:
     local_path = rf'd:\STUDY\GO\StudyGolang\firstGolang\filesync\web\{local_name}'
