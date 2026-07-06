@@ -63,7 +63,7 @@ func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// getSettings 返回用户配置。数据库无记录时返回默认值（8MB / 3）
+// getSettings 返回用户配置。数据库无记录时返回默认值（512KB / 3）
 func (h *SettingsHandler) getSettings(w http.ResponseWriter, r *http.Request, username string) {
 	s, err := h.db.GetUserSettings(username)
 	if err != nil {
@@ -73,8 +73,8 @@ func (h *SettingsHandler) getSettings(w http.ResponseWriter, r *http.Request, us
 	}
 	resp := settingsResponse{
 		Username:    username,
-		ChunkSize:   8 * 1024 * 1024, // 默认 8MB
-		Concurrency: 3,                // 默认 3
+		ChunkSize:   512 * 1024, // 默认 512KB（与前端 select 默认选中项一致）
+		Concurrency: 3,           // 默认 3
 	}
 	if s != nil {
 		resp.ChunkSize = s.ChunkSize

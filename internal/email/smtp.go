@@ -40,6 +40,17 @@ func NewSMTPMailer(host string, port int, user, password, from string) *SMTPMail
 	}
 }
 
+// extractEmailAddress 从 "Name <email>" 格式中提取纯邮箱地址。
+// 如果不含尖括号，直接返回原字符串。
+func extractEmailAddress(s string) string {
+	start := strings.LastIndex(s, "<")
+	end := strings.LastIndex(s, ">")
+	if start >= 0 && end > start {
+		return s[start+1 : end]
+	}
+	return s
+}
+
 // sendMailWithSSL 通过 SSL/TLS 直连发送邮件（适用于 465 端口）
 // 标准库 net/smtp 不直接支持 SSL 直连，需要用 tls.Dial 包装
 func (m *SMTPMailer) sendMailWithSSL(to, subject, body string) error {
@@ -61,7 +72,7 @@ func (m *SMTPMailer) sendMailWithSSL(to, subject, body string) error {
 		return fmt.Errorf("smtp auth: %w", err)
 	}
 
-	if err := client.Mail(m.from); err != nil {
+	if err := client.Mail(extractEmailAddress(m.from)); err != nil {
 		return fmt.Errorf("smtp MAIL FROM: %w", err)
 	}
 	if err := client.Rcpt(to); err != nil {
@@ -81,6 +92,7 @@ func (m *SMTPMailer) sendMailWithSSL(to, subject, body string) error {
 	return nil
 }
 
+// buildMessage 构造符合 RFC 822 的邮件内容（支持 HTML body）
 // buildMessage 构造符合 RFC 822 的邮件内容（支持 HTML body）
 func buildMessage(from, to, subject, body string) string {
 	var sb strings.Builder
