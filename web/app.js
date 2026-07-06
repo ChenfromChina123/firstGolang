@@ -873,12 +873,20 @@
     // === 事件绑定 ===
 
     /** 绑定选择文件、拖拽上传、持久化配置等事件。
-     *  选择文件按钮改为 label[for=file-input]，点击自动触发文件选择，无需 JS。
+     *  选择文件按钮用 JS 触发 fileInput.click()，比 label[for] 更可靠（兼容所有浏览器）。
      *  拖拽绑定到整个 upload-panel（而非已移除的 dropzone）。
      *  分片大小和并发数持久化到 localStorage，下次打开保留用户选择。 */
     function bindEvents() {
         const uploadPanel = document.querySelector('.upload-panel');
         const fileInput = document.getElementById('file-input');
+
+        // 选择文件按钮：JS 触发 fileInput.click()（移除 label[for] 避免双重触发）
+        const pickBtn = document.getElementById('pick-btn');
+        if (pickBtn) {
+            pickBtn.addEventListener('click', () => {
+                fileInput.click();
+            });
+        }
 
         // 拖拽：绑定到整个 upload-panel
         if (uploadPanel) {
