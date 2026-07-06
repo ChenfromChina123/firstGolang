@@ -1005,6 +1005,135 @@ body::after {
     margin: 0;
 }
 
+/* === 分享页目录浏览（阶段5新增） === */
+
+/* 目录浏览容器 */
+.share-browser {
+    border-top: 1px solid var(--border-soft);
+    padding: 16px 20px;
+    margin-top: 12px;
+}
+
+/* 工具栏：全选 + 批量下载 + 转存 */
+.share-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.share-select-all {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--fg-1);
+    cursor: pointer;
+    user-select: none;
+}
+.share-select-all input { cursor: pointer; }
+.share-toolbar-actions { display: flex; gap: 8px; }
+
+/* 面包屑导航 */
+.share-breadcrumb {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--fg-2);
+    margin-bottom: 12px;
+    font-family: var(--mono);
+}
+.crumb {
+    color: var(--accent);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+.crumb:hover { background: var(--accent-dim); }
+.crumb-root { font-weight: 500; }
+.crumb-sep { color: var(--fg-3); }
+
+/* 文件列表 */
+.share-filelist {
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--bg-1);
+    min-height: 80px;
+    max-height: 480px;
+    overflow-y: auto;
+}
+
+/* 树行（目录/文件通用） */
+.tree-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 13px;
+}
+.tree-row:last-child { border-bottom: none; }
+.tree-dir {
+    cursor: pointer;
+    color: var(--fg-0);
+}
+.tree-dir:hover { background: var(--bg-2); }
+.tree-file { color: var(--fg-1); }
+.tree-file:hover { background: var(--bg-2); }
+
+.tree-cb { cursor: pointer; flex-shrink: 0; }
+.tree-icon { width: 18px; text-align: center; flex-shrink: 0; }
+.tree-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-meta {
+    font-size: 11px;
+    color: var(--fg-3);
+    font-family: var(--mono);
+    flex-shrink: 0;
+}
+.tree-download-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg-1);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.tree-download-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 浏览状态提示 */
+.share-browser-loading,
+.share-browser-error,
+.share-browser-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--fg-3);
+    font-size: 13px;
+}
+.share-browser-error { color: var(--err); }
+
+/* 转存对话框额外样式 */
+.modal-label {
+    display: block;
+    font-size: 12px;
+    color: var(--fg-2);
+    margin: 12px 0 6px;
+}
+.modal-result {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+}
+.modal-result-loading { background: var(--accent-dim); color: var(--accent); }
+.modal-result-success { background: var(--ok-dim); color: var(--ok); }
+.modal-result-error { background: var(--err-dim); color: var(--err); }
+
 /* === 响应式 === */
 @media (max-width: 720px) {
     .topbar { padding: 0 16px; }

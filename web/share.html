@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706e">
+    <link rel="stylesheet" href="/web/style.css?v=20260706f">
 </head>
 <body>
     <!-- 顶部品牌栏（简化版：无健康状态、无用户信息、无登出按钮） -->
@@ -69,9 +69,44 @@
                 </div>
                 <p class="share-hint">同一访客重复下载不会增加下载次数。</p>
             </div>
+
+            <!-- 目录浏览区域（仅 dir 类型分享显示） -->
+            <div class="share-browser" id="share-browser" hidden>
+                <div class="share-toolbar">
+                    <label class="share-select-all">
+                        <input type="checkbox" id="select-all-cb"> 全选
+                    </label>
+                    <div class="share-toolbar-actions">
+                        <button class="ghost-btn" id="batch-download-btn" type="button" disabled>批量下载</button>
+                        <button class="ghost-btn" id="save-to-my-files-btn" type="button" hidden>转存到我的文件</button>
+                    </div>
+                </div>
+                <nav class="share-breadcrumb" id="share-breadcrumb" aria-label="目录路径"></nav>
+                <div class="share-filelist" id="share-filelist">
+                    <div class="share-browser-loading">加载中…</div>
+                </div>
+            </div>
         </section>
     </main>
 
-    <script src="/web/share.js?v=20260706e"></script>
+    <!-- 转存对话框 -->
+    <div class="modal" id="save-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>转存到我的文件</h3>
+            </div>
+            <p class="modal-desc">将选中的文件转存到你的文件中心。可指定目标目录，留空则转存到根目录。</p>
+            <label class="modal-label">目标目录</label>
+            <input type="text" class="modal-input" id="save-target-dir" placeholder="如 docs/ （留空为根目录）">
+            <div class="modal-result" id="save-result" hidden></div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="save-cancel-btn" type="button">取消</button>
+                <button class="primary-btn" id="save-confirm-btn" type="button">确认转存</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/web/share.js?v=20260706f"></script>
 </body>
 </html>
