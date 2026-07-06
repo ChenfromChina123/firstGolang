@@ -1253,7 +1253,8 @@
                     html += '<div class="batch-move-empty">此目录下无子目录</div>';
                 } else {
                     for (const [name, count] of dirEntries) {
-                        const childPath = path + name + '/';
+                        // 根目录时不加前导 /（与 loadFiles 路径规范一致）
+                        const childPath = (path === '/' ? '' : path) + name + '/';
                         html += `<button type="button" class="batch-move-item" data-path="${escapeHtml(childPath)}">📁 ${escapeHtml(name)}/（${count} 个文件）</button>`;
                     }
                 }
