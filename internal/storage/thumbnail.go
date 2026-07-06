@@ -7,9 +7,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	"github.com/disintegration/imaging"
 )
+
+// transcodeInFlight 单飞锁，防止同一 fileID+quality 的转码请求并行执行。
+// 场景：浏览器因连接超时重试或并发 Range 请求，会触发多次 transcode API 调用，
+// 若不串行化则会在低内存服务器（如 1.8GB）上同时启动多个 ffmpeg 进程导致 OOM。
+// key: "fileID:quality"，value: *sync.Mutex
+var transcodeInFlight sync.Map
+
+// transcodeGlobalSem 全局并发信号量，限制服务器同时运行的 ffmpeg 进程总数。
+// 低内存服务器（1.8GB RAM）并行运行 2+ 个 ffmpeg 会触发 OOM kill。
+// 缓冲大小=1：同一时刻最多 1 个 ffmpeg 转码，串行执行。
+var transcodeGlobalSem = make(chan struct{}, 1)
 
 // findFFmpeg 返回 ffmpeg 可执行文件路径。
 // 优先用 FFMPEG_PATH 环境变量（部署时 ffmpeg 不在 PATH 也能用），
@@ -142,6 +154,10 @@ func TranscodeExists(basePath, fileID, quality string) bool {
 // 输出统一 mp4 容器，浏览器原生兼容；scale 滤镜保留宽高比，源分辨率低于目标时不会上采样。
 // 生成成功返回转码文件绝对路径。已存在缓存时调用方应先检查 TranscodeExists。
 //
+// 并发安全：内部使用单飞锁（fileID+quality），防止浏览器重试或并发请求触发多个 ffmpeg 进程。
+// 内存保护：-threads 1 限制单线程，避免在低内存服务器（1.8GB）触发 OOM。
+// 失败清理：ffmpeg 异常退出时删除部分写入的文件，防止下次请求读到损坏文件。
+//
 // 参数：
 //   - basePath: 存储根目录（LocalStorage.BasePath()）
 //   - srcPath: 源视频绝对路径
@@ -164,12 +180,30 @@ func GenerateTranscode(basePath, srcPath, fileID, quality string) (string, error
 
 	dstPath := TranscodePath(basePath, fileID, quality)
 
+	// 单飞锁：同一 fileID+quality 的转码请求串行化，避免并行 ffmpeg 触发 OOM
+	key := fileID + ":" + quality
+	muIface, _ := transcodeInFlight.LoadOrStore(key, &sync.Mutex{})
+	mu := muIface.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// 二次检查：持锁后可能已有其他请求完成转码，避免重复执行
+	if _, err := os.Stat(dstPath); err == nil {
+		return dstPath, nil
+	}
+
+	// 全局信号量：限制服务器同时运行的 ffmpeg 进程总数为 1（防 OOM）
+	// 注意：必须在单飞锁内获取信号量，避免死锁（先抢信号量再抢单飞锁会导致后续请求阻塞）
+	transcodeGlobalSem <- struct{}{}
+	defer func() { <-transcodeGlobalSem }()
+
 	// ffmpeg 关键参数：
 	//   -i srcPath                源视频
 	//   -vf scale=-2:H            缩放：高度=H，宽度自动（-2 保证偶数，x264 要求）
 	//   -c:v libx264              H.264 视频编码
 	//   -preset fast/veryfast     编码速度（快→文件大，慢→文件小）
 	//   -crf N                    质量因子（小=高质量大文件）
+	//   -threads 1                单线程编码，限制内存峰值（防止 OOM kill）
 	//   -c:a aac                  音频 AAC
 	//   -b:a 128k                 音频码率 128kbps（low 档用 96k 节省带宽）
 	//   -movflags +faststart      moov atom 前置，支持浏览器边下边播
@@ -185,6 +219,7 @@ func GenerateTranscode(basePath, srcPath, fileID, quality string) (string, error
 		"-c:v", "libx264",
 		"-preset", spec.preset,
 		"-crf", strconv.Itoa(spec.crf),
+		"-threads", "1",
 		"-c:a", "aac",
 		"-b:a", audioBitrate,
 		"-movflags", "+faststart",
@@ -196,6 +231,8 @@ func GenerateTranscode(basePath, srcPath, fileID, quality string) (string, error
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		// 失败时清理部分写入的文件，防止下次请求读到损坏文件触发 DEMUXER_ERROR
+		os.Remove(dstPath)
 		return "", fmt.Errorf("ffmpeg transcode failed: %w, stderr: %s", err, stderr.String())
 	}
 	return dstPath, nil
