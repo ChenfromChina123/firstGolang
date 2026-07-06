@@ -148,7 +148,7 @@ func (h *FileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteFileByID 删除单个文件（DELETE /api/files/{id}）。
-// 同时删除存储文件和数据库记录。
+// 软删除：标记 deleted_at 移入回收站，保留存储文件以便恢复。30 天后自动清理。
 func (h *FileHandler) DeleteFileByID(w http.ResponseWriter, r *http.Request) {
 	fileID := strings.TrimPrefix(r.URL.Path, "/api/files/")
 	fileID = strings.TrimSuffix(fileID, "/")
@@ -171,12 +171,7 @@ func (h *FileHandler) DeleteFileByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 先删存储文件，再删数据库记录
-	if err := h.storage.DeleteFile(f.StoragePath); err != nil {
-		log.Printf("delete storage file %s error: %v", f.StoragePath, err)
-		// 存储删除失败不阻断，继续删数据库记录（避免残留记录）
-	}
-
+	// 软删除：仅标记 deleted_at，保留存储文件（回收站可恢复）
 	if _, err := h.db.DeleteFile(fileID); err != nil {
 		http.Error(w, "failed to delete file record", http.StatusInternalServerError)
 		return
@@ -191,14 +186,15 @@ func (h *FileHandler) DeleteFileByID(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"deleted": true,
-		"id":      fileID,
+		"deleted":  true,
+		"id":       fileID,
 		"filename": f.Filename,
+		"trashed":  true, // 标识已移入回收站
 	})
 }
 
 // DeleteDir 删除目录下所有文件（DELETE /api/files?prefix=xxx）。
-// 递归匹配 prefix 下所有文件（含子目录），逐个删除存储文件 + 数据库记录。
+// 软删除：递归匹配 prefix 下所有文件，标记 deleted_at 移入回收站，保留存储文件以便恢复。
 func (h *FileHandler) DeleteDir(w http.ResponseWriter, r *http.Request) {
 	username := auth.UsernameFromContext(r.Context())
 	role := auth.RoleFromContext(r.Context())
@@ -220,14 +216,8 @@ func (h *FileHandler) DeleteDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 逐个删除存储文件 + 清理 Redis 冲突检查集合
-	var storageErrors int
+	// 清理 Redis 冲突检查集合中的文件名（存储文件保留，回收站可恢复）
 	for _, f := range files {
-		if err := h.storage.DeleteFile(f.StoragePath); err != nil {
-			log.Printf("delete storage file %s error: %v", f.StoragePath, err)
-			storageErrors++
-		}
-		// 同步清理 Redis 集合中的文件名
 		if h.redis != nil {
 			if err := h.redis.UnmarkFileExists(r.Context(), f.Filename); err != nil {
 				log.Printf("redis unmark file %s error (non-fatal): %v", f.Filename, err)
@@ -235,13 +225,13 @@ func (h *FileHandler) DeleteDir(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("deleted directory %s: %d files (%d storage errors)", prefix, len(files), storageErrors)
+	log.Printf("trashed directory %s: %d files (soft delete)", prefix, len(files))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"deleted":        true,
-		"prefix":         prefix,
-		"files_deleted":  len(files),
-		"storage_errors": storageErrors,
+		"deleted":       true,
+		"prefix":        prefix,
+		"files_deleted": len(files),
+		"trashed":       true,
 	})
 }
 
@@ -482,7 +472,7 @@ func (h *FileHandler) MoveDir(w http.ResponseWriter, r *http.Request) {
 // BatchDelete 批量删除文件（POST /api/files/batch-delete）。
 // 请求体：{"ids":["id1","id2",...]}
 // 权限：仅 owner 或 admin 可删除；非 owner 文件跳过并计入失败。
-// 逐个删除文件（存储 + 数据库 + Redis），返回成功/失败计数。
+// 软删除：标记 deleted_at 移入回收站，保留存储文件以便恢复。
 func (h *FileHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
 	username := auth.UsernameFromContext(r.Context())
 	role := auth.RoleFromContext(r.Context())
@@ -512,9 +502,7 @@ func (h *FileHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
 			failCount++
 			continue
 		}
-		if err := h.storage.DeleteFile(f.StoragePath); err != nil {
-			log.Printf("batch-delete: storage delete %s error: %v", f.StoragePath, err)
-		}
+		// 软删除：仅标记 deleted_at，保留存储文件（回收站可恢复）
 		if _, err := h.db.DeleteFile(fileID); err != nil {
 			log.Printf("batch-delete: db delete %s error: %v", fileID, err)
 			failCount++
@@ -526,12 +514,13 @@ func (h *FileHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
 		successCount++
 	}
 
-	log.Printf("batch-delete: %d success, %d fail", successCount, failCount)
+	log.Printf("batch-delete: %d success, %d fail (soft delete)", successCount, failCount)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"deleted": true,
 		"success": successCount,
 		"fail":    failCount,
+		"trashed": true,
 	})
 }
 

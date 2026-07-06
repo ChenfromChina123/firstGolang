@@ -36,6 +36,7 @@ type FileRecord struct {
 	Owner       string    `json:"owner"`  // 文件归属用户名（空=历史数据/公共）
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	DeletedAt   *time.Time `json:"deleted_at,omitempty"` // NULL=正常，非NULL=已移入回收站（删除时间）
 }
 
 // ChunkRecord represents a single uploaded chunk
@@ -210,4 +211,17 @@ type CheckUploadResponse struct {
 	Filename      string `json:"filename,omitempty"`       // 实际文件名
 	Size          int64  `json:"size,omitempty"`           // 文件大小
 	Hash          string `json:"hash,omitempty"`           // 文件 SHA256
+}
+
+// TrashItem 表示回收站中的文件项（已软删除，可恢复或永久删除）。
+type TrashItem struct {
+	ID          string `json:"id"`           // 文件 ID
+	Filename    string `json:"filename"`     // 文件名（含路径前缀）
+	Size        int64  `json:"size"`         // 文件大小（字节）
+	Hash        string `json:"hash"`         // SHA256 校验值
+	Owner       string `json:"owner"`        // 归属用户名
+	CreatedAt   string `json:"created_at"`   // 文件创建时间（ISO 8601）
+	DeletedAt   string `json:"deleted_at"`   // 移入回收站时间（ISO 8601）
+	ExpiresAt   string `json:"expires_at"`   // 过期时间（超过此时间将被自动清理，ISO 8601）
+	IsExpired   bool   `json:"is_expired"`   // 是否已过期（当前时间 > expires_at）
 }

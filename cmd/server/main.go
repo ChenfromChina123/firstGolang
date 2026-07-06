@@ -133,6 +133,7 @@ func main() {
 	// Register handlers
 	downloadHandler := handler.NewDownloadHandler(db, st)
 	fileHandler := handler.NewFileHandler(db, st, rc)
+	trashHandler := handler.NewTrashHandler(db, st, rc)
 	settingsHandler := handler.NewSettingsHandler(db)
 
 	// === 认证系统初始化 ===
@@ -193,6 +194,19 @@ func main() {
 		log.Printf("[Auth] cleaned %d expired reset codes", n)
 	}
 
+	// 清理过期回收站文件（30 天保留期，物理删除数据库记录 + 删除存储文件）
+	// 在 st 初始化后执行，避免 storage 未就绪导致存储文件残留
+	if expired, err := db.CleanupExpiredTrash(30); err == nil && len(expired) > 0 {
+		for _, f := range expired {
+			if err := st.DeleteFile(f.StoragePath); err != nil {
+				log.Printf("[Trash] cleanup: delete storage %s error: %v", f.StoragePath, err)
+			}
+		}
+		log.Printf("[Trash] cleaned %d expired trash files", len(expired))
+	} else if err != nil {
+		log.Printf("[Trash] cleanup expired error: %v", err)
+	}
+
 	// 登录速率限制器：5次/分钟/IP（rps=5/60≈0.083, burst=5）
 	loginLimiter := auth.NewLoginRateLimiter(0.083, 5)
 	// 注册/重发激活/忘记密码速率限制器：5次突发，每2分钟恢复1次（rps=0.0083, burst=5）
@@ -244,6 +258,9 @@ func main() {
 	mux.Handle("/api/download/", downloadHandler)
 	mux.Handle("/api/files/", fileHandler)
 	mux.Handle("/api/files", fileHandler)
+	// 回收站（需认证）：列出/恢复/永久删除/清空
+	mux.Handle("/api/trash", trashHandler)
+	mux.Handle("/api/trash/", trashHandler)
 	// 分享管理（需认证）：创建/列出/删除分享
 	mux.Handle("/api/share", shareHandler)
 	mux.Handle("/api/share/", shareHandler)
@@ -331,6 +348,10 @@ func main() {
 	log.Printf("  POST   /api/files/rename    - Rename/move file (auth, id, new_filename)")
 	log.Printf("  POST   /api/files/move-dir  - Move directory (auth, src, dst)")
 	log.Printf("  POST   /api/files/batch-delete - Batch delete files (auth)")
+	log.Printf("  GET    /api/trash           - List trash files (auth, ?all=true for admin)")
+	log.Printf("  POST   /api/trash/{id}/restore - Restore trash file (auth)")
+	log.Printf("  DELETE /api/trash/{id}      - Permanently delete trash file (auth)")
+	log.Printf("  DELETE /api/trash           - Empty trash (auth, ?all=true for admin)")
 	log.Printf("  GET    /api/share           - List my shares (auth)")
 	log.Printf("  POST   /api/share           - Create share (auth, file_id|dir_prefix)")
 	log.Printf("  DELETE /api/share/{id}      - Delete share (auth)")

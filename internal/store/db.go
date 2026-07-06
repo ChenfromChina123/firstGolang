@@ -456,10 +456,12 @@ func (db *DB) migrate() error {
 				status VARCHAR(32) NOT NULL DEFAULT 'completed',
 				owner VARCHAR(64) NOT NULL DEFAULT '',
 				created_at VARCHAR(32) NOT NULL,
-				updated_at VARCHAR(32) NOT NULL,
-				INDEX idx_files_filename (filename(255)),
-				INDEX idx_files_status (status),
-				INDEX idx_files_owner (owner)
+			updated_at VARCHAR(32) NOT NULL,
+			deleted_at VARCHAR(32) DEFAULT NULL,
+			INDEX idx_files_filename (filename(255)),
+			INDEX idx_files_status (status),
+			INDEX idx_files_owner (owner),
+			INDEX idx_files_deleted_at (deleted_at)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 			`CREATE TABLE IF NOT EXISTS users (
 				id VARCHAR(64) PRIMARY KEY,
@@ -563,10 +565,12 @@ func (db *DB) migrate() error {
 				status TEXT NOT NULL DEFAULT 'completed',
 				owner TEXT NOT NULL DEFAULT '',
 				created_at TEXT NOT NULL,
-				updated_at TEXT NOT NULL
-			);
+			updated_at TEXT NOT NULL,
+			deleted_at TEXT DEFAULT NULL
+		);
 
-			CREATE INDEX IF NOT EXISTS idx_files_owner ON files(owner);
+		CREATE INDEX IF NOT EXISTS idx_files_owner ON files(owner);
+		CREATE INDEX IF NOT EXISTS idx_files_deleted_at ON files(deleted_at);
 
 			CREATE TABLE IF NOT EXISTS users (
 				id TEXT PRIMARY KEY,
@@ -656,6 +660,11 @@ func (db *DB) migrate() error {
 	// 增量迁移：为 files.hash 列创建索引（秒传检查加速）
 	if err := db.migrateFilesAddHashIndex(); err != nil {
 		return fmt.Errorf("migrate files hash index: %w", err)
+	}
+
+	// 增量迁移：为 files 表追加 deleted_at 列（回收站软删除）
+	if err := db.migrateFilesAddDeletedAt(); err != nil {
+		return fmt.Errorf("migrate files deleted_at: %w", err)
 	}
 
 	return nil
@@ -851,6 +860,94 @@ func (db *DB) migrateFilesAddHashIndex() error {
 	return nil
 }
 
+// migrateFilesAddDeletedAt 检测 files 表是否缺少 deleted_at 列，缺少则 ALTER TABLE ADD COLUMN。
+// 兼容 SQLite 和 MySQL 旧库升级，用于实现回收站软删除功能。
+// deleted_at 为 NULL 表示文件正常；非 NULL 表示文件已移入回收站（值为删除时间 ISO 8601）。
+func (db *DB) migrateFilesAddDeletedAt() error {
+	var columns []string
+	switch db.dialect {
+	case "mysql":
+		rows, err := db.conn.Query(
+			`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+			 WHERE TABLE_NAME = 'files' AND TABLE_SCHEMA = DATABASE()`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(c))
+		}
+		rows.Close()
+	default:
+		rows, err := db.conn.Query(`PRAGMA table_info(files)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt interface{}
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(name))
+		}
+		rows.Close()
+	}
+
+	hasDeletedAt := false
+	for _, c := range columns {
+		if c == "deleted_at" {
+			hasDeletedAt = true
+			break
+		}
+	}
+
+	if !hasDeletedAt {
+		var stmt string
+		if db.dialect == "mysql" {
+			stmt = `ALTER TABLE files ADD COLUMN deleted_at VARCHAR(32) DEFAULT NULL`
+		} else {
+			stmt = `ALTER TABLE files ADD COLUMN deleted_at TEXT DEFAULT NULL`
+		}
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("add deleted_at column: %w", err)
+		}
+		log.Printf("[DB] files table: added 'deleted_at' column (trash feature)")
+	}
+
+	// 为 deleted_at 创建索引（回收站列表查询加速）
+	switch db.dialect {
+	case "mysql":
+		var cnt int
+		err := db.conn.QueryRow(
+			`SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+			 WHERE TABLE_NAME = 'files' AND TABLE_SCHEMA = DATABASE() AND INDEX_NAME = 'idx_files_deleted_at'`).Scan(&cnt)
+		if err != nil {
+			return fmt.Errorf("check idx_files_deleted_at: %w", err)
+		}
+		if cnt == 0 {
+			if _, err := db.conn.Exec(`CREATE INDEX idx_files_deleted_at ON files(deleted_at)`); err != nil {
+				log.Printf("[DB] WARNING: create idx_files_deleted_at failed: %v", err)
+			} else {
+				log.Printf("[DB] files table: added 'idx_files_deleted_at' index")
+			}
+		}
+	default:
+		if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_files_deleted_at ON files(deleted_at)`); err != nil {
+			log.Printf("[DB] WARNING: create idx_files_deleted_at failed: %v", err)
+		}
+	}
+
+	return nil
+}
+
 // CreateUploadSession inserts a new upload session
 func (db *DB) CreateUploadSession(session *model.UploadSession) error {
 	_, err := db.conn.Exec(
@@ -978,11 +1075,11 @@ func (db *DB) CreateFile(f *model.FileRecord) error {
 	return err
 }
 
-// GetFile retrieves a file record by ID
+// GetFile retrieves a file record by ID（仅返回未删除的文件，回收站文件不可访问）
 func (db *DB) GetFile(id string) (*model.FileRecord, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
-		 FROM files WHERE id = ?`, id,
+		 FROM files WHERE id = ? AND deleted_at IS NULL`, id,
 	)
 	f := &model.FileRecord{}
 	var createdAt, updatedAt string
@@ -998,16 +1095,17 @@ func (db *DB) GetFile(id string) (*model.FileRecord, error) {
 
 // FindFileByName checks if a file with the given name exists (filtered by owner)
 // owner 为空时不过滤（兼容旧调用方），非空时加 WHERE owner = ? 条件
+// 仅返回未删除的文件（deleted_at IS NULL），回收站文件不参与冲突检测
 func (db *DB) FindFileByName(filename, owner string) (*model.FileRecord, error) {
 	var row *sql.Row
 	if owner == "" {
 		row = db.conn.QueryRow(
 			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
-			 FROM files WHERE filename = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, filename)
+			 FROM files WHERE filename = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`, filename)
 	} else {
 		row = db.conn.QueryRow(
 			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
-			 FROM files WHERE filename = ? AND status = 'completed' AND owner = ? ORDER BY created_at DESC LIMIT 1`, filename, owner)
+			 FROM files WHERE filename = ? AND status = 'completed' AND owner = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`, filename, owner)
 	}
 	f := &model.FileRecord{}
 	var createdAt, updatedAt string
@@ -1028,7 +1126,7 @@ func (db *DB) FindFileByName(filename, owner string) (*model.FileRecord, error) 
 func (db *DB) GetFileByHash(hash, owner string, fileSize int64) (*model.FileRecord, error) {
 	row := db.conn.QueryRow(
 		`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
-		 FROM files WHERE hash = ? AND size = ? AND status = 'completed' AND owner = ?
+		 FROM files WHERE hash = ? AND size = ? AND status = 'completed' AND owner = ? AND deleted_at IS NULL
 		 ORDER BY created_at DESC LIMIT 1`, hash, fileSize, owner)
 	f := &model.FileRecord{}
 	var createdAt, updatedAt string
@@ -1052,7 +1150,7 @@ func (db *DB) ListFiles(prefix, owner string) ([]model.FileRecord, error) {
 		err  error
 	)
 	const cols = `SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
-		     FROM files WHERE status = 'completed'`
+		     FROM files WHERE status = 'completed' AND deleted_at IS NULL`
 	switch {
 	case prefix == "" && owner == "":
 		rows, err = db.conn.Query(cols + ` ORDER BY created_at DESC`)
@@ -1300,19 +1398,23 @@ func (db *DB) DeleteExpiredResetCodes() (int64, error) {
 	return res.RowsAffected()
 }
 
-// DeleteFile 删除单个文件记录（按 ID）。返回受影响行数。
+// DeleteFile 软删除单个文件记录（按 ID，移入回收站）。返回受影响行数。
+// 仅标记 deleted_at = 当前时间，不物理删除，30 天后由 CleanupExpiredTrash 自动清理。
 func (db *DB) DeleteFile(id string) (int64, error) {
-	res, err := db.conn.Exec(`DELETE FROM files WHERE id = ?`, id)
+	res, err := db.conn.Exec(
+		`UPDATE files SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`,
+		time.Now().Format(time.RFC3339), id,
+	)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
 }
 
-// DeleteFilesByPrefix 删除指定前缀下所有文件（递归匹配子目录）。返回删除文件列表。
-// 路径枚举方案：用 LIKE 'prefix%' ESCAPE '|' 匹配。调用方负责删除存储文件。
+// DeleteFilesByPrefix 软删除指定前缀下所有文件（递归匹配子目录，移入回收站）。返回删除文件列表。
+// 路径枚举方案：用 LIKE 'prefix%' ESCAPE '|' 匹配。调用方不再需要删除存储文件（软删除保留存储）。
 func (db *DB) DeleteFilesByPrefix(prefix, owner string) ([]model.FileRecord, error) {
-	// 先查询出待删除文件（调用方需要 storage_path 删除存储）
+	// 先查询出待删除文件（返回给调用方用于 UI 反馈）
 	files, err := db.ListFiles(prefix, owner)
 	if err != nil {
 		return nil, err
@@ -1320,13 +1422,17 @@ func (db *DB) DeleteFilesByPrefix(prefix, owner string) ([]model.FileRecord, err
 	if len(files) == 0 {
 		return files, nil
 	}
-	// 批量删除数据库记录（事务）
+	// 批量软删除（事务）
+	now := time.Now().Format(time.RFC3339)
 	tx, err := db.conn.Begin()
 	if err != nil {
 		return nil, err
 	}
 	for _, f := range files {
-		if _, err := tx.Exec(`DELETE FROM files WHERE id = ?`, f.ID); err != nil {
+		if _, err := tx.Exec(
+			`UPDATE files SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`,
+			now, f.ID,
+		); err != nil {
 			tx.Rollback()
 			return nil, err
 		}
@@ -1335,6 +1441,158 @@ func (db *DB) DeleteFilesByPrefix(prefix, owner string) ([]model.FileRecord, err
 		return nil, err
 	}
 	return files, nil
+}
+
+// ListTrashedFiles 列出回收站中的文件（deleted_at IS NOT NULL）。
+// owner 非空时按归属用户过滤（用户隔离）；owner 为空时返回所有用户的回收站文件（admin 用）。
+// 按 deleted_at DESC 排序（最近删除的在前）。
+func (db *DB) ListTrashedFiles(owner string) ([]model.FileRecord, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	const cols = `SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at, deleted_at
+		     FROM files WHERE deleted_at IS NOT NULL`
+	if owner == "" {
+		rows, err = db.conn.Query(cols + ` ORDER BY deleted_at DESC`)
+	} else {
+		rows, err = db.conn.Query(cols+` AND owner = ? ORDER BY deleted_at DESC`, owner)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []model.FileRecord
+	for rows.Next() {
+		var f model.FileRecord
+		var createdAt, updatedAt, deletedAt string
+		if err := rows.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
+			&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt, &deletedAt); err != nil {
+			return nil, err
+		}
+		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		if t, err := time.Parse(time.RFC3339, deletedAt); err == nil {
+			f.DeletedAt = &t
+		}
+		files = append(files, f)
+	}
+	return files, rows.Err()
+}
+
+// RestoreFile 恢复回收站中的文件（SET deleted_at = NULL）。
+// owner 非空时加 WHERE owner = ? 条件防止越权恢复他人文件；为空时不过滤（admin 用）。
+// 返回受影响行数（0 表示文件不存在或不属于该用户）。
+func (db *DB) RestoreFile(id, owner string) (int64, error) {
+	var res sql.Result
+	var err error
+	if owner == "" {
+		res, err = db.conn.Exec(
+			`UPDATE files SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL`,
+			time.Now().Format(time.RFC3339), id,
+		)
+	} else {
+		res, err = db.conn.Exec(
+			`UPDATE files SET deleted_at = NULL, updated_at = ? WHERE id = ? AND deleted_at IS NOT NULL AND owner = ?`,
+			time.Now().Format(time.RFC3339), id, owner,
+		)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// PermanentlyDeleteFile 物理删除回收站中的文件（DELETE FROM files）。
+// 仅允许删除已软删除的文件（deleted_at IS NOT NULL），防止误删正常文件。
+// owner 非空时加 WHERE owner = ? 条件防止越权删除他人文件；为空时不过滤（admin 用）。
+// 返回文件记录（调用方需要 storage_path 删除存储文件）和受影响行数。
+func (db *DB) PermanentlyDeleteFile(id, owner string) (*model.FileRecord, int64, error) {
+	// 先查询文件记录（获取 storage_path 用于删除存储）
+	var row *sql.Row
+	if owner == "" {
+		row = db.conn.QueryRow(
+			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+			 FROM files WHERE id = ? AND deleted_at IS NOT NULL`, id)
+	} else {
+		row = db.conn.QueryRow(
+			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+			 FROM files WHERE id = ? AND deleted_at IS NOT NULL AND owner = ?`, id, owner)
+	}
+	f := &model.FileRecord{}
+	var createdAt, updatedAt string
+	err := row.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
+		&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, 0, err
+	}
+	f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+
+	// 物理删除数据库记录
+	res, err := db.conn.Exec(`DELETE FROM files WHERE id = ? AND deleted_at IS NOT NULL`, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, 0, err
+	}
+	return f, affected, nil
+}
+
+// CleanupExpiredTrash 清理回收站中超过保留期的文件（物理删除数据库记录 + 删除存储文件）。
+// retentionDays 为保留天数（默认 30 天）。返回清理的文件数量和错误。
+// 此方法在服务启动时自动调用，避免回收站无限膨胀。
+// 注意：调用方需要传入 storage.Storage 实例用于删除存储文件，此处仅返回待清理的文件列表。
+func (db *DB) CleanupExpiredTrash(retentionDays int) ([]model.FileRecord, error) {
+	if retentionDays <= 0 {
+		retentionDays = 30
+	}
+	cutoff := time.Now().AddDate(0, 0, -retentionDays).Format(time.RFC3339)
+
+	// 查询过期文件（deleted_at < cutoff）
+	rows, err := db.conn.Query(
+		`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+		 FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	var expired []model.FileRecord
+	for rows.Next() {
+		var f model.FileRecord
+		var createdAt, updatedAt string
+		if err := rows.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
+			&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		expired = append(expired, f)
+	}
+	rows.Close()
+
+	if len(expired) == 0 {
+		return expired, nil
+	}
+
+	// 批量物理删除数据库记录
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range expired {
+		if _, err := tx.Exec(`DELETE FROM files WHERE id = ? AND deleted_at IS NOT NULL`, f.ID); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return expired, nil
 }
 
 // UpdateFilename 更新文件名（含路径前缀），用于重命名/移动。
