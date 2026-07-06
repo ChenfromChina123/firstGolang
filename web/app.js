@@ -1203,10 +1203,19 @@
         const tasks = [];
         for (const file of files) {
             // 空文件不支持上传：跳过并在队列中显示提示，避免发起无效请求触发 400
+            // DOM 结构与正常 queue-item 一致（li.queue-item.done），便于"清除已完成"按钮统一清理
             if (file.size <= 0) {
-                const skipped = document.createElement('div');
-                skipped.className = 'task';
-                skipped.innerHTML = `<div class="task-info"><span class="task-name">${escapeHtml(file.name)}</span><span class="task-status" style="color:var(--warn)">文件为空，已跳过</span></div>`;
+                const skipped = document.createElement('li');
+                skipped.className = 'queue-item done';
+                skipped.innerHTML = `
+                    <div class="qi-head">
+                        <span class="qi-name">${escapeHtml(file.name)}</span>
+                        <span class="qi-status done">已跳过</span>
+                    </div>
+                    <div class="qi-meta">
+                        <span class="qi-progress-text" style="color:var(--warn)">文件为空，无法上传</span>
+                    </div>
+                `;
                 list.appendChild(skipped);
                 continue;
             }
