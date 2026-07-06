@@ -414,6 +414,11 @@ body::after {
     overflow-y: auto;      /* 超出滚动 */
     overflow-x: hidden;    /* 横向隐藏，文件名超长用 ellipsis */
 }
+/* 目录切换淡入动画：掩盖缓存渲染与后台刷新之间的视觉跳变 */
+@keyframes tree-fade-in {
+    from { opacity: 0; transform: translateY(2px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
 /* 文件列表滚动条样式（与队列滚动条一致） */
 .file-tree::-webkit-scrollbar { width: 6px; }
 .file-tree::-webkit-scrollbar-track { background: var(--bg-3); border-radius: 3px; }
@@ -437,6 +442,7 @@ body::after {
     border-bottom: 1px solid var(--border-soft);
     font-size: 13px;
     transition: background 0.15s;
+    animation: tree-fade-in 0.18s ease-out;
 }
 .tree-row:last-child { border-bottom: none; }
 .tree-row.dir {
@@ -1023,6 +1029,44 @@ body::after {
     font-size: 13px;
     color: var(--fg-2);
     max-width: 360px;
+}
+
+/* 密码门状态 */
+.share-lock-icon {
+    color: var(--accent);
+    opacity: 0.8;
+}
+.share-lock-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--fg-0);
+}
+.share-lock-msg {
+    font-size: 13px;
+    color: var(--fg-2);
+    max-width: 360px;
+}
+.share-lock-form {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    max-width: 360px;
+    margin-top: 8px;
+}
+.share-lock-form .modal-input {
+    flex: 1;
+}
+.share-lock-error {
+    font-size: 12px;
+    color: var(--err);
+    font-family: var(--mono);
+}
+
+/* 分享管理列表中的密码标识 */
+.share-status.locked {
+    background: var(--warn-dim, rgba(255, 193, 7, 0.15));
+    color: var(--warn, #ffc107);
+    border: 1px solid var(--warn, #ffc107);
 }
 
 /* 正常内容区 */

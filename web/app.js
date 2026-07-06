@@ -561,6 +561,29 @@
     // 当前所在目录路径（末尾带 /，空字符串表示根目录）
     let currentPath = '';
 
+    // 目录数据缓存：path → { dirs, files, ts }
+    // 二次切换同一目录时瞬间渲染，后台异步刷新（stale-while-revalidate）
+    const dirCache = new Map();
+    const DIR_CACHE_TTL = 30000; // 缓存有效期 30 秒，超过则后台刷新
+
+    /**
+     * 使目录缓存失效（修改操作后调用）。
+     * @param {string} [path] - 指定目录路径；不传则清空所有缓存
+     */
+    function invalidateCache(path) {
+        if (path === undefined) {
+            dirCache.clear();
+        } else {
+            dirCache.delete(path);
+        }
+    }
+
+    /** 修改操作后刷新：清空缓存并重新加载当前目录 */
+    function refreshAfterModify() {
+        invalidateCache();
+        loadFiles();
+    }
+
     // === 选择状态管理 ===
     // selectedItems: key → { type:'file'|'dir', id?, prefix?, name, filename? }
     // key 唯一标识：文件用 'file:'+id，目录用 'dir:'+prefix
@@ -648,29 +671,56 @@
         });
     }
 
-    /** 加载并渲染当前目录的子项（目录 + 文件） */
+    /** 加载并渲染当前目录的子项（目录 + 文件）。
+     *  使用 stale-while-revalidate 缓存策略：命中缓存立即渲染，后台异步刷新。 */
     async function loadFiles() {
         const tree = document.getElementById('file-tree');
+        const reqPath = currentPath; // 捕获请求时的路径，防止后台刷新完成时用户已切换目录
         renderBreadcrumb();
         // 同步上传目标目录显示：跟随用户当前所在目录（currentPath）
         const targetDirEl = document.getElementById('target-dir');
         if (targetDirEl) targetDirEl.textContent = currentPath || '根目录';
-        tree.innerHTML = '<div class="tree-empty">加载中…</div>';
+
+        const cached = dirCache.get(reqPath);
+        const now = Date.now();
+        const isFresh = cached && (now - cached.ts < DIR_CACHE_TTL);
+
+        // 命中缓存：立即渲染（消除停顿感）
+        if (cached) {
+            renderTree(cached.dirs, cached.files);
+        } else {
+            tree.innerHTML = '<div class="tree-empty">加载中…</div>';
+        }
+
+        // 缓存仍新鲜：不再后台刷新
+        if (isFresh) return;
+
+        // 后台刷新（stale-while-revalidate：即使有旧缓存也拉取最新数据）
         try {
-            const url = currentPath
-                ? `${API.files}?prefix=${encodeURIComponent(currentPath)}`
+            const url = reqPath
+                ? `${API.files}?prefix=${encodeURIComponent(reqPath)}`
                 : API.files;
             const res = await apiFetch(url);
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const files = await res.json();
+            // 用户可能已切换目录：仅更新缓存，不渲染（避免覆盖当前界面）
             if (!files || files.length === 0) {
-                tree.innerHTML = '<div class="tree-empty">暂无文件，请上传</div>';
+                dirCache.set(reqPath, { dirs: new Map(), files: [], ts: Date.now() });
+                if (currentPath === reqPath) {
+                    tree.innerHTML = '<div class="tree-empty">暂无文件，请上传</div>';
+                }
                 return;
             }
-            const { dirs, files: fileList } = buildChildren(files, currentPath);
-            renderTree(dirs, fileList);
+            const { dirs, files: fileList } = buildChildren(files, reqPath);
+            dirCache.set(reqPath, { dirs, files: fileList, ts: Date.now() });
+            // 仅当用户仍在同一目录时才更新渲染
+            if (currentPath === reqPath) {
+                renderTree(dirs, fileList);
+            }
         } catch (e) {
-            tree.innerHTML = `<div class="tree-empty" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</div>`;
+            if (!cached && currentPath === reqPath) {
+                tree.innerHTML = `<div class="tree-empty" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</div>`;
+            }
         }
     }
 
@@ -894,7 +944,7 @@
                 } catch (e) { fail++; }
             }
             toast(`批量删除完成（成功 ${success}，失败 ${fail}）`, fail > 0 ? 'err' : 'ok');
-            loadFiles();
+            refreshAfterModify();
         });
     }
 
@@ -1300,7 +1350,7 @@
             }
             toast(`批量移动完成（成功 ${success}，失败 ${fail}）`, fail > 0 ? 'err' : 'ok');
             cleanup();
-            loadFiles();
+            refreshAfterModify();
         };
         const cleanup = () => {
             modal.hidden = true;
@@ -1329,6 +1379,7 @@
         const modal = document.getElementById('share-modal');
         const nameEl = document.getElementById('share-name');
         const expirySelect = document.getElementById('share-expiry');
+        const passwordInput = document.getElementById('share-password');
         const createBtn = document.getElementById('share-create-btn');
         const resultEl = document.getElementById('share-result');
         const linkInput = document.getElementById('share-link');
@@ -1336,6 +1387,7 @@
 
         nameEl.textContent = displayName;
         expirySelect.value = '0'; // 默认永久
+        if (passwordInput) passwordInput.value = ''; // 清空密码输入
         resultEl.hidden = true;
         linkInput.value = '';
         modal.hidden = false;
@@ -1346,6 +1398,9 @@
             const body = { share_type: shareType, expires_in: expiresIn };
             if (shareType === 'file') body.file_id = fileId;
             else body.dir_prefix = dirPrefix;
+            // 附加访问密码（可选，trim 后非空才发送）
+            const pwd = passwordInput ? passwordInput.value.trim() : '';
+            if (pwd) body.password = pwd;
 
             createBtn.disabled = true;
             createBtn.textContent = '创建中...';
@@ -1410,6 +1465,7 @@
                 const expiry = s.expires_at ? new Date(s.expires_at * 1000).toLocaleString('zh-CN') : '永久';
                 const status = s.is_expired ? '<span class="share-status expired">已过期</span>' :
                               (s.is_active ? '<span class="share-status active">有效</span>' : '<span class="share-status">已禁用</span>');
+                const lock = s.has_password ? '<span class="share-status locked" title="已设置访问密码">密码</span>' : '';
                 const fullURL = window.location.origin + s.url;
                 return `
                     <div class="share-item" data-id="${escapeHtml(s.id)}">
@@ -1417,6 +1473,7 @@
                             <span class="share-item-name">${escapeHtml(s.name)}</span>
                             <span class="share-item-type">${s.share_type === 'file' ? '文件' : '目录'}</span>
                             ${status}
+                            ${lock}
                         </div>
                         <div class="share-item-meta">
                             <span>创建: ${created}</span>
@@ -1538,7 +1595,7 @@
             toast('文件已恢复', 'ok');
             // 刷新回收站列表 + 文件列表
             openTrashDialog();
-            loadFiles();
+            refreshAfterModify();
         } catch (e) {
             toast(`恢复失败: ${e.message}`, 'err');
         }
@@ -1582,7 +1639,7 @@
                 const res = await apiFetch(`${API.files}/${fileId}`, { method: 'DELETE' });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 toast(`「${filename}」已移入回收站`, 'ok');
-                loadFiles();
+                refreshAfterModify();
             } catch (e) {
                 toast(`删除失败: ${e.message}`, 'err');
             }
@@ -1633,7 +1690,7 @@
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 toast(`已重命名为「${newFilename}」`, 'ok');
                 cleanup();
-                loadFiles();
+                refreshAfterModify();
             } catch (e) {
                 toast(`重命名失败: ${e.message}`, 'err');
             }
@@ -1699,7 +1756,7 @@
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 toast(`目录「${rawPath}」已创建`, 'ok');
                 cleanup();
-                loadFiles();
+                refreshAfterModify();
             } catch (e) {
                 toast(`新建目录失败: ${e.message}`, 'err');
             }
@@ -1764,7 +1821,7 @@
                 const data = await res.json().catch(() => ({}));
                 toast(`目录已移动到「${rawPath}」（成功 ${data.success || 0}，失败 ${data.fail || 0}）`, 'ok');
                 cleanup();
-                loadFiles();
+                refreshAfterModify();
             } catch (e) {
                 toast(`移动目录失败: ${e.message}`, 'err');
             }
@@ -2053,7 +2110,7 @@
             while (cursor < tasks.length) {
                 const task = tasks[cursor++];
                 await task.run();
-                if (task.status === 'done') loadFiles();
+                if (task.status === 'done') refreshAfterModify();
             }
         };
         const workers = [];

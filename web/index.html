@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260707h">
+    <link rel="stylesheet" href="/web/style.css?v=20260707i">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -238,6 +238,12 @@
                     </select>
                 </label>
             </div>
+            <div class="modal-input-wrap">
+                <label class="share-expiry-label">
+                    访问密码（可选）
+                    <input type="text" id="share-password" class="modal-input" placeholder="留空表示无密码，最多 64 字符" maxlength="64" autocomplete="off">
+                </label>
+            </div>
             <div class="share-result" id="share-result" hidden>
                 <div class="share-link-wrap">
                     <input type="text" id="share-link" class="modal-input" readonly placeholder="分享链接将显示在这里">
@@ -350,6 +356,6 @@
     <!-- 上下文菜单容器（右键菜单动态填充） -->
     <div class="ctx-menu" id="ctx-menu" hidden></div>
 
-    <script src="/web/app.js?v=20260707h"></script>
+    <script src="/web/app.js?v=20260707i"></script>
 </body>
 </html>
