@@ -153,7 +153,7 @@ func (h *ShareHandler) createShare(w http.ResponseWriter, r *http.Request, usern
 		return
 	}
 
-	// 验证文件/目录存在
+	// 验证文件/目录存在（按当前用户过滤，确保只能分享自己的文件）
 	var name string
 	var size int64
 	var fileCount int
@@ -165,6 +165,12 @@ func (h *ShareHandler) createShare(w http.ResponseWriter, r *http.Request, usern
 		f, err := h.db.GetFile(req.FileID)
 		if err != nil {
 			http.Error(w, `{"error":"file_not_found"}`, http.StatusNotFound)
+			return
+		}
+		// 权限校验：仅 owner 或 admin 可分享
+		role := auth.RoleFromContext(r.Context())
+		if f.Owner != username && role != "admin" {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 			return
 		}
 		name = f.Filename
@@ -180,7 +186,13 @@ func (h *ShareHandler) createShare(w http.ResponseWriter, r *http.Request, usern
 		if !strings.HasSuffix(req.DirPrefix, "/") {
 			req.DirPrefix += "/"
 		}
-		files, err := h.db.ListFiles(req.DirPrefix)
+		// 按当前用户过滤（admin 传 "" 看所有）
+		role := auth.RoleFromContext(r.Context())
+		owner := username
+		if role == "admin" {
+			owner = ""
+		}
+		files, err := h.db.ListFiles(req.DirPrefix, owner)
 		if err != nil {
 			log.Printf("[Share] list files error: %v", err)
 			http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
@@ -362,7 +374,8 @@ func (h *ShareHandler) getSharePublic(w http.ResponseWriter, r *http.Request, id
 		fileCount = 1
 	} else {
 		name = strings.TrimSuffix(s.DirPrefix, "/")
-		files, err := h.db.ListFiles(s.DirPrefix)
+		// 公开访问也按 share 创建者过滤，防止同 prefix 下其他用户文件泄露
+		files, err := h.db.ListFiles(s.DirPrefix, s.CreatedBy)
 		if err == nil {
 			for _, f := range files {
 				if !strings.HasSuffix(f.Filename, ".keep") {
@@ -458,8 +471,9 @@ func (h *ShareHandler) downloadSharedFile(w http.ResponseWriter, r *http.Request
 }
 
 // downloadSharedDir 下载目录为 ZIP（复用 download.go 的逻辑）
+// 按 share 创建者过滤，防止同 prefix 下其他用户文件被下载。
 func (h *ShareHandler) downloadSharedDir(w http.ResponseWriter, r *http.Request, s *model.Share) {
-	files, err := h.db.ListFiles(s.DirPrefix)
+	files, err := h.db.ListFiles(s.DirPrefix, s.CreatedBy)
 	if err != nil {
 		log.Printf("[Share] list dir error: %v", err)
 		http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)

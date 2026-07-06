@@ -228,3 +228,15 @@ func (s *S3Storage) DeleteFile(path string) error {
 	ctx := context.Background()
 	return s.client.RemoveObject(ctx, s.bucket, path, minio.RemoveObjectOptions{})
 }
+
+// CopyFile 在 S3 同 bucket 内服务端复制对象（用于转存功能）。
+// 使用 minio CopyObject，数据不经过本地，适合大文件。
+func (s *S3Storage) CopyFile(srcPath, dstPath string) error {
+	ctx := context.Background()
+	src := minio.CopySrcOptions{Bucket: s.bucket, Object: srcPath}
+	dst := minio.CopyDestOptions{Bucket: s.bucket, Object: dstPath}
+	if _, err := s.client.CopyObject(ctx, dst, src); err != nil {
+		return fmt.Errorf("s3 copy object %s -> %s: %w", srcPath, dstPath, err)
+	}
+	return nil
+}

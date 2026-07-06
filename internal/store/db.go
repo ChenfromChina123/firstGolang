@@ -454,10 +454,12 @@ func (db *DB) migrate() error {
 				chunk_size BIGINT NOT NULL,
 				total_chunks INT NOT NULL,
 				status VARCHAR(32) NOT NULL DEFAULT 'completed',
+				owner VARCHAR(64) NOT NULL DEFAULT '',
 				created_at VARCHAR(32) NOT NULL,
 				updated_at VARCHAR(32) NOT NULL,
 				INDEX idx_files_filename (filename(255)),
-				INDEX idx_files_status (status)
+				INDEX idx_files_status (status),
+				INDEX idx_files_owner (owner)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 			`CREATE TABLE IF NOT EXISTS users (
 				id VARCHAR(64) PRIMARY KEY,
@@ -559,9 +561,12 @@ func (db *DB) migrate() error {
 				chunk_size INTEGER NOT NULL,
 				total_chunks INTEGER NOT NULL,
 				status TEXT NOT NULL DEFAULT 'completed',
+				owner TEXT NOT NULL DEFAULT '',
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL
 			);
+
+			CREATE INDEX IF NOT EXISTS idx_files_owner ON files(owner);
 
 			CREATE TABLE IF NOT EXISTS users (
 				id TEXT PRIMARY KEY,
@@ -641,6 +646,11 @@ func (db *DB) migrate() error {
 	// 增量迁移：为已存在的 users 表追加 email/status 列（旧库升级路径）
 	if err := db.migrateUsersAddColumns(); err != nil {
 		return fmt.Errorf("migrate users columns: %w", err)
+	}
+
+	// 增量迁移：为已存在的 files 表追加 owner 列（用户隔离基础）
+	if err := db.migrateFilesAddOwner(); err != nil {
+		return fmt.Errorf("migrate files owner: %w", err)
 	}
 
 	return nil
@@ -728,6 +738,78 @@ func (db *DB) migrateUsersAddColumns() error {
 		_, err := db.conn.Exec(`CREATE UNIQUE INDEX idx_users_email ON users(email)`)
 		if err != nil {
 			log.Printf("[DB] WARNING: create idx_users_email failed (may already exist): %v", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateFilesAddOwner 检测 files 表是否缺少 owner 列，缺少则 ALTER TABLE ADD COLUMN。
+// 兼容 SQLite 和 MySQL 旧库升级，用于实现用户级文件隔离。
+func (db *DB) migrateFilesAddOwner() error {
+	var columns []string
+	switch db.dialect {
+	case "mysql":
+		rows, err := db.conn.Query(
+			`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+			 WHERE TABLE_NAME = 'files' AND TABLE_SCHEMA = DATABASE()`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(c))
+		}
+		rows.Close()
+	default:
+		rows, err := db.conn.Query(`PRAGMA table_info(files)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt interface{}
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(name))
+		}
+		rows.Close()
+	}
+
+	hasOwner := false
+	for _, c := range columns {
+		if c == "owner" {
+			hasOwner = true
+			break
+		}
+	}
+
+	if !hasOwner {
+		var stmt string
+		if db.dialect == "mysql" {
+			stmt = `ALTER TABLE files ADD COLUMN owner VARCHAR(64) NOT NULL DEFAULT ''`
+		} else {
+			stmt = `ALTER TABLE files ADD COLUMN owner TEXT NOT NULL DEFAULT ''`
+		}
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("add owner column: %w", err)
+		}
+		log.Printf("[DB] files table: added 'owner' column")
+	}
+
+	// MySQL 需显式创建索引（SQLite 在 CREATE TABLE 后已用 CREATE INDEX IF NOT EXISTS 创建）
+	if db.dialect == "mysql" && !hasOwner {
+		_, err := db.conn.Exec(`CREATE INDEX idx_files_owner ON files(owner)`)
+		if err != nil {
+			log.Printf("[DB] WARNING: create idx_files_owner failed (may already exist): %v", err)
 		}
 	}
 
@@ -852,10 +934,10 @@ func (db *DB) GetReceivedChunks(sessionID string) ([]int, error) {
 // CreateFile records a completed file
 func (db *DB) CreateFile(f *model.FileRecord) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.ID, f.Filename, f.Size, f.Hash, f.StoragePath, f.StorageType,
-		f.ChunkSize, f.TotalChunks, f.Status,
+		f.ChunkSize, f.TotalChunks, f.Status, f.Owner,
 		f.CreatedAt.Format(time.RFC3339), f.UpdatedAt.Format(time.RFC3339),
 	)
 	return err
@@ -864,13 +946,13 @@ func (db *DB) CreateFile(f *model.FileRecord) error {
 // GetFile retrieves a file record by ID
 func (db *DB) GetFile(id string) (*model.FileRecord, error) {
 	row := db.conn.QueryRow(
-		`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at
+		`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
 		 FROM files WHERE id = ?`, id,
 	)
 	f := &model.FileRecord{}
 	var createdAt, updatedAt string
 	err := row.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
-		&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &createdAt, &updatedAt)
+		&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -879,16 +961,23 @@ func (db *DB) GetFile(id string) (*model.FileRecord, error) {
 	return f, nil
 }
 
-// FindFileByName checks if a file with the given name exists
-func (db *DB) FindFileByName(filename string) (*model.FileRecord, error) {
-	row := db.conn.QueryRow(
-		`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at
-		 FROM files WHERE filename = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, filename,
-	)
+// FindFileByName checks if a file with the given name exists (filtered by owner)
+// owner 为空时不过滤（兼容旧调用方），非空时加 WHERE owner = ? 条件
+func (db *DB) FindFileByName(filename, owner string) (*model.FileRecord, error) {
+	var row *sql.Row
+	if owner == "" {
+		row = db.conn.QueryRow(
+			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+			 FROM files WHERE filename = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, filename)
+	} else {
+		row = db.conn.QueryRow(
+			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+			 FROM files WHERE filename = ? AND status = 'completed' AND owner = ? ORDER BY created_at DESC LIMIT 1`, filename, owner)
+	}
 	f := &model.FileRecord{}
 	var createdAt, updatedAt string
 	err := row.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
-		&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &createdAt, &updatedAt)
+		&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -899,22 +988,27 @@ func (db *DB) FindFileByName(filename string) (*model.FileRecord, error) {
 
 // ListFiles returns all completed files
 // ListFiles 返回所有已完成文件。prefix 非空时按路径前缀过滤（递归匹配子目录）。
+// owner 非空时按归属用户过滤（用户隔离）；owner 为空时返回所有用户的文件（兼容旧调用方）。
 // 路径枚举方案：filename 中的 "/" 作为虚拟目录分隔符，无需单独 directories 表。
-func (db *DB) ListFiles(prefix string) ([]model.FileRecord, error) {
+func (db *DB) ListFiles(prefix, owner string) ([]model.FileRecord, error) {
 	var (
 		rows *sql.Rows
 		err  error
 	)
-	if prefix == "" {
-		rows, err = db.conn.Query(
-			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at
-		     FROM files WHERE status = 'completed' ORDER BY created_at DESC`)
-	} else {
+	const cols = `SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+		     FROM files WHERE status = 'completed'`
+	switch {
+	case prefix == "" && owner == "":
+		rows, err = db.conn.Query(cols + ` ORDER BY created_at DESC`)
+	case prefix == "" && owner != "":
+		rows, err = db.conn.Query(cols+` AND owner = ? ORDER BY created_at DESC`, owner)
+	case prefix != "" && owner == "":
 		// ESCAPE '|': 用 | 作为 LIKE 转义符，避免 MySQL 对 '\' 的歧义解析
-		rows, err = db.conn.Query(
-			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at
-		     FROM files WHERE status = 'completed' AND filename LIKE ? ESCAPE '|' ORDER BY created_at DESC`,
+		rows, err = db.conn.Query(cols+` AND filename LIKE ? ESCAPE '|' ORDER BY created_at DESC`,
 			escapeLikePrefix(prefix)+"%")
+	default:
+		rows, err = db.conn.Query(cols+` AND filename LIKE ? ESCAPE '|' AND owner = ? ORDER BY created_at DESC`,
+			escapeLikePrefix(prefix)+"%", owner)
 	}
 	if err != nil {
 		return nil, err
@@ -926,7 +1020,7 @@ func (db *DB) ListFiles(prefix string) ([]model.FileRecord, error) {
 		var f model.FileRecord
 		var createdAt, updatedAt string
 		if err := rows.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
-			&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &createdAt, &updatedAt); err != nil {
+			&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -1161,9 +1255,9 @@ func (db *DB) DeleteFile(id string) (int64, error) {
 
 // DeleteFilesByPrefix 删除指定前缀下所有文件（递归匹配子目录）。返回删除文件列表。
 // 路径枚举方案：用 LIKE 'prefix%' ESCAPE '|' 匹配。调用方负责删除存储文件。
-func (db *DB) DeleteFilesByPrefix(prefix string) ([]model.FileRecord, error) {
+func (db *DB) DeleteFilesByPrefix(prefix, owner string) ([]model.FileRecord, error) {
 	// 先查询出待删除文件（调用方需要 storage_path 删除存储）
-	files, err := db.ListFiles(prefix)
+	files, err := db.ListFiles(prefix, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -1189,10 +1283,18 @@ func (db *DB) DeleteFilesByPrefix(prefix string) ([]model.FileRecord, error) {
 
 // UpdateFilename 更新文件名（含路径前缀），用于重命名/移动。
 // newFilename 必须通过 validateFilePath 校验（由 handler 层保证）。
-func (db *DB) UpdateFilename(id, newFilename string) error {
+// owner 非空时加 WHERE owner = ? 条件防止越权改他人文件名；为空时不过滤（兼容旧调用方）。
+func (db *DB) UpdateFilename(id, newFilename, owner string) error {
+	if owner == "" {
+		_, err := db.conn.Exec(
+			`UPDATE files SET filename = ?, updated_at = ? WHERE id = ?`,
+			newFilename, time.Now().Format(time.RFC3339), id,
+		)
+		return err
+	}
 	_, err := db.conn.Exec(
-		`UPDATE files SET filename = ?, updated_at = ? WHERE id = ?`,
-		newFilename, time.Now().Format(time.RFC3339), id,
+		`UPDATE files SET filename = ?, updated_at = ? WHERE id = ? AND owner = ?`,
+		newFilename, time.Now().Format(time.RFC3339), id, owner,
 	)
 	return err
 }

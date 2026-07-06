@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"filesync/internal/auth"
 	"filesync/internal/model"
 	"filesync/internal/store"
 	"filesync/internal/storage"
@@ -147,6 +148,13 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 	// === Conflict check: Redis first, fallback to SQLite ===
 	// Redis 集合可能不完整（Redis 重启、文件通过 SQLite path 上传、历史数据残留），
 	// 所以 Redis miss 时必须 fallback 到 SQLite 检查，并补标记 Redis 修复集合不一致。
+	// owner 过滤：admin 可见所有（owner=""），普通用户仅自己的（避免与其他用户同名文件误判冲突）
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
+	ownerForCheck := username
+	if role == "admin" {
+		ownerForCheck = ""
+	}
 	var conflictFile *model.FileRecord
 	redisHit := false
 	if h.redis != nil {
@@ -157,7 +165,7 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if redisHit {
 		// Redis 命中：查 SQLite 获取完整记录（附带 Existing 字段供前端展示）
-		existing, _ := h.db.FindFileByName(req.Filename)
+		existing, _ := h.db.FindFileByName(req.Filename, ownerForCheck)
 		if existing != nil {
 			conflictFile = existing
 		} else {
@@ -166,7 +174,7 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Redis miss 或无 Redis：查 SQLite
-		existing, _ := h.db.FindFileByName(req.Filename)
+		existing, _ := h.db.FindFileByName(req.Filename, ownerForCheck)
 		if existing != nil {
 			conflictFile = existing
 			// 补标记 Redis（修复集合不一致，下次可命中 Redis 快速路径）
@@ -501,6 +509,7 @@ func (h *UploadHandler) GetUploadStatus(w http.ResponseWriter, r *http.Request) 
 
 // CompleteUpload assembles all chunks into the final file
 // POST /api/upload/complete
+// 权限：文件归属为上传发起者（Owner = username），admin 上传时 Owner 仍为 admin。
 func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -514,6 +523,9 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
+
+	// 文件归属：上传发起者（admin 上传的文件 Owner=admin）
+	username := auth.UsernameFromContext(r.Context())
 
 	// === Redis fast path ===
 	if h.redis != nil {
@@ -582,6 +594,7 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 			ChunkSize:   session.ChunkSize,
 			TotalChunks: session.TotalChunks,
 			Status:      "completed",
+			Owner:       username,
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
 		}
@@ -644,6 +657,7 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		ChunkSize:   session.ChunkSize,
 		TotalChunks: session.TotalChunks,
 		Status:      "completed",
+		Owner:       username,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}

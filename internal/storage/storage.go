@@ -28,6 +28,10 @@ type Storage interface {
 	HashFile(path string) (string, error)
 	// DeleteFile removes a completed file from storage
 	DeleteFile(path string) error
+	// CopyFile 复制已完成文件到新路径（用于转存功能）。
+	// srcPath 为源文件的 storage_path，dstPath 为目标 storage 键。
+	// 实现应保证原子性：失败时不留下部分文件。
+	CopyFile(srcPath, dstPath string) error
 }
 
 // AsyncStorager is an optional interface for backends that support async writes.

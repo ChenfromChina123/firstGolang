@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"filesync/internal/auth"
 	"filesync/internal/store"
 	"filesync/internal/storage"
 )
@@ -40,6 +41,15 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[DOWNLOAD] file not found: id=%s err=%v", fileID, err)
 		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+
+	// 权限校验：仅 owner 或 admin 可下载
+	// 注：分享下载走独立接口 /api/share/...，不受此限制
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
+	if file.Owner != username && role != "admin" {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
 	}
 
@@ -140,6 +150,7 @@ func (h *DownloadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // DownloadDir 把指定目录下所有文件（递归）打包成 ZIP 流式下载。
 // GET /api/download/dir?prefix=docs/
 // ZIP 内文件路径为相对路径（去掉 prefix 前缀），保留虚拟目录结构。
+// 权限：admin 可下载所有，普通用户仅下载自己的目录。
 func (h *DownloadHandler) DownloadDir(w http.ResponseWriter, r *http.Request) {
 	prefix := fastQueryParam(r.URL.RawQuery, "prefix")
 	if prefix == "" {
@@ -147,7 +158,15 @@ func (h *DownloadHandler) DownloadDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files, err := h.db.ListFiles(prefix)
+	// owner 过滤：admin 可见所有，普通用户仅自己的
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
+	owner := username
+	if role == "admin" {
+		owner = ""
+	}
+
+	files, err := h.db.ListFiles(prefix, owner)
 	if err != nil {
 		log.Printf("list files for zip error: %v", err)
 		http.Error(w, "failed to list files", http.StatusInternalServerError)

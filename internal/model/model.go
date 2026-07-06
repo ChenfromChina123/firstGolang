@@ -33,6 +33,7 @@ type FileRecord struct {
 	ChunkSize   int64     `json:"chunk_size"`
 	TotalChunks int       `json:"total_chunks"`
 	Status      string    `json:"status"` // completed, failed
+	Owner       string    `json:"owner"`  // 文件归属用户名（空=历史数据/公共）
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

@@ -255,6 +255,31 @@ func (s *LocalStorage) DeleteFile(path string) error {
 	return nil
 }
 
+// CopyFile 复制本地文件到新路径（用于转存功能）。
+// 使用 io.Copy 流式复制，避免大文件占用内存；失败时清理部分文件保证原子性。
+func (s *LocalStorage) CopyFile(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open src file: %w", err)
+	}
+	defer src.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+		return fmt.Errorf("create dst dir: %w", err)
+	}
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return fmt.Errorf("create dst file: %w", err)
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		os.Remove(dstPath) // 清理部分文件
+		return fmt.Errorf("copy: %w", err)
+	}
+	return nil
+}
+
 // ComputeFileHash returns the SHA256 hex of a file
 // Deprecated: Use Storage.HashFile() method instead
 func ComputeFileHash(path string) (string, error) {

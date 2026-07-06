@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"filesync/internal/auth"
 	"filesync/internal/model"
 	"filesync/internal/storage"
 	"filesync/internal/store"
@@ -31,8 +32,15 @@ func NewFileHandler(db *store.DB, s storage.Storage, rc *store.RedisCache) *File
 // 例：GET /api/files?prefix=docs/ 返回 docs/ 目录下所有文件（递归）。
 // 注：必须用 fastQueryParam 解码（encodeURIComponent 编码 / 为 %2F）。
 func (h *FileHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
 	prefix := fastQueryParam(r.URL.RawQuery, "prefix")
-	files, err := h.db.ListFiles(prefix)
+	// admin 可见所有文件；普通用户仅可见自己的文件
+	owner := username
+	if role == "admin" {
+		owner = ""
+	}
+	files, err := h.db.ListFiles(prefix, owner)
 	if err != nil {
 		http.Error(w, "failed to list files", http.StatusInternalServerError)
 		return
@@ -79,7 +87,15 @@ func (h *FileHandler) GetFileInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := model.FileInfoResponse{
+	// 权限校验：仅 owner 或 admin 可访问
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
+	if f.Owner != username && role != "admin" {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	resp := model.FileInfoResponse {
 		ID:          f.ID,
 		Filename:    f.Filename,
 		Size:        f.Size,
@@ -147,6 +163,14 @@ func (h *FileHandler) DeleteFileByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 权限校验：仅 owner 或 admin 可删除
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
+	if f.Owner != username && role != "admin" {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
 	// 先删存储文件，再删数据库记录
 	if err := h.storage.DeleteFile(f.StoragePath); err != nil {
 		log.Printf("delete storage file %s error: %v", f.StoragePath, err)
@@ -176,13 +200,20 @@ func (h *FileHandler) DeleteFileByID(w http.ResponseWriter, r *http.Request) {
 // DeleteDir 删除目录下所有文件（DELETE /api/files?prefix=xxx）。
 // 递归匹配 prefix 下所有文件（含子目录），逐个删除存储文件 + 数据库记录。
 func (h *FileHandler) DeleteDir(w http.ResponseWriter, r *http.Request) {
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
 	prefix := fastQueryParam(r.URL.RawQuery, "prefix")
 	if prefix == "" {
 		http.Error(w, "prefix required", http.StatusBadRequest)
 		return
 	}
 
-	files, err := h.db.DeleteFilesByPrefix(prefix)
+	// admin 可删除所有；普通用户仅删自己的
+	owner := username
+	if role == "admin" {
+		owner = ""
+	}
+	files, err := h.db.DeleteFilesByPrefix(prefix, owner)
 	if err != nil {
 		log.Printf("delete files by prefix %s error: %v", prefix, err)
 		http.Error(w, "failed to delete directory", http.StatusInternalServerError)
@@ -218,6 +249,7 @@ func (h *FileHandler) DeleteDir(w http.ResponseWriter, r *http.Request) {
 // 路径枚举方案下，目录通过创建 .keep 占位文件实现存在。
 // 前端和 ZIP 打包会过滤 .keep 文件，用户不可见。
 func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
+	username := auth.UsernameFromContext(r.Context())
 	var req struct {
 		Path string `json:"path"`
 	}
@@ -240,7 +272,7 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 检查目录是否已存在（有文件即存在）
-	existing, _ := h.db.ListFiles(dirPath)
+	existing, _ := h.db.ListFiles(dirPath, username)
 	if len(existing) > 0 {
 		http.Error(w, "directory already exists", http.StatusConflict)
 		return
@@ -268,6 +300,7 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 		ChunkSize:   512,
 		TotalChunks: 0,
 		Status:      "completed",
+		Owner:       username,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -292,6 +325,8 @@ func (h *FileHandler) Mkdir(w http.ResponseWriter, r *http.Request) {
 // 修改 filename 字段（含路径前缀），实现文件移动到其他目录。
 // 存储文件不移动（storage_path 不变），仅改 filename 虚拟路径。
 func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
 	var req struct {
 		ID          string `json:"id"`
 		NewFilename string `json:"new_filename"`
@@ -318,9 +353,15 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 检查新文件名是否冲突（同名校验）
+	// 权限校验：仅 owner 或 admin 可重命名
+	if f.Owner != username && role != "admin" {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	// 检查新文件名是否冲突（同名校验，按当前用户过滤）
 	if f.Filename != req.NewFilename {
-		existing, _ := h.db.FindFileByName(req.NewFilename)
+		existing, _ := h.db.FindFileByName(req.NewFilename, username)
 		if existing != nil {
 			http.Error(w, fmt.Sprintf("file '%s' already exists", req.NewFilename), http.StatusConflict)
 			return
@@ -328,7 +369,11 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 更新文件名（storage_path 不变，仅改虚拟路径）
-	if err := h.db.UpdateFilename(req.ID, req.NewFilename); err != nil {
+	ownerForUpdate := username
+	if role == "admin" {
+		ownerForUpdate = ""
+	}
+	if err := h.db.UpdateFilename(req.ID, req.NewFilename, ownerForUpdate); err != nil {
 		log.Printf("rename file %s error: %v", req.ID, err)
 		http.Error(w, "failed to rename file", http.StatusInternalServerError)
 		return
@@ -357,8 +402,11 @@ func (h *FileHandler) Rename(w http.ResponseWriter, r *http.Request) {
 // MoveDir 移动目录（POST /api/files/move-dir）。
 // 批量更新目录下所有文件的 filename 前缀，实现目录移动。
 // 存储文件不移动（storage_path 不变），仅改 filename 虚拟路径。
+// 权限：admin 可移动任意目录，普通用户仅可移动自己的目录。
 // 请求体：{"old_prefix":"old_dir/","new_prefix":"new_dir/"}
 func (h *FileHandler) MoveDir(w http.ResponseWriter, r *http.Request) {
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
 	var req struct {
 		OldPrefix string `json:"old_prefix"`
 		NewPrefix string `json:"new_prefix"`
@@ -378,8 +426,14 @@ func (h *FileHandler) MoveDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// admin 可见所有；普通用户仅自己的（owner 过滤）
+	owner := username
+	if role == "admin" {
+		owner = ""
+	}
+
 	// 获取源目录下所有文件
-	files, err := h.db.ListFiles(req.OldPrefix)
+	files, err := h.db.ListFiles(req.OldPrefix, owner)
 	if err != nil {
 		http.Error(w, "failed to list files", http.StatusInternalServerError)
 		return
@@ -389,18 +443,19 @@ func (h *FileHandler) MoveDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 检查目标目录是否已有同名文件（冲突检查）
-	targetFiles, _ := h.db.ListFiles(req.NewPrefix)
+	// 检查目标目录是否已有同名文件（冲突检查，按当前用户过滤）
+	targetFiles, _ := h.db.ListFiles(req.NewPrefix, owner)
 	if len(targetFiles) > 0 {
 		http.Error(w, "target directory already has files", http.StatusConflict)
 		return
 	}
 
-	// 批量更新 filename 前缀
+	// 批量更新 filename 前缀（ownerForUpdate 与查询保持一致）
+	ownerForUpdate := owner
 	var successCount, failCount int
 	for _, f := range files {
 		newFilename := req.NewPrefix + strings.TrimPrefix(f.Filename, req.OldPrefix)
-		if err := h.db.UpdateFilename(f.ID, newFilename); err != nil {
+		if err := h.db.UpdateFilename(f.ID, newFilename, ownerForUpdate); err != nil {
 			log.Printf("move file %s error: %v", f.ID, err)
 			failCount++
 			continue
@@ -426,8 +481,11 @@ func (h *FileHandler) MoveDir(w http.ResponseWriter, r *http.Request) {
 
 // BatchDelete 批量删除文件（POST /api/files/batch-delete）。
 // 请求体：{"ids":["id1","id2",...]}
+// 权限：仅 owner 或 admin 可删除；非 owner 文件跳过并计入失败。
 // 逐个删除文件（存储 + 数据库 + Redis），返回成功/失败计数。
 func (h *FileHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
 	var req struct {
 		IDs []string `json:"ids"`
 	}
@@ -445,6 +503,12 @@ func (h *FileHandler) BatchDelete(w http.ResponseWriter, r *http.Request) {
 		f, err := h.db.GetFile(fileID)
 		if err != nil {
 			log.Printf("batch-delete: file %s not found: %v", fileID, err)
+			failCount++
+			continue
+		}
+		// 权限校验：非 owner 且非 admin 跳过
+		if f.Owner != username && role != "admin" {
+			log.Printf("batch-delete: forbidden file %s (owner=%s, user=%s)", fileID, f.Owner, username)
 			failCount++
 			continue
 		}
