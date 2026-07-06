@@ -17,6 +17,7 @@
 - **文件所有权隔离**：files 表记录 owner 字段，用户只能下载/删除/重命名/移动/分享自己的文件；admin 可操作所有文件；历史文件 owner 为空时仅 admin 可访问；分享链接公开访问按创建者过滤防止越权下载
 - **深度防盗链**：4 层防护保障资源不被盗链：①安全响应头（X-Frame-Options/CSP 防 iframe 嵌入）；②Referer 校验（只允许空 Referer 或白名单域名）；③签名 Token（分享下载需携带 HMAC-SHA256 token，30 分钟有效，绑定 share_id）；④频率限制（分享下载每 IP 每分钟 10 次）
 - **秒传功能**：上传前通过 Web Worker 在后台线程计算完整文件 SHA256，调用 `/api/upload/check` 接口检查哈希是否已存在。命中时后端 CopyFile 复制存储文件并创建新记录，整个上传流程被跳过，实现"秒级"上传。仅同 owner 范围内秒传（防哈希侧信道探测），hash+size 双重校验避免误判。秒传检查失败自动降级为正常上传（非致命）。
+- **回收站功能**：文件删除采用软删除机制（deleted_at 字段），移入回收站保留 30 天可恢复。支持列出回收站、恢复文件（含文件名冲突检测）、永久删除单个文件、清空回收站。服务启动时自动清理过期回收站文件（物理删除数据库记录 + 删除存储文件）。admin 可通过 `?all=true` 查看和管理所有用户的回收站。
 
 ## 项目结构
 
@@ -136,6 +137,7 @@ filesync 内置一个纯 HTML+CSS+JS 的 Web 控制台（无框架依赖，轻�
 - **配置同步**：分片大小与并发数持久化到服务器，换浏览器自动加载（localStorage 即时响应 + 服务器后台同步）
 - **分享链接**：文件/目录可生成分享链接（永久/7天/30天有效期），访客无需登录即可查看和下载，下载次数去重统计
 - **秒传功能**：上传前 Web Worker 在后台计算完整文件 SHA256，调用 `/api/upload/check` 检查是否已存在相同哈希。命中则跳过整个上传流程，秒级完成；未命中或计算失败自动降级为正常上传
+- **回收站**：文件删除后移入回收站（软删除），30 天内可恢复。回收站对话框支持列出文件、恢复（含冲突检测）、永久删除、清空操作。删除提示文字明确告知"移入回收站，30 天内可恢复"
 
 ### 设计要点
 
@@ -316,18 +318,18 @@ curl -X POST http://localhost:8080/api/files/rename \
 # 响应 400: 文件名非法
 ```
 
-**删除单个文件：**
+**删除单个文件（软删除，移入回收站）：**
 ```bash
 curl -X DELETE http://localhost:8080/api/files/<fileID>
-# 响应 200: {"deleted":true,"id":"...","filename":"..."}
-# 同时递归清理空的父目录（路径枚举方案下保持目录整洁）
+# 响应 200: {"deleted":true,"id":"...","filename":"...","trashed":true}
+# 文件移入回收站，保留 30 天可恢复，不删除存储文件
 ```
 
-**递归删除目录：**
+**递归删除目录（软删除，移入回收站）：**
 ```bash
 curl -X DELETE "http://localhost:8080/api/files?prefix=docs/"
-# 响应 200: {"deleted":true,"prefix":"docs/","files_deleted":N,"storage_errors":0}
-# 删除所有 filename LIKE 'docs/%' 的文件
+# 响应 200: {"deleted":true,"prefix":"docs/","files_deleted":N,"trashed":true}
+# 目录下所有文件移入回收站，保留 30 天可恢复
 ```
 
 **ZIP 打包下载目录：**
@@ -347,6 +349,46 @@ curl -o docs.zip "http://localhost:8080/api/download/dir?prefix=docs/"
 - 禁止反斜杠 `\`
 - 长度限制 1-1024 字节
 - 禁止空文件（file_size <= 0）：前端选择时拦截并提示"文件为空，已跳过"；后端返回 400 `file_size must be greater than 0`
+
+### 回收站
+
+文件删除采用软删除机制，移入回收站保留 30 天可恢复。过期后服务启动时自动清理（物理删除数据库记录 + 删除存储文件）。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/trash` | 列出回收站文件（admin 可用 `?all=true` 查看所有用户） |
+| `POST` | `/api/trash/{id}/restore` | 恢复文件（文件名冲突时返回 409） |
+| `DELETE` | `/api/trash/{id}` | 永久删除单个文件（物理删除，不可恢复） |
+| `DELETE` | `/api/trash` | 清空回收站（admin 可用 `?all=true` 清空所有用户） |
+
+**列出回收站：**
+```bash
+curl http://localhost:8080/api/trash
+# 响应 200: {"items":[...],"total":N,"retention":30}
+# 每个 item 包含 id/filename/size/hash/owner/created_at/deleted_at/expires_at/is_expired
+# admin 查看所有用户: curl "http://localhost:8080/api/trash?all=true"
+```
+
+**恢复文件：**
+```bash
+curl -X POST http://localhost:8080/api/trash/<fileID>/restore
+# 响应 200: {"restored":true,"id":"...","filename":"..."}
+# 响应 409: {"error":"filename_conflict","message":"恢复失败：同名文件已存在，请先重命名现有文件"}
+```
+
+**永久删除单个文件：**
+```bash
+curl -X DELETE http://localhost:8080/api/trash/<fileID>
+# 响应 200: {"deleted":true,"id":"...","filename":"..."}
+# 物理删除数据库记录 + 删除存储文件，不可恢复
+```
+
+**清空回收站：**
+```bash
+curl -X DELETE http://localhost:8080/api/trash
+# 响应 200: {"deleted":true,"count":N,"fail":0}
+# admin 清空所有用户: curl -X DELETE "http://localhost:8080/api/trash?all=true"
+```
 
 ### 认证与账号
 
