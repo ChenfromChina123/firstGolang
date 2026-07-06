@@ -93,7 +93,6 @@ func (m *SMTPMailer) sendMailWithSSL(to, subject, body string) error {
 }
 
 // buildMessage 构造符合 RFC 822 的邮件内容（支持 HTML body）
-// buildMessage 构造符合 RFC 822 的邮件内容（支持 HTML body）
 func buildMessage(from, to, subject, body string) string {
 	var sb strings.Builder
 	sb.WriteString("From: " + from + "\r\n")
