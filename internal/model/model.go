@@ -172,6 +172,7 @@ type Share struct {
 	DownloadCount int        `json:"download_count"`
 	MaxDownloads  *int       `json:"max_downloads,omitempty"`  // nil=无限
 	IsActive      bool       `json:"is_active"`
+	PasswordHash  string     `json:"-"`                        // bcrypt 哈希，空=无密码，不序列化到 JSON
 }
 
 // SharePublicInfo 是公开返回给访客的分享信息（不暴露 file_id/storage_path 等敏感字段）
@@ -184,7 +185,8 @@ type SharePublicInfo struct {
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	DownloadCount int        `json:"download_count"`
 	IsExpired     bool       `json:"is_expired"`
-	DownloadToken string     `json:"download_token"`           // 下载签名 token（防盗链，30 分钟有效）
+	DownloadToken string     `json:"download_token,omitempty"` // 下载签名 token（防盗链，30 分钟有效；空表示未授权）
+	HasPassword   bool       `json:"has_password"`             // 是否设置了密码保护
 }
 
 // UserSettings 表示用户的跨浏览器配置（分片大小、并发数）

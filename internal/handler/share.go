@@ -19,6 +19,8 @@ import (
 	"filesync/internal/model"
 	"filesync/internal/store"
 	"filesync/internal/storage"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // shareTokenTTL 分享下载 token 有效期（30 分钟）
@@ -79,6 +81,64 @@ type createShareRequest struct {
 	DirPrefix  string `json:"dir_prefix,omitempty"`  // 目录分享：目录前缀
 	ShareType  string `json:"share_type"`            // "file" | "dir"
 	ExpiresIn  int    `json:"expires_in"`            // 过期秒数（0=永久）
+	Password   string `json:"password,omitempty"`    // 访问密码（可选，1-64 字符；空字符串=无密码）
+}
+
+// shareAuthSessionTTL 分享密码会话 cookie 有效期（7 天）
+const shareAuthSessionTTL = 7 * 24 * time.Hour
+
+// shareAuthCookieName 返回指定分享的认证 cookie 名
+func shareAuthCookieName(shareID string) string {
+	return "share_auth_" + shareID
+}
+
+// signShareAuth 生成分享认证 cookie 的 HMAC 签名值
+// 格式：{expire_unix}.{hmac_hex}，绑定 share_id + 过期时间
+func (h *ShareHandler) signShareAuth(shareID string, expire int64) string {
+	msg := fmt.Sprintf("%s:%d", shareID, expire)
+	mac := hmac.New(sha256.New, h.secret)
+	mac.Write([]byte(msg))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return fmt.Sprintf("%d.%s", expire, sig)
+}
+
+// validateShareAuth 校验分享认证 cookie 是否有效（未过期 + 签名匹配 + share_id 绑定）
+func (h *ShareHandler) validateShareAuth(cookieValue, shareID string) bool {
+	parts := strings.SplitN(cookieValue, ".", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	expire, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || time.Now().Unix() > expire {
+		return false
+	}
+	msg := fmt.Sprintf("%s:%d", shareID, expire)
+	mac := hmac.New(sha256.New, h.secret)
+	mac.Write([]byte(msg))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(parts[1]), []byte(expectedSig))
+}
+
+// isShareAuthed 检查请求是否已通过指定分享的密码认证
+func (h *ShareHandler) isShareAuthed(r *http.Request, shareID string) bool {
+	c, err := r.Cookie(shareAuthCookieName(shareID))
+	if err != nil {
+		return false
+	}
+	return h.validateShareAuth(c.Value, shareID)
+}
+
+// requireShareAuth 检查分享是否需要密码认证；若需要且未认证则返回 401
+// 返回 true 表示已通过认证（或无需认证），可继续后续处理
+func (h *ShareHandler) requireShareAuth(w http.ResponseWriter, r *http.Request, s *model.Share) bool {
+	if s.PasswordHash == "" {
+		return true
+	}
+	if h.isShareAuthed(r, s.ID) {
+		return true
+	}
+	http.Error(w, `{"error":"password_required","message":"此分享需要密码访问"}`, http.StatusUnauthorized)
+	return false
 }
 
 // createShareResponse 创建分享响应体
@@ -193,6 +253,12 @@ func (h *ShareHandler) handlePublic(w http.ResponseWriter, r *http.Request) {
 
 	action := parts[1]
 	switch action {
+	case "auth":
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		h.authenticateShare(w, r, id)
 	case "download":
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
@@ -305,6 +371,22 @@ func (h *ShareHandler) createShare(w http.ResponseWriter, r *http.Request, usern
 		expiresAt = &t
 	}
 
+	// 处理访问密码（可选，1-64 字符）
+	var passwordHash string
+	if req.Password != "" {
+		if len(req.Password) > 64 {
+			http.Error(w, `{"error":"password_too_long","message":"密码长度不能超过 64 字符"}`, http.StatusBadRequest)
+			return
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			log.Printf("[Share] bcrypt password error: %v", err)
+			http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
+			return
+		}
+		passwordHash = string(hash)
+	}
+
 	// 创建分享记录
 	s := &model.Share{
 		ID:            shareID,
@@ -316,6 +398,7 @@ func (h *ShareHandler) createShare(w http.ResponseWriter, r *http.Request, usern
 		ExpiresAt:     expiresAt,
 		DownloadCount: 0,
 		IsActive:      true,
+		PasswordHash:  passwordHash,
 	}
 	if err := h.db.CreateShare(s); err != nil {
 		log.Printf("[Share] create error: %v", err)
@@ -323,7 +406,7 @@ func (h *ShareHandler) createShare(w http.ResponseWriter, r *http.Request, usern
 		return
 	}
 
-	log.Printf("[Share] created: id=%s type=%s name=%s user=%s", shareID, req.ShareType, name, username)
+	log.Printf("[Share] created: id=%s type=%s name=%s user=%s has_password=%v", shareID, req.ShareType, name, username, passwordHash != "")
 
 	resp := createShareResponse{
 		ID:        shareID,
@@ -358,6 +441,7 @@ func (h *ShareHandler) listShares(w http.ResponseWriter, r *http.Request, userna
 		DownloadCount int     `json:"download_count"`
 		IsActive      bool    `json:"is_active"`
 		IsExpired     bool    `json:"is_expired"`
+		HasPassword   bool    `json:"has_password"`   // 是否设置了访问密码
 	}
 
 	items := make([]shareListItem, 0, len(shares))
@@ -383,6 +467,7 @@ func (h *ShareHandler) listShares(w http.ResponseWriter, r *http.Request, userna
 			DownloadCount: s.DownloadCount,
 			IsActive:      s.IsActive,
 			IsExpired:     isExpired,
+			HasPassword:   s.PasswordHash != "",
 		}
 		if s.ExpiresAt != nil {
 			ts := s.ExpiresAt.Unix()
@@ -474,10 +559,74 @@ func (h *ShareHandler) getSharePublic(w http.ResponseWriter, r *http.Request, id
 		ExpiresAt:     s.ExpiresAt,
 		DownloadCount: s.DownloadCount,
 		IsExpired:     isExpired,
-		DownloadToken: generateShareToken(s.ID, h.secret, shareTokenTTL),
+		HasPassword:   s.PasswordHash != "",
+	}
+	// 仅当无密码或已通过密码认证时才返回下载 token，防止未认证用户绕过密码门下载
+	if s.PasswordHash == "" || h.isShareAuthed(r, s.ID) {
+		info.DownloadToken = generateShareToken(s.ID, h.secret, shareTokenTTL)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(info)
+}
+
+// authenticateShare 验证分享访问密码，验证通过后设置 HMAC 签名 cookie（7 天有效）
+// POST /api/s/{id}/auth  Body: {"password":"xxx"}
+// 响应 200: {"success":true}（设置 share_auth_{id} cookie）
+// 响应 401: {"error":"wrong_password","message":"密码错误"}
+// 响应 400: 分享无密码 / 请求格式错误
+func (h *ShareHandler) authenticateShare(w http.ResponseWriter, r *http.Request, id string) {
+	s, err := h.db.GetShare(id)
+	if err != nil {
+		http.Error(w, `{"error":"share_not_found","message":"分享不存在或已删除"}`, http.StatusNotFound)
+		return
+	}
+	if !s.IsActive {
+		http.Error(w, `{"error":"share_disabled","message":"分享已禁用"}`, http.StatusForbidden)
+		return
+	}
+	if s.ExpiresAt != nil && time.Now().After(*s.ExpiresAt) {
+		http.Error(w, `{"error":"share_expired","message":"分享已过期"}`, http.StatusForbidden)
+		return
+	}
+	if s.PasswordHash == "" {
+		http.Error(w, `{"error":"no_password","message":"此分享无需密码"}`, http.StatusBadRequest)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Password == "" {
+		http.Error(w, `{"error":"password_required","message":"请输入密码"}`, http.StatusBadRequest)
+		return
+	}
+
+	// bcrypt 校验密码
+	if err := bcrypt.CompareHashAndPassword([]byte(s.PasswordHash), []byte(req.Password)); err != nil {
+		http.Error(w, `{"error":"wrong_password","message":"密码错误"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// 验证通过，设置 HMAC 签名 cookie（7 天有效）
+	expire := time.Now().Add(shareAuthSessionTTL).Unix()
+	cookieValue := h.signShareAuth(s.ID, expire)
+	http.SetCookie(w, &http.Cookie{
+		Name:     shareAuthCookieName(s.ID),
+		Value:    cookieValue,
+		Path:     "/",
+		Expires:  time.Unix(expire, 0),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	log.Printf("[Share] auth success: id=%s", s.ID)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"success":true}`))
 }
 
 // downloadShare 公开下载分享的文件或目录
@@ -510,6 +659,10 @@ func (h *ShareHandler) downloadShare(w http.ResponseWriter, r *http.Request, id 
 	}
 	if s.ExpiresAt != nil && time.Now().After(*s.ExpiresAt) {
 		http.Error(w, `{"error":"share_expired"}`, http.StatusForbidden)
+		return
+	}
+	// 密码检查：有密码且未认证则返回 401
+	if !h.requireShareAuth(w, r, s) {
 		return
 	}
 
@@ -679,6 +832,10 @@ func (h *ShareHandler) listShareDir(w http.ResponseWriter, r *http.Request, id s
 		http.Error(w, `{"error":"not_dir_share","message":"仅目录分享支持浏览"}`, http.StatusBadRequest)
 		return
 	}
+	// 密码检查：有密码且未认证则返回 401
+	if !h.requireShareAuth(w, r, s) {
+		return
+	}
 
 	// 解析子路径（相对分享根目录）
 	subPath := fastQueryParam(r.URL.RawQuery, "path")
@@ -786,6 +943,10 @@ func (h *ShareHandler) batchDownloadShare(w http.ResponseWriter, r *http.Request
 	}
 	if s.ShareType != "dir" {
 		http.Error(w, `{"error":"not_dir_share","message":"仅目录分享支持批量下载"}`, http.StatusBadRequest)
+		return
+	}
+	// 密码检查：有密码且未认证则返回 401
+	if !h.requireShareAuth(w, r, s) {
 		return
 	}
 

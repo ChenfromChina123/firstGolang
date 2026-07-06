@@ -507,6 +507,7 @@ func (db *DB) migrate() error {
 				download_count INT NOT NULL DEFAULT 0,
 				max_downloads INT DEFAULT NULL,
 				is_active INT NOT NULL DEFAULT 1,
+				password_hash VARCHAR(128) DEFAULT NULL,
 				INDEX idx_shares_file (file_id),
 				INDEX idx_shares_creator (created_by)
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
@@ -616,7 +617,8 @@ func (db *DB) migrate() error {
 				expires_at TEXT,
 				download_count INTEGER NOT NULL DEFAULT 0,
 				max_downloads INTEGER,
-				is_active INTEGER NOT NULL DEFAULT 1
+				is_active INTEGER NOT NULL DEFAULT 1,
+				password_hash TEXT
 			);
 
 			CREATE TABLE IF NOT EXISTS share_downloads (
@@ -665,6 +667,11 @@ func (db *DB) migrate() error {
 	// 增量迁移：为 files 表追加 deleted_at 列（回收站软删除）
 	if err := db.migrateFilesAddDeletedAt(); err != nil {
 		return fmt.Errorf("migrate files deleted_at: %w", err)
+	}
+
+	// 增量迁移：为 shares 表追加 password_hash 列（分享密码保护）
+	if err := db.migrateSharesAddPassword(); err != nil {
+		return fmt.Errorf("migrate shares password_hash: %w", err)
 	}
 
 	return nil
@@ -943,6 +950,71 @@ func (db *DB) migrateFilesAddDeletedAt() error {
 		if _, err := db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_files_deleted_at ON files(deleted_at)`); err != nil {
 			log.Printf("[DB] WARNING: create idx_files_deleted_at failed: %v", err)
 		}
+	}
+
+	return nil
+}
+
+// migrateSharesAddPassword 检测 shares 表是否缺少 password_hash 列，缺少则 ALTER TABLE ADD COLUMN。
+// 兼容 SQLite 和 MySQL 旧库升级，用于实现分享密码保护功能。
+// password_hash 为 NULL 表示无密码；非 NULL 为 bcrypt 哈希值。
+func (db *DB) migrateSharesAddPassword() error {
+	var columns []string
+	switch db.dialect {
+	case "mysql":
+		rows, err := db.conn.Query(
+			`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+			 WHERE TABLE_NAME = 'shares' AND TABLE_SCHEMA = DATABASE()`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(c))
+		}
+		rows.Close()
+	default:
+		rows, err := db.conn.Query(`PRAGMA table_info(shares)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt interface{}
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(name))
+		}
+		rows.Close()
+	}
+
+	hasPasswordHash := false
+	for _, c := range columns {
+		if c == "password_hash" {
+			hasPasswordHash = true
+			break
+		}
+	}
+
+	if !hasPasswordHash {
+		var stmt string
+		if db.dialect == "mysql" {
+			stmt = `ALTER TABLE shares ADD COLUMN password_hash VARCHAR(128) DEFAULT NULL`
+		} else {
+			stmt = `ALTER TABLE shares ADD COLUMN password_hash TEXT`
+		}
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("add password_hash column: %w", err)
+		}
+		log.Printf("[DB] shares table: added 'password_hash' column (share password feature)")
 	}
 
 	return nil
@@ -1616,6 +1688,7 @@ func (db *DB) UpdateFilename(id, newFilename, owner string) error {
 // === 分享链接 CRUD ===
 
 // CreateShare 创建分享记录。s.ID 由调用方生成（8 字符短 ID）。
+// password_hash 为空字符串表示无密码；非空为 bcrypt 哈希值。
 func (db *DB) CreateShare(s *model.Share) error {
 	var expiresAt interface{}
 	if s.ExpiresAt != nil {
@@ -1629,11 +1702,15 @@ func (db *DB) CreateShare(s *model.Share) error {
 	if s.IsActive {
 		isActive = 1
 	}
+	var passwordHash interface{}
+	if s.PasswordHash != "" {
+		passwordHash = s.PasswordHash
+	}
 	_, err := db.conn.Exec(
-		`INSERT INTO shares (id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO shares (id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active, password_hash)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, nullableString(s.FileID), nullableString(s.DirPrefix), s.ShareType,
-		s.CreatedBy, s.CreatedAt.Format(time.RFC3339), expiresAt, s.DownloadCount, maxDownloads, isActive,
+		s.CreatedBy, s.CreatedAt.Format(time.RFC3339), expiresAt, s.DownloadCount, maxDownloads, isActive, passwordHash,
 	)
 	return err
 }
@@ -1641,15 +1718,15 @@ func (db *DB) CreateShare(s *model.Share) error {
 // GetShare 按 ID 查询分享。不存在返回 sql.ErrNoRows。
 func (db *DB) GetShare(id string) (*model.Share, error) {
 	var s model.Share
-	var fileID, dirPrefix, expiresAtStr sql.NullString
+	var fileID, dirPrefix, expiresAtStr, passwordHash sql.NullString
 	var maxDownloads sql.NullInt64
 	var isActive int
 	var createdAtStr string
 	err := db.conn.QueryRow(
-		`SELECT id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active
+		`SELECT id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active, password_hash
 		 FROM shares WHERE id = ?`,
 		id,
-	).Scan(&s.ID, &fileID, &dirPrefix, &s.ShareType, &s.CreatedBy, &createdAtStr, &expiresAtStr, &s.DownloadCount, &maxDownloads, &isActive)
+	).Scan(&s.ID, &fileID, &dirPrefix, &s.ShareType, &s.CreatedBy, &createdAtStr, &expiresAtStr, &s.DownloadCount, &maxDownloads, &isActive, &passwordHash)
 	if err != nil {
 		return nil, err
 	}
@@ -1664,6 +1741,7 @@ func (db *DB) GetShare(id string) (*model.Share, error) {
 		s.MaxDownloads = &md
 	}
 	s.IsActive = isActive != 0
+	s.PasswordHash = passwordHash.String
 	s.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
 	return &s, nil
 }
@@ -1671,7 +1749,7 @@ func (db *DB) GetShare(id string) (*model.Share, error) {
 // ListSharesByCreator 查询指定用户创建的所有分享（按创建时间倒序）。
 func (db *DB) ListSharesByCreator(username string) ([]*model.Share, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active
+		`SELECT id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active, password_hash
 		 FROM shares WHERE created_by = ? ORDER BY created_at DESC`,
 		username,
 	)
@@ -1682,11 +1760,11 @@ func (db *DB) ListSharesByCreator(username string) ([]*model.Share, error) {
 	var shares []*model.Share
 	for rows.Next() {
 		var s model.Share
-		var fileID, dirPrefix, expiresAtStr sql.NullString
+		var fileID, dirPrefix, expiresAtStr, passwordHash sql.NullString
 		var maxDownloads sql.NullInt64
 		var isActive int
 		var createdAtStr string
-		if err := rows.Scan(&s.ID, &fileID, &dirPrefix, &s.ShareType, &s.CreatedBy, &createdAtStr, &expiresAtStr, &s.DownloadCount, &maxDownloads, &isActive); err != nil {
+		if err := rows.Scan(&s.ID, &fileID, &dirPrefix, &s.ShareType, &s.CreatedBy, &createdAtStr, &expiresAtStr, &s.DownloadCount, &maxDownloads, &isActive, &passwordHash); err != nil {
 			return nil, err
 		}
 		s.FileID = fileID.String
@@ -1700,6 +1778,7 @@ func (db *DB) ListSharesByCreator(username string) ([]*model.Share, error) {
 			s.MaxDownloads = &md
 		}
 		s.IsActive = isActive != 0
+		s.PasswordHash = passwordHash.String
 		s.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
 		shares = append(shares, &s)
 	}

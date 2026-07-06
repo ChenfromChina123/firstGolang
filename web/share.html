@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706g">
+    <link rel="stylesheet" href="/web/style.css?v=20260707i">
 </head>
 <body>
     <!-- 顶部品牌栏（简化版：无健康状态、无用户信息、无登出按钮） -->
@@ -41,6 +41,22 @@
                 <div class="share-error-icon" aria-hidden="true">!</div>
                 <h2 class="share-error-title" id="share-error-title">分享不可用</h2>
                 <p class="share-error-msg" id="share-error-msg">该分享链接无效或已被删除。</p>
+            </div>
+            <!-- 密码门状态（有密码且未认证时显示） -->
+            <div class="share-state share-lock" id="share-lock" hidden>
+                <div class="share-lock-icon" aria-hidden="true">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="4" y="11" width="16" height="10" rx="2"/>
+                        <path d="M8 11V7a4 4 0 1 1 8 0v4"/>
+                    </svg>
+                </div>
+                <h2 class="share-lock-title">需要访问密码</h2>
+                <p class="share-lock-msg">此分享已设置访问密码，请输入密码后查看。</p>
+                <form class="share-lock-form" id="share-lock-form">
+                    <input type="password" id="share-lock-password" class="modal-input" placeholder="请输入访问密码" autocomplete="off" maxlength="64">
+                    <button type="submit" class="primary-btn" id="share-lock-submit">验证</button>
+                </form>
+                <p class="share-lock-error" id="share-lock-error" hidden></p>
             </div>
             <!-- 正常状态：展示分享信息 + 下载按钮 -->
             <div class="share-content" id="share-content" hidden>
@@ -109,6 +125,6 @@
         </div>
     </div>
 
-    <script src="/web/share.js?v=20260706g"></script>
+    <script src="/web/share.js?v=20260707i"></script>
 </body>
 </html>

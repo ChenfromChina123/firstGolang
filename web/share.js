@@ -78,6 +78,7 @@
     function showLoading() {
         document.getElementById('share-loading').hidden = false;
         document.getElementById('share-error').hidden = true;
+        document.getElementById('share-lock').hidden = true;
         document.getElementById('share-content').hidden = true;
         document.getElementById('share-browser').hidden = true;
     }
@@ -88,14 +89,29 @@
         errEl.hidden = false;
         document.getElementById('share-error-title').textContent = title;
         document.getElementById('share-error-msg').textContent = msg;
+        document.getElementById('share-lock').hidden = true;
         document.getElementById('share-content').hidden = true;
         document.getElementById('share-browser').hidden = true;
+    }
+
+    /** 显示密码门（有密码且未认证时） */
+    function showLock() {
+        document.getElementById('share-loading').hidden = true;
+        document.getElementById('share-error').hidden = true;
+        document.getElementById('share-lock').hidden = false;
+        document.getElementById('share-content').hidden = true;
+        document.getElementById('share-browser').hidden = true;
+        var pwdInput = document.getElementById('share-lock-password');
+        if (pwdInput) pwdInput.focus();
+        var errEl = document.getElementById('share-lock-error');
+        if (errEl) errEl.hidden = true;
     }
 
     /** 显示分享信息（文件或目录通用） */
     function showContent(info) {
         document.getElementById('share-loading').hidden = true;
         document.getElementById('share-error').hidden = true;
+        document.getElementById('share-lock').hidden = true;
         document.getElementById('share-content').hidden = false;
 
         currentShareType = info.share_type;
@@ -160,8 +176,8 @@
         listEl.innerHTML = '<div class="share-browser-loading">加载中…</div>';
 
         try {
-            var url = API_BASE + shareId + '/list';
-            if (currentPath) url += '?path=' + encodeURIComponent(currentPath);
+            var url = API_BASE + shareId + '/list?token=' + encodeURIComponent(downloadToken);
+            if (currentPath) url += '&path=' + encodeURIComponent(currentPath);
             var res = await fetch(url);
             if (!res.ok) {
                 listEl.innerHTML = '<div class="share-browser-error">加载失败 (HTTP ' + res.status + ')</div>';
@@ -238,12 +254,12 @@
 
     /** 下载整个分享（文件或目录 ZIP） */
     function startDownload() {
-        window.location.href = API_BASE + shareId + '/download';
+        window.location.href = API_BASE + shareId + '/download?token=' + encodeURIComponent(downloadToken);
     }
 
     /** 下载目录内的单个文件 */
     function downloadFile(path) {
-        window.location.href = API_BASE + shareId + '/download?path=' + encodeURIComponent(path);
+        window.location.href = API_BASE + shareId + '/download?token=' + encodeURIComponent(downloadToken) + '&path=' + encodeURIComponent(path);
     }
 
     /** 批量下载选中文件为 ZIP */
@@ -407,17 +423,58 @@
         document.getElementById('save-confirm-btn').addEventListener('click', confirmSave);
     }
 
-    // === 初始化 ===
+    // === 密码验证 ===
 
-    async function init() {
-        if (!shareId) {
-            showError('链接无效', '分享 ID 缺失，请检查链接是否完整。');
+    /** 提交访问密码，验证成功后重新加载分享内容 */
+    async function submitPassword(e) {
+        e.preventDefault();
+        var pwdInput = document.getElementById('share-lock-password');
+        var errEl = document.getElementById('share-lock-error');
+        var submitBtn = document.getElementById('share-lock-submit');
+        var pwd = pwdInput.value;
+
+        if (!pwd) {
+            errEl.hidden = false;
+            errEl.textContent = '请输入密码';
             return;
         }
 
-        showLoading();
-        bindEvents();
+        submitBtn.disabled = true;
+        submitBtn.textContent = '验证中…';
+        errEl.hidden = true;
 
+        try {
+            var res = await fetch(API_BASE + shareId + '/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pwd })
+            });
+            if (res.status === 401) {
+                errEl.hidden = false;
+                errEl.textContent = '密码错误，请重试';
+                pwdInput.select();
+                return;
+            }
+            if (!res.ok) {
+                var data = await res.json().catch(function () { return {}; });
+                errEl.hidden = false;
+                errEl.textContent = data.message || '验证失败 (HTTP ' + res.status + ')';
+                return;
+            }
+            // 验证成功，重新加载分享内容（此时会带上下载 token）
+            showLoading();
+            await loadShare();
+        } catch (e) {
+            errEl.hidden = false;
+            errEl.textContent = '网络错误: ' + e.message;
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = '验证';
+        }
+    }
+
+    /** 加载分享信息（提取自 init，供密码验证后复用） */
+    async function loadShare() {
         try {
             var res = await fetch(API_BASE + shareId);
             if (res.status === 404) {
@@ -437,12 +494,37 @@
                 showError('分享已过期', '该分享链接已超过有效期。');
                 return;
             }
+            // 保存下载 token（无密码或已认证时后端才返回）
+            downloadToken = info.download_token || '';
+            // 有密码且未获得 token → 显示密码门
+            if (info.has_password && !downloadToken) {
+                showLock();
+                return;
+            }
             showContent(info);
             // 异步检查登录状态（不阻塞渲染）
             checkLogin();
         } catch (e) {
             showError('网络错误', '无法连接到服务器，请稍后重试。');
         }
+    }
+
+    // === 初始化 ===
+
+    async function init() {
+        if (!shareId) {
+            showError('链接无效', '分享 ID 缺失，请检查链接是否完整。');
+            return;
+        }
+
+        showLoading();
+        bindEvents();
+
+        // 绑定密码门表单提交
+        var lockForm = document.getElementById('share-lock-form');
+        if (lockForm) lockForm.addEventListener('submit', submitPassword);
+
+        await loadShare();
     }
 
     init();
