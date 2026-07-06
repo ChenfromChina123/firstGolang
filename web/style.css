@@ -713,6 +713,43 @@ body::after {
 }
 .danger-btn:hover { border-color: var(--err); color: var(--err); background: var(--err-dim); }
 
+/* 批量移动目录选择器 */
+.batch-move-selector {
+    max-height: 240px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px;
+    margin-bottom: 12px;
+    background: var(--bg-1);
+}
+.batch-move-path {
+    padding: 6px 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-2);
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 4px;
+}
+.batch-move-path strong { color: var(--accent); }
+.batch-move-item {
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    background: none;
+    border: none;
+    color: var(--fg-1);
+    font-family: var(--mono);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background 0.15s;
+}
+.batch-move-item:hover { background: var(--accent-dim); color: var(--accent); }
+.batch-move-loading { padding: 16px; text-align: center; color: var(--fg-3); font-size: 12px; }
+.batch-move-empty { padding: 16px; text-align: center; color: var(--fg-3); font-size: 12px; }
+
 /* === Toast === */
 .toast-wrap {
     position: fixed;

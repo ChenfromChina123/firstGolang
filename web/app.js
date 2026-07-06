@@ -26,6 +26,9 @@
         settings: '/api/settings',
         share: '/api/share',
         check: '/api/upload/check', // 秒传检查（上传前检查哈希是否已存在）
+        trash: '/api/trash', // 回收站（列出/清空）
+        trashRestore: '/api/trash', // 回收站恢复：/api/trash/{id}/restore（前缀，拼接用）
+        trashDelete: '/api/trash', // 回收站永久删除：/api/trash/{id}（前缀，拼接用）
     };
 
     // === 认证：路由守卫 + 401 拦截 ===
@@ -862,7 +865,7 @@
         const items = Array.from(selectedItems.values());
         const files = items.filter(it => it.type === 'file');
         const dirs = items.filter(it => it.type === 'dir');
-        const msg = `确认删除选中的 ${items.length} 项（${files.length} 个文件 + ${dirs.length} 个目录）？此操作不可恢复。`;
+        const msg = `确认删除选中的 ${items.length} 项（${files.length} 个文件 + ${dirs.length} 个目录）？文件将移入回收站，30 天内可恢复。`;
         openConfirmDialog(msg, async () => {
             let success = 0, fail = 0;
             // 1. 批量删除文件
@@ -1193,35 +1196,85 @@
         openBatchMoveDialog(items);
     }
 
-    /** 批量移动多个选中项到目标目录
+    /** 批量移动多个选中项到目标目录（目录选择器方式）
      * @param {Array} items - 选中项数组，每项 {type, id?, prefix?, name, filename?} */
     function openBatchMoveDialog(items) {
         const modal = document.getElementById('move-dir-modal');
         const nameEl = document.getElementById('move-dir-name');
         const input = document.getElementById('move-dir-input');
+        const inputWrap = modal.querySelector('.modal-input-wrap');
         const confirmBtn = document.getElementById('move-dir-confirm');
         const cancelBtn = document.getElementById('move-dir-cancel');
         const head = modal.querySelector('.modal-head h3');
         const desc = modal.querySelector('.modal-desc');
-        // 保存原始文本，关闭时恢复
         const origHead = head.textContent;
         const origDesc = desc.textContent;
         head.textContent = '批量移动';
         nameEl.textContent = `已选 ${items.length} 项`;
-        desc.textContent = '输入目标目录路径（如 docs/sub/），所有选中项将移动到该目录下。末尾 / 可省略。';
-        input.value = '';
+        desc.textContent = '选择目标目录，所有选中项将移动到该目录下：';
+        inputWrap.style.display = 'none';
+
+        // 创建目录选择器（如不存在）
+        let selector = modal.querySelector('.batch-move-selector');
+        if (!selector) {
+            selector = document.createElement('div');
+            selector.className = 'batch-move-selector';
+            inputWrap.parentNode.insertBefore(selector, inputWrap.nextSibling);
+        }
+
+        let targetPath = '/'; // 当前浏览路径（也是移动目标）
+
+        /** 加载指定路径的子目录列表到选择器 */
+        async function loadDirs(path) {
+            targetPath = path;
+            selector.innerHTML = '<div class="batch-move-loading">加载中...</div>';
+            try {
+                // 根目录用空字符串作为 prefix（与 loadFiles 一致）
+                const apiPrefix = path === '/' ? '' : path;
+                const url = apiPrefix
+                    ? `${API.files}?prefix=${encodeURIComponent(apiPrefix)}`
+                    : API.files;
+                const res = await apiFetch(url);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const files = await res.json();
+                let dirEntries = [];
+                if (files && files.length > 0) {
+                    const { dirs } = buildChildren(files, apiPrefix);
+                    dirEntries = Array.from(dirs.entries());
+                }
+                let html = `<div class="batch-move-path">当前目录：<strong>${path === '/' ? '根目录' : escapeHtml(path)}</strong></div>`;
+                if (path !== '/' && path !== '') {
+                    const parts = path.replace(/\/$/, '').split('/');
+                    parts.pop();
+                    const parentPath = parts.length === 0 ? '/' : parts.join('/') + '/';
+                    html += `<button type="button" class="batch-move-item" data-path="${escapeHtml(parentPath)}">📁 ../（返回上级）</button>`;
+                }
+                if (dirEntries.length === 0) {
+                    html += '<div class="batch-move-empty">此目录下无子目录</div>';
+                } else {
+                    for (const [name, count] of dirEntries) {
+                        const childPath = path + name + '/';
+                        html += `<button type="button" class="batch-move-item" data-path="${escapeHtml(childPath)}">📁 ${escapeHtml(name)}/（${count} 个文件）</button>`;
+                    }
+                }
+                selector.innerHTML = html;
+                selector.querySelectorAll('.batch-move-item').forEach(btn => {
+                    btn.addEventListener('click', () => loadDirs(btn.dataset.path));
+                });
+            } catch (e) {
+                selector.innerHTML = `<div class="batch-move-empty" style="color:var(--err);">加载失败：${escapeHtml(e.message)}</div>`;
+            }
+        }
+
+        loadDirs('/');
         modal.hidden = false;
-        input.focus();
 
         const submit = async () => {
-            let targetDir = input.value.trim().replace(/\/$/, '');
-            if (!targetDir) { toast('目标目录不能为空', 'err'); return; }
-            targetDir = targetDir + '/';
+            const targetDir = targetPath;
             let success = 0, fail = 0;
             for (const it of items) {
                 try {
                     if (it.type === 'file') {
-                        // 文件：用 rename API 修改 filename 为目标目录下的新路径
                         const newFilename = targetDir + it.name;
                         const res = await apiFetch(API.filesRename, {
                             method: 'POST',
@@ -1230,7 +1283,6 @@
                         });
                         if (res.ok) success++; else fail++;
                     } else if (it.type === 'dir') {
-                        // 目录：用 move-dir API 移动整个目录
                         const newPrefix = targetDir + it.name + '/';
                         const res = await apiFetch(API.filesMoveDir, {
                             method: 'POST',
@@ -1251,17 +1303,13 @@
             modal.hidden = true;
             confirmBtn.onclick = null;
             cancelBtn.onclick = null;
-            input.onkeydown = null;
-            // 恢复原始标题和提示
             head.textContent = origHead;
             desc.textContent = origDesc;
+            inputWrap.style.display = '';
+            selector.innerHTML = '';
         };
         cancelBtn.onclick = cleanup;
         confirmBtn.onclick = submit;
-        input.onkeydown = (e) => {
-            if (e.key === 'Enter') { e.preventDefault(); submit(); }
-            if (e.key === 'Escape') { cleanup(); }
-        };
     }
 
 
@@ -1410,15 +1458,127 @@
         }
     }
 
+    // === 回收站操作 ===
+
+    /** 打开回收站对话框并加载回收站文件列表 */
+    async function openTrashDialog() {
+        const modal = document.getElementById('trash-modal');
+        const listEl = document.getElementById('trash-list');
+        const countTag = document.getElementById('trash-count-tag');
+        modal.hidden = false;
+        listEl.innerHTML = '<div class="loading">加载中...</div>';
+        countTag.textContent = '—';
+
+        try {
+            const res = await apiFetch(API.trash);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const items = data.items || [];
+            const retention = data.retention || 30;
+            countTag.textContent = `${items.length} 项`;
+            document.getElementById('trash-desc').textContent =
+                `文件删除后移入回收站，保留 ${retention} 天可恢复。过期后自动永久删除。`;
+
+            if (items.length === 0) {
+                listEl.innerHTML = '<div class="empty">回收站为空</div>';
+                return;
+            }
+
+            listEl.innerHTML = items.map(it => {
+                const deleted = it.deleted_at ? new Date(it.deleted_at).toLocaleString('zh-CN') : '—';
+                const expires = it.expires_at ? new Date(it.expires_at).toLocaleString('zh-CN') : '—';
+                const expiredBadge = it.is_expired
+                    ? '<span class="share-status expired">已过期</span>'
+                    : `<span class="share-status active">${expires} 后清理</span>`;
+                return `
+                    <div class="share-item" data-id="${escapeHtml(it.id)}">
+                        <div class="share-item-head">
+                            <span class="share-item-name">${escapeHtml(it.filename)}</span>
+                            <span class="share-item-type">${fmtSize(it.size)}</span>
+                            ${expiredBadge}
+                        </div>
+                        <div class="share-item-meta">
+                            <span>删除时间: ${deleted}</span>
+                            <span>归属: ${escapeHtml(it.owner || '—')}</span>
+                        </div>
+                        <div class="share-item-link">
+                            <button class="op-btn restore-trash" data-id="${escapeHtml(it.id)}">恢复</button>
+                            <button class="op-btn danger permanent-delete-trash" data-id="${escapeHtml(it.id)}">永久删除</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // 绑定恢复按钮
+            listEl.querySelectorAll('.restore-trash').forEach(btn => {
+                btn.addEventListener('click', () => restoreTrashItem(btn.dataset.id));
+            });
+            // 绑定永久删除按钮
+            listEl.querySelectorAll('.permanent-delete-trash').forEach(btn => {
+                btn.addEventListener('click', () => permanentDeleteTrashItem(btn.dataset.id));
+            });
+        } catch (e) {
+            listEl.innerHTML = `<div class="error">加载失败: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    /** 恢复回收站文件（POST /api/trash/{id}/restore） */
+    async function restoreTrashItem(id) {
+        try {
+            const res = await apiFetch(`${API.trashRestore}/${id}/restore`, { method: 'POST' });
+            if (res.status === 409) {
+                const data = await res.json().catch(() => ({}));
+                toast(`恢复失败：${data.message || '同名文件已存在'}`, 'err');
+                return;
+            }
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            toast('文件已恢复', 'ok');
+            // 刷新回收站列表 + 文件列表
+            openTrashDialog();
+            loadFiles();
+        } catch (e) {
+            toast(`恢复失败: ${e.message}`, 'err');
+        }
+    }
+
+    /** 永久删除回收站文件（DELETE /api/trash/{id}，不可恢复） */
+    function permanentDeleteTrashItem(id) {
+        openConfirmDialog('确认永久删除此文件？此操作不可恢复，文件将被彻底删除。', async () => {
+            try {
+                const res = await apiFetch(`${API.trashDelete}/${id}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                toast('文件已永久删除', 'ok');
+                openTrashDialog();
+            } catch (e) {
+                toast(`永久删除失败: ${e.message}`, 'err');
+            }
+        });
+    }
+
+    /** 清空回收站（DELETE /api/trash，永久删除所有回收站文件） */
+    function emptyTrash() {
+        openConfirmDialog('确认清空回收站？所有回收站文件将被永久删除，不可恢复。', async () => {
+            try {
+                const res = await apiFetch(API.trash, { method: 'DELETE' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json().catch(() => ({}));
+                toast(`回收站已清空（${data.count || 0} 个文件）`, 'ok');
+                openTrashDialog();
+            } catch (e) {
+                toast(`清空回收站失败: ${e.message}`, 'err');
+            }
+        });
+    }
+
     // === 文件/目录操作 ===
 
-    /** 删除文件确认 */
+    /** 删除文件确认（软删除：移入回收站，30 天内可恢复） */
     function confirmDeleteFile(fileId, filename) {
-        openConfirmDialog(`确认删除文件「${filename}」？此操作不可恢复。`, async () => {
+        openConfirmDialog(`确认删除文件「${filename}」？文件将移入回收站，30 天内可恢复。`, async () => {
             try {
                 const res = await apiFetch(`${API.files}/${fileId}`, { method: 'DELETE' });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
-                toast(`「${filename}」已删除`, 'ok');
+                toast(`「${filename}」已移入回收站`, 'ok');
                 loadFiles();
             } catch (e) {
                 toast(`删除失败: ${e.message}`, 'err');
@@ -1426,14 +1586,14 @@
         });
     }
 
-    /** 删除目录确认（递归删除所有文件） */
+    /** 删除目录确认（软删除：递归移入回收站，30 天内可恢复） */
     function confirmDeleteDir(prefix, dirName) {
-        openConfirmDialog(`确认删除目录「${dirName}」及其所有内容？此操作不可恢复。`, async () => {
+        openConfirmDialog(`确认删除目录「${dirName}」及其所有内容？文件将移入回收站，30 天内可恢复。`, async () => {
             try {
                 const res = await apiFetch(`${API.files}?prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json().catch(() => ({}));
-                toast(`目录「${dirName}」已删除（${data.files_deleted || 0} 个文件）`, 'ok');
+                toast(`目录「${dirName}」已移入回收站（${data.files_deleted || 0} 个文件）`, 'ok');
                 loadFiles();
             } catch (e) {
                 toast(`删除目录失败: ${e.message}`, 'err');
@@ -1809,6 +1969,22 @@
             shareManageCloseBtn.addEventListener('click', () => {
                 document.getElementById('share-manage-modal').hidden = true;
             });
+        }
+
+        // 回收站
+        const trashBtn = document.getElementById('trash-btn');
+        if (trashBtn) {
+            trashBtn.addEventListener('click', openTrashDialog);
+        }
+        const trashCloseBtn = document.getElementById('trash-close-btn');
+        if (trashCloseBtn) {
+            trashCloseBtn.addEventListener('click', () => {
+                document.getElementById('trash-modal').hidden = true;
+            });
+        }
+        const trashEmptyBtn = document.getElementById('trash-empty-btn');
+        if (trashEmptyBtn) {
+            trashEmptyBtn.addEventListener('click', emptyTrash);
         }
 
         // 清除已完成
