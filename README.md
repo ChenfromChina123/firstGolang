@@ -16,6 +16,7 @@
 - **分享链接功能**：将文件或目录生成分享链接，访客无需登录即可查看和下载，支持有效期设置和下载次数去重统计（visitor cookie + UNIQUE 约束）
 - **文件所有权隔离**：files 表记录 owner 字段，用户只能下载/删除/重命名/移动/分享自己的文件；admin 可操作所有文件；历史文件 owner 为空时仅 admin 可访问；分享链接公开访问按创建者过滤防止越权下载
 - **深度防盗链**：4 层防护保障资源不被盗链：①安全响应头（X-Frame-Options/CSP 防 iframe 嵌入）；②Referer 校验（只允许空 Referer 或白名单域名）；③签名 Token（分享下载需携带 HMAC-SHA256 token，30 分钟有效，绑定 share_id）；④频率限制（分享下载每 IP 每分钟 10 次）
+- **秒传功能**：上传前通过 Web Worker 在后台线程计算完整文件 SHA256，调用 `/api/upload/check` 接口检查哈希是否已存在。命中时后端 CopyFile 复制存储文件并创建新记录，整个上传流程被跳过，实现"秒级"上传。仅同 owner 范围内秒传（防哈希侧信道探测），hash+size 双重校验避免误判。秒传检查失败自动降级为正常上传（非致命）。
 
 ## 项目结构
 
@@ -134,6 +135,7 @@ filesync 内置一个纯 HTML+CSS+JS 的 Web 控制台（无框架依赖，轻�
 - **忘记密码**：输入邮箱发送 6 位验证码，凭验证码重置新密码
 - **配置同步**：分片大小与并发数持久化到服务器，换浏览器自动加载（localStorage 即时响应 + 服务器后台同步）
 - **分享链接**：文件/目录可生成分享链接（永久/7天/30天有效期），访客无需登录即可查看和下载，下载次数去重统计
+- **秒传功能**：上传前 Web Worker 在后台计算完整文件 SHA256，调用 `/api/upload/check` 检查是否已存在相同哈希。命中则跳过整个上传流程，秒级完成；未命中或计算失败自动降级为正常上传
 
 ### 设计要点
 
@@ -151,6 +153,7 @@ filesync 内置一个纯 HTML+CSS+JS 的 Web 控制台（无框架依赖，轻�
 | `POST` | `/api/upload/chunk` | 上传单个分片（multipart） |
 | `GET` | `/api/upload/status?session_id=xxx` | 查询上传进度 |
 | `POST` | `/api/upload/complete` | 完成上传并合并文件 |
+| `POST` | `/api/upload/check` | 秒传检查（需认证） |
 
 **初始化上传：**
 ```json
@@ -223,6 +226,33 @@ Response:
   "storage_path": "data/photo.jpg"
 }
 ```
+
+**秒传检查（上传前检查哈希是否已存在）：**
+```json
+// POST /api/upload/check（需认证）
+// Request:
+{
+  "filename": "docs/report.pdf",
+  "file_size": 10485760,
+  "file_hash": "完整文件SHA256（64 hex字符）"
+}
+
+// Response 200（命中秒传）:
+{
+  "instant_upload": true,
+  "file_id": "新文件ID",
+  "filename": "docs/report.pdf",
+  "size": 10485760,
+  "hash": "sha256hex..."
+}
+
+// Response 200（未命中，需正常上传）:
+{ "instant_upload": false }
+
+// Response 409（目标文件名已存在）:
+{ "error": "filename_conflict", "message": "目标文件名已存在" }
+```
+秒传范围仅限当前 owner（同用户），防哈希侧信道探测；hash+size 双重校验避免误判。前端计算 SHA256 失败自动降级为正常上传。
 
 ### 下载
 
