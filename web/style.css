@@ -813,6 +813,113 @@ body::after {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* === 压缩包预览样式 === */
+.archive-list {
+    max-height: 60vh;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 0;
+    background: rgba(0,0,0,0.2);
+}
+.archive-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    font-size: 13px;
+    cursor: default;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.archive-row:hover {
+    background: rgba(255,255,255,0.04);
+}
+.archive-dir-row {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--fg-1);
+}
+.archive-dir-row:hover {
+    background: rgba(0, 212, 170, 0.08);
+}
+.archive-arrow {
+    display: inline-block;
+    width: 14px;
+    text-align: center;
+    color: var(--fg-3);
+    font-size: 10px;
+    transition: transform 0.15s;
+}
+.archive-arrow-placeholder {
+    visibility: hidden;
+}
+.archive-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+.archive-name {
+    flex: 1;
+    color: var(--fg-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.archive-dir-row .archive-name {
+    color: var(--fg-1);
+}
+.archive-size {
+    color: var(--fg-3);
+    font-family: var(--mono);
+    font-size: 11px;
+    min-width: 70px;
+    text-align: right;
+}
+.archive-ops {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.archive-op-btn {
+    padding: 2px 8px !important;
+    font-size: 11px !important;
+}
+.archive-sub {
+    /* 折叠的子节点容器，hidden 属性控制显隐 */
+}
+.archive-footer {
+    margin-top: 8px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--fg-3);
+    font-family: var(--mono);
+    text-align: center;
+    border-top: 1px solid var(--border);
+}
+.archive-preview-back {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+}
+.archive-preview-name {
+    color: var(--fg-2);
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.archive-preview-iframe {
+    width: 100%;
+    height: calc(85vh - 60px);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #fff;
+}
+
+
 /* Markdown 渲染样式（marked.js 输出） */
 .markdown-body {
     max-width: 100%;

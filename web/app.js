@@ -1231,6 +1231,7 @@
                 case 'code': renderText(meta); break;
                 case 'audio': renderAudio(meta); break;
                 case 'video': renderVideo(meta); break;
+                case 'archive': renderArchive(meta); break;
                 default:
                     body.innerHTML = `<div class="preview-empty">暂不支持 ${escapeHtml(meta.type)} 类型预览</div>`;
             }
@@ -1542,6 +1543,210 @@
         const body = document.getElementById('preview-body');
         const poster = meta.urls.poster ? ` poster="${meta.urls.poster}"` : '';
         body.innerHTML = `<video controls${poster} src="${meta.urls.original}" style="max-width:100%;max-height:85vh;background:#000"></video>`;
+    }
+
+    /** 渲染压缩包预览：列出包内文件树，单击文件触发提取预览或下载 */
+    async function renderArchive(meta) {
+        const body = document.getElementById('preview-body');
+        body.innerHTML = '<div class="preview-loading">读取压缩包内容…</div>';
+        try {
+            const res = await fetch(meta.urls.archive_list);
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            if (!data.entries || data.entries.length === 0) {
+                body.innerHTML = '<div class="preview-empty">压缩包为空</div>';
+                return;
+            }
+
+            // 排序：目录在前，按 path 字母序
+            const entries = data.entries.slice().sort((a, b) => {
+                if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+                return a.path.localeCompare(b.path);
+            });
+
+            body.innerHTML = '';
+            const list = document.createElement('div');
+            list.className = 'archive-list';
+            body.appendChild(list);
+
+            // 构建并渲染树
+            const tree = buildArchiveTree(entries);
+            const stats = { files: 0, dirs: 0 };
+            renderArchiveNode(list, tree, 0, meta, stats);
+
+            // 底部统计
+            const footer = document.createElement('div');
+            footer.className = 'archive-footer';
+            let footText = `共 ${stats.files} 个文件，${stats.dirs} 个目录`;
+            if (data.truncated) footText += '（已截断，仅显示前 10000 项）';
+            footer.textContent = footText;
+            body.appendChild(footer);
+        } catch (e) {
+            body.innerHTML = `<div class="preview-empty" style="color:var(--err)">读取失败: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    /** 构建压缩包条目树（扁平 entries → 嵌套结构） */
+    function buildArchiveTree(entries) {
+        const root = { name: '', path: '', isDir: true, entry: null, children: [] };
+        const dirMap = new Map();
+        dirMap.set('', root);
+
+        for (const e of entries) {
+            const parts = e.path.split('/');
+            let curPath = '';
+            let parent = root;
+            for (let i = 0; i < parts.length; i++) {
+                const part = parts[i];
+                const isLast = i === parts.length - 1;
+                curPath = curPath ? curPath + '/' + part : part;
+                if (isLast && !e.is_dir) {
+                    // 文件节点：直接挂到 parent
+                    parent.children.push({ name: part, path: curPath, isDir: false, entry: e, children: [] });
+                } else {
+                    // 目录节点（e.is_dir && isLast → 末段目录；否则中间路径段）
+                    if (!dirMap.has(curPath)) {
+                        const node = { name: part, path: curPath, isDir: true, entry: (e.is_dir && isLast) ? e : null, children: [] };
+                        dirMap.set(curPath, node);
+                        parent.children.push(node);
+                    }
+                    parent = dirMap.get(curPath);
+                }
+            }
+        }
+        return root;
+    }
+
+    /** 递归渲染压缩包节点（目录懒加载子节点） */
+    function renderArchiveNode(container, node, depth, meta, stats) {
+        for (const child of node.children) {
+            const row = document.createElement('div');
+            row.className = 'archive-row' + (child.isDir ? ' archive-dir-row' : '');
+            row.style.paddingLeft = (depth * 16) + 'px';
+
+            if (child.isDir) {
+                stats.dirs++;
+                const arrow = document.createElement('span');
+                arrow.className = 'archive-arrow';
+                arrow.textContent = '▶';
+                row.appendChild(arrow);
+
+                const icon = document.createElement('span');
+                icon.className = 'archive-icon';
+                icon.textContent = '📁';
+                row.appendChild(icon);
+
+                const name = document.createElement('span');
+                name.className = 'archive-name';
+                name.textContent = child.name + '/';
+                row.appendChild(name);
+
+                container.appendChild(row);
+
+                // 子节点容器（懒加载，默认折叠）
+                const subContainer = document.createElement('div');
+                subContainer.className = 'archive-sub';
+                subContainer.hidden = true;
+                container.appendChild(subContainer);
+
+                let expanded = false;
+                row.addEventListener('click', () => {
+                    expanded = !expanded;
+                    arrow.textContent = expanded ? '▼' : '▶';
+                    subContainer.hidden = !expanded;
+                    if (expanded && subContainer.children.length === 0) {
+                        renderArchiveNode(subContainer, child, depth + 1, meta, stats);
+                    }
+                });
+            } else {
+                stats.files++;
+                const arrow = document.createElement('span');
+                arrow.className = 'archive-arrow archive-arrow-placeholder';
+                row.appendChild(arrow);
+
+                const icon = document.createElement('span');
+                icon.className = 'archive-icon';
+                icon.textContent = fileIconFor(child.name);
+                row.appendChild(icon);
+
+                const name = document.createElement('span');
+                name.className = 'archive-name';
+                name.textContent = child.name;
+                row.appendChild(name);
+
+                const size = document.createElement('span');
+                size.className = 'archive-size';
+                size.textContent = fmtSize(child.entry.size);
+                row.appendChild(size);
+
+                const ops = document.createElement('span');
+                ops.className = 'archive-ops';
+                if (isArchiveFilePreviewable(child.name)) {
+                    const previewBtn = document.createElement('button');
+                    previewBtn.className = 'ghost-btn archive-op-btn';
+                    previewBtn.textContent = '预览';
+                    previewBtn.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        extractArchiveFile(meta, child.path, 'preview');
+                    });
+                    ops.appendChild(previewBtn);
+                }
+                const downloadBtn = document.createElement('button');
+                downloadBtn.className = 'ghost-btn archive-op-btn';
+                downloadBtn.textContent = '下载';
+                downloadBtn.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    extractArchiveFile(meta, child.path, 'download');
+                });
+                ops.appendChild(downloadBtn);
+                row.appendChild(ops);
+
+                container.appendChild(row);
+            }
+        }
+    }
+
+    /** 判断压缩包内文件是否可前端预览（与后端 getFileType 对齐） */
+    function isArchiveFilePreviewable(filename) {
+        const ext = (filename.split('.').pop() || '').toLowerCase();
+        const previewable = ['jpg','jpeg','png','gif','webp','bmp','pdf','txt','md','log','csv','json','xml','yml','yaml','js','ts','go','py','java','c','cpp','rs','rb','php','sh','sql','html','htm','css','mp3','wav','ogg','flac','aac','m4a','mp4','webm','mkv','avi','mov'];
+        return previewable.includes(ext);
+    }
+
+    /** 返回文件名对应的 emoji 图标 */
+    function fileIconFor(filename) {
+        const ext = (filename.split('.').pop() || '').toLowerCase();
+        if (['jpg','jpeg','png','gif','webp','bmp'].includes(ext)) return '🖼️';
+        if (ext === 'pdf') return '📄';
+        if (['mp3','wav','ogg','flac'].includes(ext)) return '🎵';
+        if (['mp4','webm','mkv','avi','mov'].includes(ext)) return '🎬';
+        if (['zip','tar','gz','bz2','tgz','tbz2'].includes(ext)) return '🗜️';
+        return '📄';
+    }
+
+    /** 提取压缩包内单个文件：mode='preview' 在 modal 内 iframe 预览；mode='download' 触发附件下载 */
+    function extractArchiveFile(meta, path, mode) {
+        const url = meta.urls.archive_extract + encodeURIComponent(path);
+        if (mode === 'download') {
+            const a = document.createElement('a');
+            a.href = url + '&download=1';
+            a.download = '';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        } else {
+            const body = document.getElementById('preview-body');
+            body.innerHTML = `
+                <div class="archive-preview-back">
+                    <button class="ghost-btn" id="archive-back-btn">← 返回文件列表</button>
+                    <span class="archive-preview-name">${escapeHtml(path)}</span>
+                </div>
+                <iframe src="${url}" class="archive-preview-iframe"></iframe>
+            `;
+            document.getElementById('archive-back-btn').addEventListener('click', () => {
+                renderArchive(meta);
+            });
+        }
     }
 
     /** 下载选中的文件（单选直接下载，多选逐个触发批量下载） */

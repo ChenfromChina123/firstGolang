@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"filesync/internal/auth"
+	"filesync/internal/model"
 	"filesync/internal/storage"
 	"filesync/internal/store"
 )
@@ -87,8 +88,9 @@ func (h *PreviewHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "poster":
 		h.servePoster(w, r, fileID)
 	case "transcode":
-		// 第三阶段实现
-		http.Error(w, `{"error":"transcode not implemented yet"}`, http.StatusNotImplemented)
+		h.serveTranscode(w, r, fileID)
+	case "archive":
+		h.serveArchive(w, r, fileID)
 	case "content":
 		h.serveContent(w, r, fileID)
 	default:
@@ -124,9 +126,18 @@ func (h *PreviewHandler) serveMeta(w http.ResponseWriter, r *http.Request, fileI
 		meta.URLs["thumb_medium"] = base + "/thumb?size=medium"
 		meta.URLs["thumb_large"] = base + "/thumb?size=large"
 	}
-	// 视频类型附加海报 URL（第二阶段：原画播放 + 海报，不做转码）
+	// 压缩包类型附加列表/提取 URL（前端 archive 渲染器调用）
+	if ftype == "archive" {
+		meta.URLs["archive_list"] = base + "/archive"
+		meta.URLs["archive_extract"] = base + "/archive?path="
+	}
+	// 视频类型附加海报与三档画质 URL（第三阶段：多画质转码）
+	// video_high=1080p / video_medium=720p（默认）/ video_low=480p
 	if ftype == "video" {
 		meta.URLs["poster"] = base + "/poster"
+		meta.URLs["video_high"] = base + "/transcode?quality=high"
+		meta.URLs["video_medium"] = base + "/transcode?quality=medium"
+		meta.URLs["video_low"] = base + "/transcode?quality=low"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -259,6 +270,116 @@ func (h *PreviewHandler) servePoster(w http.ResponseWriter, r *http.Request, fil
 	io.Copy(w, f)
 }
 
+// serveTranscode 返回指定画质的转码视频流，支持 HTTP Range（206 Partial Content）。
+// 查询参数 quality: high | medium | low（默认 medium）。
+// high 直接 fallback 到原文件 serveContent（无需转码，避免无意义重编码）；
+// medium/low 命中缓存直接流式返回，未命中同步调 ffmpeg 转码后返回（首次可能阻塞较久）。
+// 输出统一 mp4(H.264+AAC)，浏览器原生兼容；movflags +faststart 支持边下边播。
+func (h *PreviewHandler) serveTranscode(w http.ResponseWriter, r *http.Request, fileID string) {
+	quality := r.URL.Query().Get("quality")
+	if quality == "" {
+		quality = "medium" // 默认中等画质
+	}
+	if quality != "high" && quality != "medium" && quality != "low" {
+		http.Error(w, `{"error":"invalid quality"}`, http.StatusBadRequest)
+		return
+	}
+
+	file, err := h.db.GetFile(fileID)
+	if err != nil {
+		http.Error(w, `{"error":"file not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.checkPermission(w, r, file.Owner) {
+		return
+	}
+	if getFileType(file.Filename) != "video" {
+		http.Error(w, `{"error":"not a video"}`, http.StatusBadRequest)
+		return
+	}
+
+	// high 走原文件流式（无转码），保持源画质
+	if quality == "high" {
+		h.serveContent(w, r, fileID)
+		return
+	}
+
+	basePath := h.storage.BasePath()
+	transcodePath := storage.TranscodePath(basePath, fileID, quality)
+
+	// 缓存未命中 → 同步调 ffmpeg 转码
+	if !storage.TranscodeExists(basePath, fileID, quality) {
+		srcPath := file.StoragePath
+		if _, err := h.storage.FileSize(srcPath); err != nil {
+			log.Printf("[PREVIEW] transcode: source not found id=%s path=%s err=%v", fileID, srcPath, err)
+			http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
+			return
+		}
+		log.Printf("[PREVIEW] transcode: generating id=%s quality=%s (may take a while)", fileID, quality)
+		if _, err := storage.GenerateTranscode(basePath, srcPath, fileID, quality); err != nil {
+			log.Printf("[PREVIEW] transcode: generate failed id=%s quality=%s err=%v", fileID, quality, err)
+			http.Error(w, `{"error":"transcode failed: ffmpeg not available or video invalid"}`, http.StatusInternalServerError)
+			return
+		}
+		log.Printf("[PREVIEW] transcode: generated id=%s quality=%s", fileID, quality)
+	}
+
+	// 流式返回转码文件，支持 Range（与 serveContent 同款实现）
+	f, err := os.Open(transcodePath)
+	if err != nil {
+		log.Printf("[PREVIEW] transcode: open failed id=%s quality=%s err=%v", fileID, quality, err)
+		http.Error(w, `{"error":"transcode open failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, `{"error":"stat failed"}`, http.StatusInternalServerError)
+		return
+	}
+	fileSize := fi.Size()
+
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, fileBaseName(file.Filename)))
+
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader == "" {
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
+		w.WriteHeader(http.StatusOK)
+		io.Copy(w, f)
+		return
+	}
+
+	var start, end int64
+	if n, _ := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end); n != 2 {
+		n2, err2 := fmt.Sscanf(rangeHeader, "bytes=%d-", &start)
+		if err2 != nil || n2 != 1 || start < 0 {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
+			http.Error(w, `{"error":"invalid range"}`, http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		end = fileSize - 1
+	}
+	if start >= fileSize || end >= fileSize || start > end {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
+		http.Error(w, `{"error":"range not satisfiable"}`, http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+
+	chunkSize := end - start + 1
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		http.Error(w, `{"error":"seek failed"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(chunkSize, 10))
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+	w.WriteHeader(http.StatusPartialContent)
+	io.CopyN(w, f, chunkSize)
+}
+
 // serveContent 流式返回文件原始内容，支持 HTTP Range（206 Partial Content）。
 // 用于 PDF/文本/音频/视频原画的前端预览。
 // Content-Type 根据文件类型设置，不设置 Content-Disposition: attachment（避免触发下载）。
@@ -333,6 +454,125 @@ func (h *PreviewHandler) serveContent(w http.ResponseWriter, r *http.Request, fi
 	io.CopyN(w, reader, chunkSize)
 }
 
+// serveArchive 处理压缩包预览请求：
+//   GET /api/preview/{fileID}/archive            → 文件列表 JSON
+//   GET /api/preview/{fileID}/archive?path=xxx   → 提取单个文件流（inline 预览或 attachment 下载）
+//
+// 安全限制：
+//   - 压缩包大小 ≤ 2GB（防止临时文件占用磁盘过大）
+//   - 文件条目数 ≤ 10000（防压缩炸弹）
+//   - 单文件提取大小 ≤ 500MB（防止内存/磁盘爆炸）
+//   - 路径穿越拒绝（..、绝对路径，由 storage.ListArchive/ExtractArchiveFile 内部清洗）
+//   - 加密压缩包拒绝（zip 标准库不支持 AES）
+func (h *PreviewHandler) serveArchive(w http.ResponseWriter, r *http.Request, fileID string) {
+	file, err := h.db.GetFile(fileID)
+	if err != nil {
+		http.Error(w, `{"error":"file not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.checkPermission(w, r, file.Owner) {
+		return
+	}
+
+	// 压缩包大小限制（≤ 2GB）
+	const maxArchiveSize = 2 * 1024 * 1024 * 1024
+	if file.Size > maxArchiveSize {
+		http.Error(w, `{"error":"archive too large (max 2GB)"}`, http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	targetPath := r.URL.Query().Get("path")
+	if targetPath == "" {
+		h.serveArchiveList(w, r, file)
+	} else {
+		h.serveArchiveExtract(w, r, file, targetPath)
+	}
+}
+
+// serveArchiveList 返回压缩包内文件列表 JSON。
+// 调用 storage.ListArchive 流式解析，拒绝路径穿越条目。
+func (h *PreviewHandler) serveArchiveList(w http.ResponseWriter, r *http.Request, file *model.FileRecord) {
+	reader, err := h.storage.ReadFile(file.StoragePath, 0)
+	if err != nil {
+		log.Printf("[PREVIEW] archive list: read failed id=%s path=%s err=%v", file.ID, file.StoragePath, err)
+		http.Error(w, `{"error":"read archive failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer reader.Close()
+
+	entries, truncated, err := storage.ListArchive(reader, file.Filename, 10000)
+	if err != nil {
+		log.Printf("[PREVIEW] archive list: parse failed id=%s err=%v", file.ID, err)
+		http.Error(w, fmt.Sprintf(`{"error":"parse archive failed: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"entries":   entries,
+		"total":     len(entries),
+		"truncated": truncated,
+	})
+}
+
+// serveArchiveExtract 提取压缩包内单个文件并流式返回。
+// ?download=1 → attachment 下载；否则 inline 预览。
+// 单文件提取大小限制 500MB（超出返回 413）。
+// size=-1 表示流式无法预知大小（单文件 .gz/.bz2），跳过大小校验。
+func (h *PreviewHandler) serveArchiveExtract(w http.ResponseWriter, r *http.Request, file *model.FileRecord, targetPath string) {
+	const maxExtractSize = 500 * 1024 * 1024 // 500MB
+
+	reader, err := h.storage.ReadFile(file.StoragePath, 0)
+	if err != nil {
+		log.Printf("[PREVIEW] archive extract: read failed id=%s err=%v", file.ID, err)
+		http.Error(w, `{"error":"read archive failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer reader.Close()
+
+	rc, size, err := storage.ExtractArchiveFile(reader, file.Filename, targetPath)
+	if err != nil {
+		if err == os.ErrNotExist {
+			http.Error(w, `{"error":"file not found in archive"}`, http.StatusNotFound)
+			return
+		}
+		log.Printf("[PREVIEW] archive extract: failed id=%s path=%s err=%v", file.ID, targetPath, err)
+		http.Error(w, fmt.Sprintf(`{"error":"extract failed: %s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	defer rc.Close()
+
+	// 大小校验（size=-1 表示流式无法预知，跳过）
+	if size > maxExtractSize {
+		http.Error(w, `{"error":"extracted file too large (max 500MB)"}`, http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	// 提取文件名（targetPath 最后一段）
+	extractName := targetPath
+	if idx := strings.LastIndex(extractName, "/"); idx >= 0 {
+		extractName = extractName[idx+1:]
+	}
+	if extractName == "" {
+		extractName = "extracted"
+	}
+
+	// 设置响应头
+	w.Header().Set("Content-Type", contentTypeFor(extractName))
+	disposition := "inline"
+	if r.URL.Query().Get("download") == "1" {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"`, disposition, extractName))
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+
+	if _, err := io.Copy(w, rc); err != nil {
+		log.Printf("[PREVIEW] archive extract: copy failed id=%s path=%s err=%v", file.ID, targetPath, err)
+	}
+}
+
 // checkPermission 校验当前用户是否有权预览文件。
 // 权限模型同下载：仅 owner 或 admin 可预览。
 // 校验失败时已写入 HTTP 响应，调用方应直接 return。
@@ -347,8 +587,13 @@ func (h *PreviewHandler) checkPermission(w http.ResponseWriter, r *http.Request,
 }
 
 // getFileType 根据文件扩展名返回预览类型分类。
-// 返回值：image|pdf|text|code|audio|video|office|unsupported
+// 返回值：image|pdf|text|code|audio|video|office|archive|unsupported
+// 压缩包类型优先用 storage.SupportedArchive 判断（覆盖 .tar.gz/.tar.bz2 双扩展名）。
 func getFileType(filename string) string {
+	// 压缩包优先判断（多扩展名，filepath.Ext 只取最后一段会漏判 .tar.gz）
+	if storage.SupportedArchive(filename) {
+		return "archive"
+	}
 	ext := strings.ToLower(filepath.Ext(filename))
 	if ext == "" {
 		return "unsupported"
