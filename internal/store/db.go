@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +78,16 @@ func (db *DB) replaceIntoPrefix() string {
 		return "REPLACE"
 	}
 	return "INSERT OR REPLACE"
+}
+
+// insertIgnorePrefix 返回 dialect 对应的 INSERT IGNORE 前缀
+// SQLite: "INSERT OR IGNORE"  MySQL: "INSERT IGNORE"
+// 用于利用 UNIQUE 约束实现幂等插入（如分享下载去重）
+func (db *DB) insertIgnorePrefix() string {
+	if db.dialect == "mysql" {
+		return "INSERT IGNORE"
+	}
+	return "INSERT OR IGNORE"
 }
 
 // Close shuts down the async queue and the DB connection.
@@ -451,11 +462,65 @@ func (db *DB) migrate() error {
 			`CREATE TABLE IF NOT EXISTS users (
 				id VARCHAR(64) PRIMARY KEY,
 				username VARCHAR(64) NOT NULL,
+				email VARCHAR(255) DEFAULT NULL,
 				password_hash VARCHAR(255) NOT NULL,
 				role VARCHAR(32) NOT NULL DEFAULT 'admin',
+				status VARCHAR(32) NOT NULL DEFAULT 'active',
 				created_at VARCHAR(32) NOT NULL,
 				updated_at VARCHAR(32) NOT NULL,
-				UNIQUE KEY uk_username (username)
+				UNIQUE KEY uk_username (username),
+				UNIQUE KEY uk_email (email)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`CREATE TABLE IF NOT EXISTS user_activation_tokens (
+				id BIGINT AUTO_INCREMENT PRIMARY KEY,
+				user_id VARCHAR(64) NOT NULL,
+				token VARCHAR(64) NOT NULL,
+				expires_at VARCHAR(32) NOT NULL,
+				created_at VARCHAR(32) NOT NULL,
+				UNIQUE KEY uk_token (token),
+				INDEX idx_token_user (user_id),
+				INDEX idx_token_expires (expires_at)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`CREATE TABLE IF NOT EXISTS password_reset_codes (
+				id BIGINT AUTO_INCREMENT PRIMARY KEY,
+				user_id VARCHAR(64) NOT NULL,
+				email VARCHAR(255) NOT NULL,
+				code VARCHAR(8) NOT NULL,
+				expires_at VARCHAR(32) NOT NULL,
+				used INT NOT NULL DEFAULT 0,
+				created_at VARCHAR(32) NOT NULL,
+				INDEX idx_reset_email (email),
+				INDEX idx_reset_expires (expires_at)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`CREATE TABLE IF NOT EXISTS shares (
+				id VARCHAR(64) PRIMARY KEY,
+				file_id VARCHAR(64) DEFAULT NULL,
+				dir_prefix VARCHAR(1024) DEFAULT NULL,
+				share_type VARCHAR(16) NOT NULL,
+				created_by VARCHAR(64) NOT NULL,
+				created_at VARCHAR(32) NOT NULL,
+				expires_at VARCHAR(32) DEFAULT NULL,
+				download_count INT NOT NULL DEFAULT 0,
+				max_downloads INT DEFAULT NULL,
+				is_active INT NOT NULL DEFAULT 1,
+				INDEX idx_shares_file (file_id),
+				INDEX idx_shares_creator (created_by)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`CREATE TABLE IF NOT EXISTS share_downloads (
+				id BIGINT AUTO_INCREMENT PRIMARY KEY,
+				share_id VARCHAR(64) NOT NULL,
+				visitor_id VARCHAR(64) NOT NULL,
+				ip VARCHAR(64) DEFAULT NULL,
+				user_agent VARCHAR(512) DEFAULT NULL,
+				downloaded_at VARCHAR(32) NOT NULL,
+				UNIQUE KEY uk_share_visitor (share_id, visitor_id),
+				INDEX idx_dl_share (share_id)
+			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			`CREATE TABLE IF NOT EXISTS user_settings (
+				username VARCHAR(64) PRIMARY KEY,
+				chunk_size BIGINT NOT NULL DEFAULT 8388608,
+				concurrency INT NOT NULL DEFAULT 3,
+				updated_at VARCHAR(32) NOT NULL
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		}
 	default: // sqlite 支持多语句
@@ -501,11 +566,70 @@ func (db *DB) migrate() error {
 			CREATE TABLE IF NOT EXISTS users (
 				id TEXT PRIMARY KEY,
 				username TEXT NOT NULL UNIQUE,
+				email TEXT DEFAULT NULL,
 				password_hash TEXT NOT NULL,
 				role TEXT NOT NULL DEFAULT 'admin',
+				status TEXT NOT NULL DEFAULT 'active',
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL
-			);`,
+			);
+
+			CREATE TABLE IF NOT EXISTS user_activation_tokens (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id TEXT NOT NULL,
+				token TEXT NOT NULL UNIQUE,
+				expires_at TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			);
+
+			CREATE TABLE IF NOT EXISTS password_reset_codes (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id TEXT NOT NULL,
+				email TEXT NOT NULL,
+				code TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				used INTEGER NOT NULL DEFAULT 0,
+				created_at TEXT NOT NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_token_user ON user_activation_tokens(user_id);
+			CREATE INDEX IF NOT EXISTS idx_token_expires ON user_activation_tokens(expires_at);
+			CREATE INDEX IF NOT EXISTS idx_reset_email ON password_reset_codes(email);
+			CREATE INDEX IF NOT EXISTS idx_reset_expires ON password_reset_codes(expires_at);
+
+			CREATE TABLE IF NOT EXISTS shares (
+				id TEXT PRIMARY KEY,
+				file_id TEXT,
+				dir_prefix TEXT,
+				share_type TEXT NOT NULL,
+				created_by TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				expires_at TEXT,
+				download_count INTEGER NOT NULL DEFAULT 0,
+				max_downloads INTEGER,
+				is_active INTEGER NOT NULL DEFAULT 1
+			);
+
+			CREATE TABLE IF NOT EXISTS share_downloads (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				share_id TEXT NOT NULL,
+				visitor_id TEXT NOT NULL,
+				ip TEXT,
+				user_agent TEXT,
+				downloaded_at TEXT NOT NULL,
+				UNIQUE(share_id, visitor_id)
+			);
+
+			CREATE TABLE IF NOT EXISTS user_settings (
+				username TEXT PRIMARY KEY,
+				chunk_size INTEGER NOT NULL DEFAULT 8388608,
+				concurrency INTEGER NOT NULL DEFAULT 3,
+				updated_at TEXT NOT NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_shares_file ON shares(file_id);
+			CREATE INDEX IF NOT EXISTS idx_shares_creator ON shares(created_by);
+			CREATE INDEX IF NOT EXISTS idx_dl_share ON share_downloads(share_id);`,
 		}
 	}
 	for _, stmt := range statements {
@@ -513,6 +637,100 @@ func (db *DB) migrate() error {
 			return err
 		}
 	}
+
+	// 增量迁移：为已存在的 users 表追加 email/status 列（旧库升级路径）
+	if err := db.migrateUsersAddColumns(); err != nil {
+		return fmt.Errorf("migrate users columns: %w", err)
+	}
+
+	return nil
+}
+
+// migrateUsersAddColumns 检测 users 表是否缺少 email/status 列，缺少则 ALTER TABLE ADD COLUMN。
+// 兼容 SQLite 和 MySQL：CREATE TABLE IF NOT EXISTS 不会修改已存在表，需要单独追加。
+func (db *DB) migrateUsersAddColumns() error {
+	// 查询 users 表当前所有列名
+	var columns []string
+	switch db.dialect {
+	case "mysql":
+		rows, err := db.conn.Query(
+			`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+			 WHERE TABLE_NAME = 'users' AND TABLE_SCHEMA = DATABASE()`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(c))
+		}
+		rows.Close()
+	default:
+		rows, err := db.conn.Query(`PRAGMA table_info(users)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt interface{}
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(name))
+		}
+		rows.Close()
+	}
+
+	hasEmail := false
+	hasStatus := false
+	for _, c := range columns {
+		if c == "email" {
+			hasEmail = true
+		}
+		if c == "status" {
+			hasStatus = true
+		}
+	}
+
+	if !hasEmail {
+		var stmt string
+		if db.dialect == "mysql" {
+			stmt = `ALTER TABLE users ADD COLUMN email VARCHAR(255) DEFAULT NULL`
+		} else {
+			stmt = `ALTER TABLE users ADD COLUMN email TEXT DEFAULT NULL`
+		}
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("add email column: %w", err)
+		}
+		log.Printf("[DB] users table: added 'email' column")
+	}
+	if !hasStatus {
+		var stmt string
+		if db.dialect == "mysql" {
+			stmt = `ALTER TABLE users ADD COLUMN status VARCHAR(32) NOT NULL DEFAULT 'active'`
+		} else {
+			stmt = `ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`
+		}
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("add status column: %w", err)
+		}
+		log.Printf("[DB] users table: added 'status' column")
+	}
+
+	// MySQL 需显式创建 email 唯一索引（SQLite 在 CREATE TABLE 中已声明）
+	if db.dialect == "mysql" && !hasEmail {
+		_, err := db.conn.Exec(`CREATE UNIQUE INDEX idx_users_email ON users(email)`)
+		if err != nil {
+			log.Printf("[DB] WARNING: create idx_users_email failed (may already exist): %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -732,31 +950,100 @@ func escapeLikePrefix(s string) string {
 	return string(out)
 }
 
-// CreateUser 创建新用户。username 唯一，重复时返回错误。
+// CreateUser 创建新用户。username/email 唯一，重复时返回错误。
+// 兼容旧调用方：Email/Status 为空时数据库会自动填充默认值（email=NULL, status='active'）。
 func (db *DB) CreateUser(u *model.User) error {
+	status := u.Status
+	if status == "" {
+		status = "active"
+	}
 	_, err := db.conn.Exec(
-		`INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		u.ID, u.Username, u.PasswordHash, u.Role,
+		`INSERT INTO users (id, username, email, password_hash, role, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.ID, u.Username, nullableString(u.Email), u.PasswordHash, u.Role, status,
 		u.CreatedAt.Format(time.RFC3339), u.UpdatedAt.Format(time.RFC3339),
 	)
 	return err
 }
 
+// nullableString 空字符串转 nil（让数据库存储 NULL 而非空串）
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // GetUserByUsername 按用户名查询用户。不存在返回 sql.ErrNoRows。
 func (db *DB) GetUserByUsername(username string) (*model.User, error) {
 	var u model.User
+	var email sql.NullString
 	var createdAt, updatedAt string
 	err := db.conn.QueryRow(
-		`SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE username = ?`,
+		`SELECT id, username, email, password_hash, role, status, created_at, updated_at FROM users WHERE username = ?`,
 		username,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &createdAt, &updatedAt)
+	).Scan(&u.ID, &u.Username, &email, &u.PasswordHash, &u.Role, &u.Status, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
+	u.Email = email.String
 	u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	u.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 	return &u, nil
+}
+
+// GetUserByEmail 按邮箱查询用户。不存在返回 sql.ErrNoRows。
+func (db *DB) GetUserByEmail(email string) (*model.User, error) {
+	var u model.User
+	var emailDB sql.NullString
+	var createdAt, updatedAt string
+	err := db.conn.QueryRow(
+		`SELECT id, username, email, password_hash, role, status, created_at, updated_at FROM users WHERE email = ?`,
+		email,
+	).Scan(&u.ID, &u.Username, &emailDB, &u.PasswordHash, &u.Role, &u.Status, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	u.Email = emailDB.String
+	u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	u.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return &u, nil
+}
+
+// GetUserByID 按 ID 查询用户。不存在返回 sql.ErrNoRows。
+func (db *DB) GetUserByID(id string) (*model.User, error) {
+	var u model.User
+	var email sql.NullString
+	var createdAt, updatedAt string
+	err := db.conn.QueryRow(
+		`SELECT id, username, email, password_hash, role, status, created_at, updated_at FROM users WHERE id = ?`,
+		id,
+	).Scan(&u.ID, &u.Username, &email, &u.PasswordHash, &u.Role, &u.Status, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	u.Email = email.String
+	u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	u.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+	return &u, nil
+}
+
+// UpdateUserStatus 更新用户激活状态（pending → active）。
+func (db *DB) UpdateUserStatus(id, status string) error {
+	_, err := db.conn.Exec(
+		`UPDATE users SET status = ?, updated_at = ? WHERE id = ?`,
+		status, time.Now().Format(time.RFC3339), id,
+	)
+	return err
+}
+
+// UpdateUserPassword 更新用户密码哈希（忘记密码重置时调用）。
+func (db *DB) UpdateUserPassword(id, passwordHash string) error {
+	_, err := db.conn.Exec(
+		`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
+		passwordHash, time.Now().Format(time.RFC3339), id,
+	)
+	return err
 }
 
 // CountUsers 返回用户总数。用于首次启动判断是否需要创建初始管理员。
@@ -764,6 +1051,103 @@ func (db *DB) CountUsers() (int64, error) {
 	var count int64
 	err := db.conn.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
 	return count, err
+}
+
+// CreateActivationToken 创建账号激活令牌（注册后通过邮件发送链接）。
+// token 为 32 字节 hex 字符串，expiresAt 为过期时间。
+func (db *DB) CreateActivationToken(userID, token string, expiresAt time.Time) error {
+	now := time.Now()
+	_, err := db.conn.Exec(
+		`INSERT INTO user_activation_tokens (user_id, token, expires_at, created_at)
+		 VALUES (?, ?, ?, ?)`,
+		userID, token, expiresAt.Format(time.RFC3339), now.Format(time.RFC3339),
+	)
+	return err
+}
+
+// GetActivationToken 按 token 查询激活令牌。返回 userID 与过期时间。
+// 不存在返回 sql.ErrNoRows。
+func (db *DB) GetActivationToken(token string) (userID string, expiresAt time.Time, err error) {
+	var expStr string
+	err = db.conn.QueryRow(
+		`SELECT user_id, expires_at FROM user_activation_tokens WHERE token = ?`,
+		token,
+	).Scan(&userID, &expStr)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt, _ = time.Parse(time.RFC3339, expStr)
+	return userID, expiresAt, nil
+}
+
+// DeleteActivationToken 删除指定 token（激活成功后调用，确保一次性）。
+func (db *DB) DeleteActivationToken(token string) error {
+	_, err := db.conn.Exec(`DELETE FROM user_activation_tokens WHERE token = ?`, token)
+	return err
+}
+
+// DeleteExpiredActivationTokens 清理所有过期 token（启动时调用，避免表膨胀）。
+func (db *DB) DeleteExpiredActivationTokens() (int64, error) {
+	now := time.Now().Format(time.RFC3339)
+	res, err := db.conn.Exec(`DELETE FROM user_activation_tokens WHERE expires_at < ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteActivationTokensByUserID 删除指定用户的所有激活 token（重新发送激活邮件前清理旧 token）。
+func (db *DB) DeleteActivationTokensByUserID(userID string) error {
+	_, err := db.conn.Exec(`DELETE FROM user_activation_tokens WHERE user_id = ?`, userID)
+	return err
+}
+
+// CreateResetCode 创建密码重置验证码（忘记密码时通过邮件发送）。
+// code 为 6 位数字字符串，expiresAt 为过期时间。
+func (db *DB) CreateResetCode(userID, email, code string, expiresAt time.Time) error {
+	now := time.Now()
+	_, err := db.conn.Exec(
+		`INSERT INTO password_reset_codes (user_id, email, code, expires_at, used, created_at)
+		 VALUES (?, ?, ?, ?, 0, ?)`,
+		userID, email, code, expiresAt.Format(time.RFC3339), now.Format(time.RFC3339),
+	)
+	return err
+}
+
+// GetResetCode 按 email + code 查询验证码记录。返回 userID、是否已使用、过期时间。
+// 不存在返回 sql.ErrNoRows。
+func (db *DB) GetResetCode(email, code string) (userID string, used bool, expiresAt time.Time, err error) {
+	var usedInt int
+	var expStr string
+	err = db.conn.QueryRow(
+		`SELECT user_id, used, expires_at FROM password_reset_codes
+		 WHERE email = ? AND code = ? ORDER BY created_at DESC LIMIT 1`,
+		email, code,
+	).Scan(&userID, &usedInt, &expStr)
+	if err != nil {
+		return "", false, time.Time{}, err
+	}
+	expiresAt, _ = time.Parse(time.RFC3339, expStr)
+	return userID, usedInt != 0, expiresAt, nil
+}
+
+// MarkResetCodeUsed 标记验证码为已使用（重置密码成功后调用，防止重放）。
+func (db *DB) MarkResetCodeUsed(email, code string) error {
+	_, err := db.conn.Exec(
+		`UPDATE password_reset_codes SET used = 1 WHERE email = ? AND code = ?`,
+		email, code,
+	)
+	return err
+}
+
+// DeleteExpiredResetCodes 清理所有过期验证码（启动时调用，避免表膨胀）。
+func (db *DB) DeleteExpiredResetCodes() (int64, error) {
+	now := time.Now().Format(time.RFC3339)
+	res, err := db.conn.Exec(`DELETE FROM password_reset_codes WHERE expires_at < ?`, now)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // DeleteFile 删除单个文件记录（按 ID）。返回受影响行数。
@@ -809,6 +1193,160 @@ func (db *DB) UpdateFilename(id, newFilename string) error {
 	_, err := db.conn.Exec(
 		`UPDATE files SET filename = ?, updated_at = ? WHERE id = ?`,
 		newFilename, time.Now().Format(time.RFC3339), id,
+	)
+	return err
+}
+
+// === 分享链接 CRUD ===
+
+// CreateShare 创建分享记录。s.ID 由调用方生成（8 字符短 ID）。
+func (db *DB) CreateShare(s *model.Share) error {
+	var expiresAt interface{}
+	if s.ExpiresAt != nil {
+		expiresAt = s.ExpiresAt.Format(time.RFC3339)
+	}
+	var maxDownloads interface{}
+	if s.MaxDownloads != nil {
+		maxDownloads = *s.MaxDownloads
+	}
+	isActive := 0
+	if s.IsActive {
+		isActive = 1
+	}
+	_, err := db.conn.Exec(
+		`INSERT INTO shares (id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, nullableString(s.FileID), nullableString(s.DirPrefix), s.ShareType,
+		s.CreatedBy, s.CreatedAt.Format(time.RFC3339), expiresAt, s.DownloadCount, maxDownloads, isActive,
+	)
+	return err
+}
+
+// GetShare 按 ID 查询分享。不存在返回 sql.ErrNoRows。
+func (db *DB) GetShare(id string) (*model.Share, error) {
+	var s model.Share
+	var fileID, dirPrefix, expiresAtStr sql.NullString
+	var maxDownloads sql.NullInt64
+	var isActive int
+	var createdAtStr string
+	err := db.conn.QueryRow(
+		`SELECT id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active
+		 FROM shares WHERE id = ?`,
+		id,
+	).Scan(&s.ID, &fileID, &dirPrefix, &s.ShareType, &s.CreatedBy, &createdAtStr, &expiresAtStr, &s.DownloadCount, &maxDownloads, &isActive)
+	if err != nil {
+		return nil, err
+	}
+	s.FileID = fileID.String
+	s.DirPrefix = dirPrefix.String
+	if expiresAtStr.Valid {
+		t, _ := time.Parse(time.RFC3339, expiresAtStr.String)
+		s.ExpiresAt = &t
+	}
+	if maxDownloads.Valid {
+		md := int(maxDownloads.Int64)
+		s.MaxDownloads = &md
+	}
+	s.IsActive = isActive != 0
+	s.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+	return &s, nil
+}
+
+// ListSharesByCreator 查询指定用户创建的所有分享（按创建时间倒序）。
+func (db *DB) ListSharesByCreator(username string) ([]*model.Share, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, file_id, dir_prefix, share_type, created_by, created_at, expires_at, download_count, max_downloads, is_active
+		 FROM shares WHERE created_by = ? ORDER BY created_at DESC`,
+		username,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var shares []*model.Share
+	for rows.Next() {
+		var s model.Share
+		var fileID, dirPrefix, expiresAtStr sql.NullString
+		var maxDownloads sql.NullInt64
+		var isActive int
+		var createdAtStr string
+		if err := rows.Scan(&s.ID, &fileID, &dirPrefix, &s.ShareType, &s.CreatedBy, &createdAtStr, &expiresAtStr, &s.DownloadCount, &maxDownloads, &isActive); err != nil {
+			return nil, err
+		}
+		s.FileID = fileID.String
+		s.DirPrefix = dirPrefix.String
+		if expiresAtStr.Valid {
+			t, _ := time.Parse(time.RFC3339, expiresAtStr.String)
+			s.ExpiresAt = &t
+		}
+		if maxDownloads.Valid {
+			md := int(maxDownloads.Int64)
+			s.MaxDownloads = &md
+		}
+		s.IsActive = isActive != 0
+		s.CreatedAt, _ = time.Parse(time.RFC3339, createdAtStr)
+		shares = append(shares, &s)
+	}
+	return shares, rows.Err()
+}
+
+// DeleteShare 删除分享记录（调用方应先验证所有权）。
+func (db *DB) DeleteShare(id string) error {
+	_, err := db.conn.Exec(`DELETE FROM shares WHERE id = ?`, id)
+	return err
+}
+
+// IncrementShareDownload 记录一次下载并增加计数。
+// 利用 UNIQUE(share_id, visitor_id) 约束实现幂等：
+//   - 新访客：INSERT 成功，RowsAffected=1，更新 shares.download_count + 1
+//   - 老访客：INSERT 被忽略，RowsAffected=0，不增加计数
+func (db *DB) IncrementShareDownload(shareID, visitorID, ip, userAgent string) error {
+	now := time.Now().Format(time.RFC3339)
+	res, err := db.conn.Exec(
+		db.insertIgnorePrefix()+` INTO share_downloads (share_id, visitor_id, ip, user_agent, downloaded_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		shareID, visitorID, ip, userAgent, now,
+	)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected > 0 {
+		// 新访客下载，增加计数
+		_, err = db.conn.Exec(
+			`UPDATE shares SET download_count = download_count + 1 WHERE id = ?`,
+			shareID,
+		)
+	}
+	return err
+}
+
+// === 用户配置 CRUD ===
+
+// GetUserSettings 按用户名查询配置。不存在返回 nil, nil（调用方使用默认值）。
+func (db *DB) GetUserSettings(username string) (*model.UserSettings, error) {
+	var s model.UserSettings
+	var updatedAtStr string
+	err := db.conn.QueryRow(
+		`SELECT username, chunk_size, concurrency, updated_at FROM user_settings WHERE username = ?`,
+		username,
+	).Scan(&s.Username, &s.ChunkSize, &s.Concurrency, &updatedAtStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAtStr)
+	return &s, nil
+}
+
+// SaveUserSettings 保存用户配置（不存在则插入，存在则替换）。
+func (db *DB) SaveUserSettings(s *model.UserSettings) error {
+	_, err := db.conn.Exec(
+		db.replaceIntoPrefix()+` INTO user_settings (username, chunk_size, concurrency, updated_at)
+		 VALUES (?, ?, ?, ?)`,
+		s.Username, s.ChunkSize, s.Concurrency, s.UpdatedAt.Format(time.RFC3339),
 	)
 	return err
 }

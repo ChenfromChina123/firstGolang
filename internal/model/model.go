@@ -130,8 +130,64 @@ func ComputeHash(r io.Reader) (string, error) {
 type User struct {
 	ID           string    `json:"id"`
 	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"`              // bcrypt 哈希，不序列化到 JSON
-	Role         string    `json:"role"`           // admin, user
+	Email        string    `json:"email,omitempty"` // 可空（admin 历史 account 无邮箱）
+	PasswordHash string    `json:"-"`               // bcrypt 哈希，不序列化到 JSON
+	Role         string    `json:"role"`            // admin, user
+	Status       string    `json:"status"`          // active, pending（注册未激活）
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// ActivationToken 表示账号激活令牌（注册后通过邮件发送）
+type ActivationToken struct {
+	ID        int64     `json:"-"`
+	UserID    string    `json:"user_id"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// PasswordResetCode 表示密码重置验证码（忘记密码时通过邮件发送）
+type PasswordResetCode struct {
+	ID        int64     `json:"-"`
+	UserID    string    `json:"user_id"`
+	Email     string    `json:"email"`
+	Code      string    `json:"-"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Used      bool      `json:"used"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Share 表示一个分享链接（文件或目录）
+type Share struct {
+	ID            string     `json:"id"`                       // 8 字符短 ID
+	FileID        string     `json:"file_id,omitempty"`        // 单文件分享：关联 files.id
+	DirPrefix     string     `json:"dir_prefix,omitempty"`     // 目录分享：目录前缀
+	ShareType     string     `json:"share_type"`               // "file" | "dir"
+	CreatedBy     string     `json:"created_by"`               // 创建者用户名
+	CreatedAt     time.Time  `json:"created_at"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`     // nil=永久
+	DownloadCount int        `json:"download_count"`
+	MaxDownloads  *int       `json:"max_downloads,omitempty"`  // nil=无限
+	IsActive      bool       `json:"is_active"`
+}
+
+// SharePublicInfo 是公开返回给访客的分享信息（不暴露 file_id/storage_path 等敏感字段）
+type SharePublicInfo struct {
+	ID            string     `json:"id"`
+	ShareType     string     `json:"share_type"`               // "file" | "dir"
+	Name          string     `json:"name"`                     // 文件名或目录名
+	Size          int64      `json:"size"`                     // 文件大小或目录总大小
+	FileCount     int        `json:"file_count"`               // 目录文件数（file 类型为 1）
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	DownloadCount int        `json:"download_count"`
+	IsExpired     bool       `json:"is_expired"`
+}
+
+// UserSettings 表示用户的跨浏览器配置（分片大小、并发数）
+type UserSettings struct {
+	Username    string    `json:"username"`
+	ChunkSize   int64     `json:"chunk_size"`
+	Concurrency int       `json:"concurrency"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
