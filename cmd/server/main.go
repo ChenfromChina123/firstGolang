@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"filesync/internal/auth"
+	"filesync/internal/email"
 	"filesync/internal/handler"
 	"filesync/internal/storage"
 	"filesync/internal/store"
@@ -131,6 +132,8 @@ func main() {
 	// Register handlers
 	downloadHandler := handler.NewDownloadHandler(db, st)
 	fileHandler := handler.NewFileHandler(db, st, rc)
+	shareHandler := handler.NewShareHandler(db, st)
+	settingsHandler := handler.NewSettingsHandler(db)
 
 	// === 认证系统初始化 ===
 	// JWT 密钥：优先从环境变量读取，否则随机生成（每次重启失效）
@@ -147,6 +150,31 @@ func main() {
 
 	jwtManager := auth.NewJWTManager(jwtSecret, domain, enableHTTPS)
 
+	// === 邮件服务初始化（用于账号注册和忘记密码） ===
+	// SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS 必填，SMTP_FROM/APP_BASE_URL 可选
+	smtpHost := getEnv("SMTP_HOST", "smtp.qiye.aliyun.com")
+	smtpPortStr := getEnv("SMTP_PORT", "465")
+	smtpUser := getEnv("SMTP_USER", "")
+	smtpPass := getEnv("SMTP_PASS", "")
+	smtpFrom := getEnv("SMTP_FROM", "")
+	appBaseURL := getEnv("APP_BASE_URL", "")
+	// 默认 APP_BASE_URL 根据 domain 推导
+	if appBaseURL == "" && domain != "" {
+		appBaseURL = "https://" + domain
+	}
+
+	var mailer *email.SMTPMailer
+	if smtpUser != "" && smtpPass != "" {
+		smtpPort, err := strconv.Atoi(smtpPortStr)
+		if err != nil || smtpPort <= 0 || smtpPort > 65535 {
+			smtpPort = 465
+		}
+		mailer = email.NewSMTPMailer(smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom)
+		log.Printf("[Email] SMTP enabled: %s:%d user=%s base_url=%s", smtpHost, smtpPort, smtpUser, appBaseURL)
+	} else {
+		log.Printf("[Email] SMTP disabled (SMTP_USER/SMTP_PASS not set), registration & forgot-password unavailable")
+	}
+
 	// 确保初始管理员存在
 	initialUser := os.Getenv("FILESYNC_INITIAL_USERNAME")
 	initialPass := os.Getenv("FILESYNC_INITIAL_PASSWORD")
@@ -154,9 +182,21 @@ func main() {
 		log.Fatalf("ensure initial admin: %v", err)
 	}
 
+	// 清理过期的激活 token 和重置验证码（启动时执行，避免表膨胀）
+	if n, err := db.DeleteExpiredActivationTokens(); err == nil && n > 0 {
+		log.Printf("[Auth] cleaned %d expired activation tokens", n)
+	}
+	if n, err := db.DeleteExpiredResetCodes(); err == nil && n > 0 {
+		log.Printf("[Auth] cleaned %d expired reset codes", n)
+	}
+
 	// 登录速率限制器：5次/分钟/IP（rps=5/60≈0.083, burst=5）
 	loginLimiter := auth.NewLoginRateLimiter(0.083, 5)
-	authHandler := handler.NewAuthHandler(db, jwtManager)
+	// 注册/重发激活/忘记密码速率限制器：3次/小时/IP（rps=3/3600≈0.00083, burst=3）
+	registerLimiter := auth.NewLoginRateLimiter(0.00083, 3)
+	forgotLimiter := auth.NewLoginRateLimiter(0.00083, 3)
+
+	authHandler := handler.NewAuthHandler(db, jwtManager, mailer, appBaseURL)
 
 	mux := http.NewServeMux()
 
@@ -167,6 +207,22 @@ func main() {
 		loginHandler.ServeHTTP(w, r)
 	})
 	mux.HandleFunc("/api/logout", authHandler.Logout)
+	// 注册：3次/小时/IP
+	mux.HandleFunc("/api/register", func(w http.ResponseWriter, r *http.Request) {
+		registerLimiter.Middleware(http.HandlerFunc(authHandler.Register)).ServeHTTP(w, r)
+	})
+	// 激活：无速率限制（用户从邮件点击，IP 不固定）
+	mux.HandleFunc("/api/activate", authHandler.Activate)
+	// 重新发送激活邮件：3次/小时/IP
+	mux.HandleFunc("/api/resend-activation", func(w http.ResponseWriter, r *http.Request) {
+		registerLimiter.Middleware(http.HandlerFunc(authHandler.ResendActivation)).ServeHTTP(w, r)
+	})
+	// 忘记密码：3次/小时/IP
+	mux.HandleFunc("/api/forgot-password", func(w http.ResponseWriter, r *http.Request) {
+		forgotLimiter.Middleware(http.HandlerFunc(authHandler.ForgotPassword)).ServeHTTP(w, r)
+	})
+	// 重置密码：无速率限制（验证码本身有限流，且用户可能多次尝试）
+	mux.HandleFunc("/api/reset-password", authHandler.ResetPassword)
 	mux.Handle("/api/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if rc != nil {
@@ -184,6 +240,13 @@ func main() {
 	mux.Handle("/api/download/", downloadHandler)
 	mux.Handle("/api/files/", fileHandler)
 	mux.Handle("/api/files", fileHandler)
+	// 分享管理（需认证）：创建/列出/删除分享
+	mux.Handle("/api/share", shareHandler)
+	mux.Handle("/api/share/", shareHandler)
+	// 分享公开访问（无需认证）：/api/s/ 在白名单中
+	mux.Handle("/api/s/", shareHandler)
+	// 用户配置同步（需认证）：跨浏览器同步分片大小和并发数
+	mux.Handle("/api/settings", settingsHandler)
 
 	// 静态文件服务：前端 Web 控制台（/web/ 路径 + 根路径重定向）
 	// 前端仅做页面展示，所有业务方法走 /api/* 后端（规则15）
@@ -203,11 +266,17 @@ func main() {
 	}
 
 	// === JWT 认证中间件 ===
-	// 白名单：登录/登出/健康检查/Web 静态资源/根路径
+	// 白名单：登录/登出/注册/激活/忘记密码/重置密码/健康检查/分享公开访问/Web 静态资源/根路径
 	whitelist := []string{
 		"/api/login",
 		"/api/logout",
+		"/api/register",
+		"/api/activate",
+		"/api/resend-activation",
+		"/api/forgot-password",
+		"/api/reset-password",
 		"/api/health",
+		"/api/s/", // 分享公开访问（获取分享信息、下载）
 		"/web/",
 		"/",
 	}
@@ -216,9 +285,14 @@ func main() {
 	authedHandler := jwtManager.Middleware(whitelist, mux)
 
 	log.Printf("API endpoints:")
-	log.Printf("  POST   /api/login          - Login (rate limited: 5/min)")
-	log.Printf("  POST   /api/logout         - Logout")
-	log.Printf("  GET    /api/me             - Current user info (auth required)")
+	log.Printf("  POST   /api/login               - Login (rate limited: 5/min)")
+	log.Printf("  POST   /api/logout              - Logout")
+	log.Printf("  POST   /api/register            - Register (rate limited: 3/hour, sends activation email)")
+	log.Printf("  GET    /api/activate?token=xxx  - Activate account (public, redirect to /web/activate.html)")
+	log.Printf("  POST   /api/resend-activation   - Resend activation email (rate limited: 3/hour)")
+	log.Printf("  POST   /api/forgot-password     - Forgot password (rate limited: 3/hour, sends reset code)")
+	log.Printf("  POST   /api/reset-password      - Reset password (verify code + set new password)")
+	log.Printf("  GET    /api/me                  - Current user info (auth required)")
 	log.Printf("  POST   /api/upload/init     - Initialize upload (auth)")
 	log.Printf("  POST   /api/upload/chunk    - Upload chunk (auth)")
 	log.Printf("  GET    /api/upload/status   - Upload progress (auth)")
@@ -231,6 +305,15 @@ func main() {
 	log.Printf("  DELETE /api/files           - Delete directory (auth, prefix=xxx)")
 	log.Printf("  POST   /api/files/mkdir     - Create directory (auth, path=xxx)")
 	log.Printf("  POST   /api/files/rename    - Rename/move file (auth, id, new_filename)")
+	log.Printf("  POST   /api/files/move-dir  - Move directory (auth, src, dst)")
+	log.Printf("  POST   /api/files/batch-delete - Batch delete files (auth)")
+	log.Printf("  GET    /api/share           - List my shares (auth)")
+	log.Printf("  POST   /api/share           - Create share (auth, file_id|dir_prefix)")
+	log.Printf("  DELETE /api/share/{id}      - Delete share (auth)")
+	log.Printf("  GET    /api/s/{id}          - Get share info (public)")
+	log.Printf("  GET    /api/s/{id}/download - Download shared file/dir (public)")
+	log.Printf("  GET    /api/settings        - Get user settings (auth)")
+	log.Printf("  POST   /api/settings        - Save user settings (auth)")
 	log.Printf("  GET    /api/health          - Health check (public)")
 	log.Printf("  GET    /web/                - Web console (public static)")
 
