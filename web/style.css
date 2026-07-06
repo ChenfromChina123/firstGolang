@@ -427,10 +427,10 @@ body::after {
     font-size: 12px;
 }
 
-/* 树形行（目录 / 文件） */
+/* 树形行（目录 / 文件）：grid 列 = 图标 + checkbox + 名称 + 大小 + 日期 + 存储 */
 .tree-row {
     display: grid;
-    grid-template-columns: 20px minmax(0, 1fr) auto auto auto auto;
+    grid-template-columns: 24px 22px minmax(0, 1fr) auto auto auto;
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
@@ -448,16 +448,35 @@ body::after {
 .tree-row.file { color: var(--fg-1); }
 .tree-row.file:hover { background: rgba(0, 217, 255, 0.04); }
 
-.tree-icon {
-    font-family: var(--mono);
-    color: var(--accent);
-    font-size: 12px;
-    text-align: center;
+/* 选中状态：左边框高亮 + 背景着色 */
+.tree-row.selected {
+    background: var(--accent-dim);
+    border-left: 2px solid var(--accent);
+    padding-left: 12px;
 }
-.tree-row.file .tree-icon { color: var(--fg-3); }
+.tree-row.selected:hover { background: rgba(0, 217, 255, 0.22); }
 
-/* 文件行多选 checkbox（替代目录图标列，保持 20px 列对齐） */
-.file-check {
+/* 文件类型图标（SVG sprite 引用） */
+.tree-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+}
+.tree-icon svg { width: 16px; height: 16px; display: block; }
+.tree-row.file .tree-icon { color: var(--fg-3); }
+/* 不同文件类型的图标颜色（按类型区分） */
+.tree-icon.icon-image { color: #79c0ff; }
+.tree-icon.icon-video { color: #f0883e; }
+.tree-icon.icon-audio { color: #a371f7; }
+.tree-icon.icon-pdf { color: #f85149; }
+.tree-icon.icon-code { color: #3fb950; }
+.tree-icon.icon-text { color: #d29922; }
+.tree-icon.icon-archive { color: #bc8cff; }
+.tree-icon.icon-file { color: var(--fg-3); }
+
+/* 行多选 checkbox（目录/文件统一） */
+.row-check {
     margin: 0;
     width: 14px;
     height: 14px;
@@ -508,30 +527,7 @@ body::after {
 }
 .dl-btn:hover { background: var(--accent-dim); border-color: var(--accent); }
 
-/* 文件库头部操作按钮组 */
-.files-head-ops { display: flex; gap: 8px; align-items: center; }
-
-/* 批量操作栏（多选文件时显示） */
-.batch-ops {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 2px 8px;
-    border: 1px dashed var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--accent-dim);
-}
-.batch-count {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--accent);
-    white-space: nowrap;
-}
-
-/* 树形行操作按钮组 */
-.tree-ops { display: flex; gap: 6px; align-items: center; }
-
-/* 树形操作按钮（ZIP/下载/重命名/删除等） */
+/* 紧凑操作按钮（用于分享管理对话框等，非树形行） */
 .op-btn {
     background: none;
     border: 1px solid var(--border);
@@ -548,6 +544,61 @@ body::after {
 .op-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
 .op-btn.danger { color: var(--err); border-color: rgba(248, 81, 73, 0.4); }
 .op-btn.danger:hover { background: var(--err-dim); border-color: var(--err); color: var(--err); }
+
+/* 文件库头部操作按钮组：default-ops 和 selection-ops 互斥 */
+.files-head-ops { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.default-ops { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* 选择操作栏（选中 ≥1 项时显示） */
+.selection-ops {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 2px 8px;
+    border: 1px dashed var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--accent-dim);
+}
+.selection-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    white-space: nowrap;
+    margin-right: 4px;
+}
+
+/* 上下文菜单（右键弹出） */
+.ctx-menu {
+    position: fixed;
+    z-index: 150;
+    min-width: 160px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    padding: 4px 0;
+    overscroll-behavior: contain;
+}
+.ctx-item {
+    display: block;
+    width: 100%;
+    padding: 8px 16px;
+    background: none;
+    border: none;
+    color: var(--fg-1);
+    font-family: var(--mono);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.ctx-item:hover { background: var(--accent-dim); color: var(--accent); }
+.ctx-item.danger { color: var(--err); }
+.ctx-item.danger:hover { background: var(--err-dim); color: var(--err); }
+.ctx-item:disabled { color: var(--fg-3); cursor: not-allowed; }
+.ctx-item:disabled:hover { background: none; color: var(--fg-3); }
+.ctx-separator { height: 1px; background: var(--border-soft); margin: 4px 0; }
 
 /* === 按钮 === */
 .ghost-btn {
@@ -1158,9 +1209,9 @@ body::after {
     .panel-head { flex-wrap: wrap; gap: 8px; }
     .target-dir-display { min-width: 100px; max-width: 160px; }
     /* 窄屏下隐藏树形行中的"上传时间"和"存储"列，避免拥挤 */
-    .tree-row { grid-template-columns: 20px minmax(0, 1fr) auto auto; gap: 8px; padding: 8px 10px; }
-    .tree-row .tree-meta:nth-of-type(3),
-    .tree-row .tree-meta:nth-of-type(4) { display: none; }
+    .tree-row { grid-template-columns: 24px 22px minmax(0, 1fr) auto; gap: 8px; padding: 8px 10px; }
+    .tree-row .tree-meta:nth-of-type(2),
+    .tree-row .tree-meta:nth-of-type(3) { display: none; }
     /* 窄屏下隐藏角色标签，用户名截断 */
     .user-info .role { display: none; }
     .user-info .name { max-width: 80px; }
@@ -1180,7 +1231,7 @@ body::after {
         padding-bottom: 8px;
     }
     /* 复选框触摸目标放大 */
-    .file-check, .tree-cb, #select-all-cb {
+    .row-check, .tree-cb, #select-all-cb {
         width: 22px;
         height: 22px;
     }
@@ -1197,16 +1248,14 @@ body::after {
         max-width: calc(100vw - 32px);
         padding: 16px;
     }
-    /* 树形行紧凑化 */
+    /* 树形行紧凑化：仅保留 icon + checkbox + name */
     .tree-row {
-        grid-template-columns: 22px minmax(0, 1fr) auto;
+        grid-template-columns: 24px 22px minmax(0, 1fr);
         gap: 6px;
         padding: 8px 8px;
     }
-    /* 隐藏文件大小列，只保留名称和下载按钮 */
-    .tree-row .tree-meta:nth-of-type(2),
-    .tree-row .tree-meta:nth-of-type(3),
-    .tree-row .tree-meta:nth-of-type(4) { display: none; }
+    /* 隐藏所有 meta 列（大小/日期/存储） */
+    .tree-row .tree-meta { display: none; }
     /* 分享页工具栏堆叠 */
     .share-toolbar {
         flex-direction: column;
