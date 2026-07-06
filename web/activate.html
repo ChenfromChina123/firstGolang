@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FileSync · 账号激活</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/style.css?v=20260706c">
+    <style>
+        .login-wrap {
+            min-height: 100vh; display: flex; align-items: center; justify-content: center;
+            background:
+                radial-gradient(ellipse at 20% 30%, rgba(0, 217, 255, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 70%, rgba(63, 185, 80, 0.05) 0%, transparent 50%),
+                var(--bg-0);
+            padding: 20px;
+        }
+        .login-card {
+            width: 100%; max-width: 440px; background: var(--bg-1);
+            border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 48px 32px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border-soft);
+            text-align: center;
+        }
+        .status-icon {
+            width: 64px; height: 64px; margin: 0 auto 20px;
+            border-radius: 50%; display: flex; align-items: center; justify-content: center;
+        }
+        .status-icon.success { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
+        .status-icon.error { background: var(--err-dim); color: var(--err); }
+        .status-icon.loading { background: var(--accent-dim); color: var(--accent); }
+        .status-icon svg { width: 32px; height: 32px; }
+        .status-title {
+            font-family: var(--sans); font-weight: 700; font-size: 22px;
+            color: var(--fg-0); margin-bottom: 12px; letter-spacing: 0.5px;
+        }
+        .status-message {
+            font-family: var(--mono); font-size: 13px; color: var(--fg-2);
+            line-height: 1.7; margin-bottom: 28px;
+        }
+        .action-btn {
+            display: inline-block; background: var(--accent); color: var(--bg-0);
+            text-decoration: none; padding: 12px 32px; border-radius: var(--radius-sm);
+            font-family: var(--sans); font-weight: 600; font-size: 14px; letter-spacing: 0.5px;
+            transition: background 0.15s, transform 0.1s;
+        }
+        .action-btn:hover { background: #33e0ff; box-shadow: 0 0 16px var(--accent-glow); }
+        .action-btn:active { transform: scale(0.98); }
+        .action-link {
+            display: inline-block; margin-top: 16px; color: var(--accent);
+            text-decoration: none; font-family: var(--mono); font-size: 12px;
+        }
+        .action-link:hover { text-decoration: underline; }
+        .resend-form {
+            margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--border-soft);
+        }
+        .resend-form input {
+            width: 100%; background: var(--bg-2); border: 1px solid var(--border);
+            border-radius: var(--radius-sm); padding: 10px 12px; color: var(--fg-0);
+            font-family: var(--mono); font-size: 13px; margin-bottom: 12px;
+        }
+        .resend-form input:focus { outline: none; border-color: var(--accent); }
+        .resend-btn {
+            width: 100%; background: var(--bg-2); color: var(--accent);
+            border: 1px solid var(--accent); border-radius: var(--radius-sm);
+            padding: 10px; font-family: var(--sans); font-weight: 500; font-size: 13px;
+            cursor: pointer; transition: background 0.15s;
+        }
+        .resend-btn:hover { background: var(--accent-dim); }
+        .resend-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="login-wrap">
+        <div class="login-card" id="card">
+            <!-- 内容由 JS 动态渲染 -->
+        </div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const status = params.get('status') || 'loading';
+        const card = document.getElementById('card');
+
+        const icons = {
+            success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+            error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+            expired: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+            loading: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>'
+        };
+
+        if (status === 'loading' || !status) {
+            // 直接访问 activate.html 没有 status 参数，可能是用户手动打开
+            renderError('无效的激活链接', '请通过邮件中的激活链接点击进入，或重新发送激活邮件。');
+        } else if (status === 'success') {
+            renderSuccess();
+        } else if (status === 'expired') {
+            renderExpired();
+        } else if (status === 'invalid') {
+            renderError('激活链接无效', '链接可能已被使用或不存在，请重新发送激活邮件。');
+        } else if (status === 'error') {
+            renderError('激活失败', '服务器处理时发生错误，请稍后重试或联系管理员。');
+        } else {
+            renderError('未知状态', '激活链接状态异常，请重新发送激活邮件。');
+        }
+
+        function renderSuccess() {
+            card.innerHTML = `
+                <div class="status-icon success">${icons.success}</div>
+                <div class="status-title">账号已激活</div>
+                <div class="status-message">恭喜！你的 FileSync 账号已成功激活，<br>现在可以使用邮箱和密码登录了。</div>
+                <a href="/web/login.html?activated=1" class="action-btn">立即登录</a>
+            `;
+        }
+
+        function renderExpired() {
+            card.innerHTML = `
+                <div class="status-icon error">${icons.expired}</div>
+                <div class="status-title">链接已过期</div>
+                <div class="status-message">激活链接有效期 24 小时，已过期。<br>请重新发送激活邮件。</div>
+                <div class="resend-form">
+                    <input type="email" id="resend-email" placeholder="你的注册邮箱" autocomplete="email">
+                    <button class="resend-btn" id="resend-btn">重新发送激活邮件</button>
+                </div>
+                <a href="/web/login.html" class="action-link">返回登录</a>
+            `;
+            bindResend();
+        }
+
+        function renderError(title, message) {
+            card.innerHTML = `
+                <div class="status-icon error">${icons.error}</div>
+                <div class="status-title">${title}</div>
+                <div class="status-message">${message}</div>
+                <div class="resend-form">
+                    <input type="email" id="resend-email" placeholder="你的注册邮箱" autocomplete="email">
+                    <button class="resend-btn" id="resend-btn">重新发送激活邮件</button>
+                </div>
+                <a href="/web/login.html" class="action-link">返回登录</a>
+            `;
+            bindResend();
+        }
+
+        function bindResend() {
+            const btn = document.getElementById('resend-btn');
+            const emailInput = document.getElementById('resend-email');
+            if (!btn || !emailInput) return;
+            btn.addEventListener('click', async () => {
+                const email = emailInput.value.trim();
+                if (!email) {
+                    alert('请输入邮箱');
+                    return;
+                }
+                btn.disabled = true;
+                btn.textContent = '发送中...';
+                try {
+                    const resp = await fetch('/api/resend-activation', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email }),
+                        credentials: 'same-origin'
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (resp.ok && data.success) {
+                        alert(data.message || '激活邮件已发送，请查收邮箱');
+                        window.location.href = '/web/login.html';
+                    } else {
+                        alert(data.message || '发送失败');
+                    }
+                } catch (err) {
+                    alert('网络错误：' + err.message);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '重新发送激活邮件';
+                }
+            });
+        }
+    </script>
+</body>
+</html>

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706a">
+    <link rel="stylesheet" href="/web/style.css?v=20260706e">
     <style>
         .login-wrap {
             min-height: 100vh;
@@ -130,6 +130,40 @@
             color: var(--fg-3);
             letter-spacing: 1px;
         }
+        .login-links {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 20px;
+            font-family: var(--mono);
+            font-size: 12px;
+        }
+        .login-links a {
+            color: var(--accent);
+            text-decoration: none;
+            transition: color 0.15s;
+        }
+        .login-links a:hover { color: var(--fg-0); text-decoration: underline; }
+        .login-links .sep { color: var(--fg-3); }
+        .login-notice {
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            font-family: var(--mono);
+            font-size: 12px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .login-notice.show { display: block; }
+        .login-notice.success {
+            background: rgba(63, 185, 80, 0.12);
+            border: 1px solid var(--ok);
+            color: var(--ok);
+        }
+        .login-notice.error {
+            background: var(--err-dim);
+            border: 1px solid var(--err);
+            color: var(--err);
+        }
     </style>
 </head>
 <body>
@@ -143,6 +177,8 @@
                 <h1>FileSync</h1>
                 <div class="sub">CHUNKED · SYNC · CONSOLE</div>
             </div>
+
+            <div class="login-notice" id="login-notice"></div>
 
             <div class="login-error" id="login-error"></div>
 
@@ -158,6 +194,12 @@
                 <button type="submit" class="login-btn" id="login-btn">登录</button>
             </form>
 
+            <div class="login-links">
+                <a href="/web/register.html">注册账号</a>
+                <span class="sep">·</span>
+                <a href="/web/forgot-password.html">忘记密码</a>
+            </div>
+
             <div class="login-footer">HTTPS · JWT · BCRYPT</div>
         </div>
     </div>
@@ -171,6 +213,23 @@
         // 如果 URL 中有 redirect 参数，登录成功后跳转到该地址
         const params = new URLSearchParams(window.location.search);
         const redirect = params.get('redirect') || '/web/index.html';
+
+        // URL 参数提示（从注册/激活/重置页面跳转回来时显示）
+        const noticeBox = document.getElementById('login-notice');
+        if (params.get('activated') === '1') {
+            showNotice('账号已激活，请登录', 'success');
+        } else if (params.get('registered') === '1') {
+            showNotice('注册成功，请查收激活邮件', 'success');
+        } else if (params.get('reset') === '1') {
+            showNotice('密码已重置，请登录', 'success');
+        } else if (params.get('error') === 'not_activated') {
+            showNotice('账号未激活，请查收激活邮件', 'error');
+        }
+
+        function showNotice(msg, type) {
+            noticeBox.textContent = msg;
+            noticeBox.className = 'login-notice show ' + type;
+        }
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();

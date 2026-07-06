@@ -4,7 +4,7 @@
 - 停止服务（释放文件锁，避免上传失败）
 - 备份当前 server
 - 上传新的 server（覆盖旧文件）
-- 上传 web 文件（style.css, index.html, app.js）
+- 上传 web 文件（8 个 HTML/CSS/JS：含登录/注册/忘记密码/重置密码/激活页）
 - 启动 filesync 服务
 - 检查服务状态和健康端点
 """
@@ -38,6 +38,11 @@ web_files = [
     ('style.css', 'style.css'),
     ('index.html', 'index.html'),
     ('app.js', 'app.js'),
+    ('login.html', 'login.html'),
+    ('register.html', 'register.html'),
+    ('forgot-password.html', 'forgot-password.html'),
+    ('reset-password.html', 'reset-password.html'),
+    ('activate.html', 'activate.html'),
 ]
 for local_name, remote_name in web_files:
     local_path = rf'd:\STUDY\GO\StudyGolang\firstGolang\filesync\web\{local_name}'

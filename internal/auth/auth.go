@@ -171,3 +171,85 @@ func ValidatePasswordStrength(password string) error {
 	}
 	return nil
 }
+
+// GenerateActivationToken 生成 32 字节随机 hex 字符串作为激活令牌
+// 用于注册后通过邮件发送的激活链接 ?token=xxx
+func GenerateActivationToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// 失败时用时间戳兜底（极端情况，不应发生）
+		return hex.EncodeToString([]byte(time.Now().Format("20060102150405"))) + hex.EncodeToString([]byte("fallbacktoken1234"))
+	}
+	return hex.EncodeToString(b)
+}
+
+// GenerateResetCode 生成 6 位数字字符串作为密码重置验证码
+// 范围 000000-999999，前导零补齐
+func GenerateResetCode() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		// 失败时返回固定值（极端情况）
+		return "123456"
+	}
+	// 把 4 字节转成无符号 32 位整数再对 1000000 取模
+	var num uint32
+	for _, c := range b {
+		num = num<<8 | uint32(c)
+	}
+	return fmt.Sprintf("%06d", num%1000000)
+}
+
+// GenerateUsernameFromEmail 从邮箱生成 username
+// 规则：取 @ 前部分 + 4 位随机 hex 后缀（避免与现有用户名冲突）
+// 例如：alice@example.com → alice3a7f
+func GenerateUsernameFromEmail(email string) string {
+	prefix := email
+	if idx := strings.Index(email, "@"); idx > 0 {
+		prefix = email[:idx]
+	}
+	// 仅保留字母数字下划线，避免特殊字符
+	var sb strings.Builder
+	for _, c := range prefix {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+			sb.WriteRune(c)
+		}
+	}
+	name := sb.String()
+	if name == "" {
+		name = "user"
+	}
+	// 转小写 + 4 位随机 hex 后缀
+	name = strings.ToLower(name)
+	b := make([]byte, 2)
+	if _, err := rand.Read(b); err != nil {
+		return name + "0000"
+	}
+	return name + hex.EncodeToString(b)
+}
+
+// ValidateEmail 简单邮箱格式校验
+// 规则：包含 @，@ 前后都有内容，域名包含 .
+func ValidateEmail(email string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return errors.New("email is required")
+	}
+	atIdx := strings.Index(email, "@")
+	if atIdx <= 0 || atIdx == len(email)-1 {
+		return errors.New("invalid email format")
+	}
+	domain := email[atIdx+1:]
+	if !strings.Contains(domain, ".") {
+		return errors.New("invalid email domain")
+	}
+	if len(email) > 255 {
+		return errors.New("email too long")
+	}
+	return nil
+}
+
+// NormalizeEmail 邮箱标准化：去空格 + 转小写
+// 注册和查询前都应调用此函数，确保大小写一致
+func NormalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}

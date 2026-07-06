@@ -10,6 +10,10 @@
 - **文件冲突检测**：同名文件上传时提示冲突，支持 `skip`（跳过）/ `overwrite`（覆盖）/ `rename`（重命名）
 - **存储后端**：本地文件系统存储（默认）；S3 兼容对象存储（扩展）
 - **文件完整性**：上传完成后计算 SHA256 校验
+- **账号注册**：邮箱激活链接方式注册，24 小时有效，支持用户名/邮箱登录
+- **忘记密码**：邮箱 6 位验证码重置密码，10 分钟有效
+- **跨浏览器配置同步**：分片大小与并发数存储在服务器端，换浏览器/换设备后自动加载（同时写入 localStorage 即时响应）
+- **分享链接功能**：将文件或目录生成分享链接，访客无需登录即可查看和下载，支持有效期设置和下载次数去重统计（visitor cookie + UNIQUE 约束）
 
 ## 项目结构
 
@@ -124,6 +128,10 @@ filesync 内置一个纯 HTML+CSS+JS 的 Web 控制台（无框架依赖，轻�
 - **目标目录**：上传时可指定目标目录（如 `docs/`），文件名前缀目录路径实现虚拟目录
 - **树形文件库**：路径枚举方案，文件名中 `/` 作为虚拟目录分隔符，面包屑导航+目录展开，子目录在前文件在后，点击目录进入，点击下载文件
 - **健康状态**：顶部实时显示服务健康状态（每 10 秒刷新）
+- **账号注册**：邮箱+密码+确认密码，注册后发送激活邮件，点击激活链接激活账号
+- **忘记密码**：输入邮箱发送 6 位验证码，凭验证码重置新密码
+- **配置同步**：分片大小与并发数持久化到服务器，换浏览器自动加载（localStorage 即时响应 + 服务器后台同步）
+- **分享链接**：文件/目录可生成分享链接（永久/7天/30天有效期），访客无需登录即可查看和下载，下载次数去重统计
 
 ### 设计要点
 
@@ -307,6 +315,107 @@ curl -o docs.zip "http://localhost:8080/api/download/dir?prefix=docs/"
 - 禁止反斜杠 `\`
 - 长度限制 1-1024 字节
 
+### 认证与账号
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/login` | 登录（支持用户名或邮箱，速率限制 5次/分钟） |
+| `POST` | `/api/logout` | 登出 |
+| `GET` | `/api/me` | 当前用户信息（需认证） |
+| `POST` | `/api/register` | 注册（邮箱+密码+确认密码，速率限制 3次/小时） |
+| `GET` | `/api/activate?token=xxx` | 激活账号（从邮件链接点击） |
+| `POST` | `/api/resend-activation` | 重新发送激活邮件（速率限制 3次/小时） |
+| `POST` | `/api/forgot-password` | 忘记密码，发送验证码（速率限制 3次/小时） |
+| `POST` | `/api/reset-password` | 重置密码（验证码+新密码） |
+
+**注册账号：**
+```bash
+# POST /api/register
+curl -X POST https://aistudy.icu/api/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"Pass1234","confirm_password":"Pass1234"}'
+# 响应 200: {"success":true,"message":"若邮箱可用，激活邮件已发送，请查收邮箱"}
+# 响应 400: 邮箱格式无效 / 密码强度不足 / 两次密码不一致
+# 响应 503: 邮件服务未配置
+```
+
+**激活账号：**
+```bash
+# 用户点击邮件中的链接，后端自动处理并重定向
+GET https://aistudy.icu/api/activate?token=abc123...
+# 激活成功：重定向到 /web/login.html?activated=1
+# token 无效：重定向到 /web/activate.html?status=invalid
+# token 过期：重定向到 /web/activate.html?status=expired
+```
+
+**忘记密码：**
+```bash
+# POST /api/forgot-password
+curl -X POST https://aistudy.icu/api/forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com"}'
+# 响应 200: {"success":true,"message":"若邮箱可用且已激活，验证码已发送"}
+# 无论邮箱是否存在都返回成功（防枚举攻击）
+```
+
+**重置密码：**
+```bash
+# POST /api/reset-password
+curl -X POST https://aistudy.icu/api/reset-password \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","code":"123456","new_password":"NewPass1234","confirm_password":"NewPass1234"}'
+# 响应 200: {"success":true,"message":"密码已重置，请登录"}
+# 响应 400: 验证码错误/已过期/已使用，密码强度不足，两次密码不一致
+```
+
+### 分享与配置同步
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| `POST` | `/api/share` | 创建分享（文件或目录） | 需认证 |
+| `GET` | `/api/share` | 列出当前用户创建的所有分享 | 需认证 |
+| `DELETE` | `/api/share/{id}` | 删除分享 | 需认证 |
+| `GET` | `/api/s/{id}` | 获取分享公开信息（访客访问） | 公开 |
+| `GET` | `/api/s/{id}/download` | 下载分享的文件或目录（目录打包为 ZIP） | 公开 |
+| `GET` | `/api/settings` | 获取用户配置（分片大小、并发数） | 需认证 |
+| `POST` | `/api/settings` | 保存用户配置 | 需认证 |
+
+**创建分享：**
+```bash
+# POST /api/share
+curl -X POST http://localhost:8080/api/share \
+  -H "Content-Type: application/json" \
+  -b "token=..." \
+  -d '{"share_type":"file","file_id":"abc123...","expires_in":604800}'
+# expires_in: 0=永久, 604800=7天, 2592000=30天
+# 响应 200: {"id":"xyz789","share_type":"file","url":"/web/share.html?id=xyz789"}
+```
+
+**访客访问分享页面：**
+```
+GET http://<server>/web/share.html?id=xyz789
+# 无需登录，页面显示文件名、大小、下载次数、有效期
+# 点击下载按钮 → GET /api/s/xyz789/download
+```
+
+**下载次数去重机制：**
+- 首次访问时设置 `visitor` cookie（30天有效，跨所有分享复用）
+- 下载时 `share_downloads` 表的 `UNIQUE(share_id, visitor_id)` 约束保证同一访客只计数一次
+- 清除 cookie 或换设备/浏览器后再次下载才会增加计数
+
+**配置同步：**
+```bash
+# GET /api/settings（无记录时返回默认值 8MB/3）
+curl http://localhost:8080/api/settings -b "token=..."
+# 响应: {"username":"alice","chunk_size":524288,"concurrency":5,"updated_at":"..."}
+
+# POST /api/settings
+curl -X POST http://localhost:8080/api/settings \
+  -H "Content-Type: application/json" \
+  -b "token=..." \
+  -d '{"chunk_size":1048576,"concurrency":8}'
+```
+
 ## 断点续传验证步骤
 
 ### 验证上传断点续传
@@ -432,6 +541,12 @@ curl -o docs.zip "http://localhost:8080/api/download/dir?prefix=docs/"
 | `REDIS_DB` | Redis 数据库编号 | `0` |
 | `REDIS_SENTINEL_ADDRS` | Sentinel 地址列表（逗号分隔，启用后优先于单机模式） | - |
 | `REDIS_SENTINEL_MASTER` | Sentinel 主节点名称 | `mymaster` |
+| `SMTP_HOST` | SMTP 服务器地址（注册/忘记密码功能必填） | `smtp.qiye.aliyun.com` |
+| `SMTP_PORT` | SMTP 端口（465=SSL implicit, 587=STARTTLS） | `465` |
+| `SMTP_USER` | SMTP 用户名（发件邮箱） | - |
+| `SMTP_PASS` | SMTP 授权码 | - |
+| `SMTP_FROM` | 发件人显示名 | `FileSync <SMTP_USER>` |
+| `APP_BASE_URL` | 应用根地址（用于拼接激活链接） | 根据 DOMAIN 推导为 `https://<DOMAIN>` |
 
 > Redis 为可选项，未配置时自动降级为纯 SQLite 模式。配置 Sentinel 后优先使用 Sentinel 分布式模式。
 
@@ -474,6 +589,12 @@ Environment=STORAGE_TYPE=local
 Environment=REDIS_ADDR=127.0.0.1:6379
 Environment=REDIS_PASSWORD=your_redis_password
 Environment=REDIS_DB=0
+Environment=SMTP_HOST=smtp.qiye.aliyun.com
+Environment=SMTP_PORT=465
+Environment=SMTP_USER=px-ai@aistudy.icu
+Environment=SMTP_PASS=your_smtp_password
+Environment=SMTP_FROM=FileSync <px-ai@aistudy.icu>
+Environment=APP_BASE_URL=https://your-domain.com
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/opt/filesync/server.log
