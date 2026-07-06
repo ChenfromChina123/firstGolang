@@ -842,6 +842,169 @@ body::after {
 }
 .share-link-input:focus { outline: none; border-color: var(--accent); }
 
+/* === 独立分享页面（share.html）专用样式 === */
+
+/* 简化顶栏：仅保留品牌标识，无右侧健康状态/用户信息 */
+.share-topbar {
+    justify-content: flex-start;
+}
+
+/* 居中布局容器 */
+.share-layout {
+    position: relative;
+    z-index: 1;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 48px 24px;
+}
+
+/* 分享卡片（复用 .panel 基础样式，覆盖内边距） */
+.share-panel {
+    padding: 32px;
+}
+
+/* 状态容器：加载中 / 错误 */
+.share-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 48px 16px;
+    text-align: center;
+}
+
+/* 加载旋转动画 */
+.share-spinner {
+    width: 32px;
+    height: 32px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: share-spin 0.8s linear infinite;
+}
+@keyframes share-spin {
+    to { transform: rotate(360deg); }
+}
+
+.share-state-text {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-3);
+    letter-spacing: 0.5px;
+}
+
+/* 错误状态 */
+.share-error-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--err-dim);
+    border: 2px solid var(--err);
+    color: var(--err);
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.share-error-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--fg-0);
+}
+.share-error-msg {
+    font-size: 13px;
+    color: var(--fg-2);
+    max-width: 360px;
+}
+
+/* 正常内容区 */
+.share-content {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+/* 标题区：类型徽章 + 名称 */
+.share-info-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.share-type-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid var(--accent-glow);
+    padding: 3px 10px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+}
+.share-name {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--fg-0);
+    word-break: break-all;
+    margin: 0;
+}
+
+/* 元信息网格：大小 / 文件数 / 下载次数 / 有效期 */
+.share-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+}
+.share-meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 14px;
+    background: var(--bg-1);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+}
+.share-meta-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--fg-3);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+.share-meta-value {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--fg-0);
+    font-weight: 500;
+}
+
+/* 下载操作区 */
+.share-actions {
+    display: flex;
+    justify-content: center;
+    padding-top: 8px;
+}
+.share-download-btn {
+    min-width: 160px;
+    padding: 10px 24px;
+    font-size: 14px;
+}
+
+/* 提示文字 */
+.share-hint {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-3);
+    text-align: center;
+    margin: 0;
+}
+
 /* === 响应式 === */
 @media (max-width: 720px) {
     .topbar { padding: 0 16px; }

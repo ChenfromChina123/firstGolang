@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FileSync · 分享</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/style.css?v=20260706e">
+</head>
+<body>
+    <!-- 顶部品牌栏（简化版：无健康状态、无用户信息、无登出按钮） -->
+    <header class="topbar share-topbar">
+        <div class="brand">
+            <div class="brand-mark" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                    <path d="M4 14L14 4L24 14L14 24L4 14Z" stroke="currentColor" stroke-width="1.5"/>
+                    <path d="M9 14L14 9L19 14L14 19L9 14Z" fill="currentColor" opacity="0.6"/>
+                </svg>
+            </div>
+            <div class="brand-text">
+                <h1>FileSync · 分享</h1>
+                <span class="brand-sub">SHARED · FILE</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- 分享内容卡片 -->
+    <main class="share-layout">
+        <section class="panel share-panel" id="share-panel">
+            <!-- 加载中状态 -->
+            <div class="share-state" id="share-loading">
+                <div class="share-spinner" aria-hidden="true"></div>
+                <p class="share-state-text">正在加载分享内容…</p>
+            </div>
+            <!-- 错误状态（链接无效/已过期/已删除） -->
+            <div class="share-state share-error" id="share-error" hidden>
+                <div class="share-error-icon" aria-hidden="true">!</div>
+                <h2 class="share-error-title" id="share-error-title">分享不可用</h2>
+                <p class="share-error-msg" id="share-error-msg">该分享链接无效或已被删除。</p>
+            </div>
+            <!-- 正常状态：展示分享信息 + 下载按钮 -->
+            <div class="share-content" id="share-content" hidden>
+                <div class="share-info-head">
+                    <div class="share-type-badge" id="share-type-badge">文件</div>
+                    <h2 class="share-name" id="share-name">—</h2>
+                </div>
+                <div class="share-meta-grid">
+                    <div class="share-meta-item">
+                        <span class="share-meta-label">大小</span>
+                        <span class="share-meta-value" id="share-size">—</span>
+                    </div>
+                    <div class="share-meta-item" id="share-count-item" hidden>
+                        <span class="share-meta-label">文件数</span>
+                        <span class="share-meta-value" id="share-count">—</span>
+                    </div>
+                    <div class="share-meta-item">
+                        <span class="share-meta-label">下载次数</span>
+                        <span class="share-meta-value" id="share-downloads">0</span>
+                    </div>
+                    <div class="share-meta-item" id="share-expiry-item">
+                        <span class="share-meta-label">有效期至</span>
+                        <span class="share-meta-value" id="share-expiry">永久</span>
+                    </div>
+                </div>
+                <div class="share-actions">
+                    <button class="primary-btn share-download-btn" id="share-download-btn" type="button">下载</button>
+                </div>
+                <p class="share-hint">同一访客重复下载不会增加下载次数。</p>
+            </div>
+        </section>
+    </main>
+
+    <script src="/web/share.js?v=20260706e"></script>
+</body>
+</html>
