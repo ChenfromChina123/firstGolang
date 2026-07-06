@@ -14,6 +14,7 @@
 - **忘记密码**：邮箱 6 位验证码重置密码，10 分钟有效
 - **跨浏览器配置同步**：分片大小与并发数存储在服务器端，换浏览器/换设备后自动加载（同时写入 localStorage 即时响应）
 - **分享链接功能**：将文件或目录生成分享链接，访客无需登录即可查看和下载，支持有效期设置和下载次数去重统计（visitor cookie + UNIQUE 约束）
+- **文件所有权隔离**：files 表记录 owner 字段，用户只能下载/删除/重命名/移动/分享自己的文件；admin 可操作所有文件；历史文件 owner 为空时仅 admin 可访问；分享链接公开访问按创建者过滤防止越权下载
 
 ## 项目结构
 
@@ -916,10 +917,14 @@ CREATE TABLE files (
     chunk_size INTEGER NOT NULL,
     total_chunks INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'completed',
+    owner TEXT NOT NULL DEFAULT '',  -- 文件归属用户名（空=历史数据/公共，仅 admin 可操作）
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE INDEX idx_files_owner ON files(owner);
 ```
+
+> **owner 字段说明**：上传时记录发起者用户名（`auth.UsernameFromContext`）。admin 可操作所有文件；普通用户仅能操作 `owner = 自己用户名` 的文件；历史文件 `owner = ''` 仅 admin 可访问。分享链接公开下载时按 `shares.created_by` 过滤，防止同 prefix 下跨用户文件泄露。
 
 #### 数据模型关系
 
