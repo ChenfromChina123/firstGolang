@@ -280,6 +280,11 @@ func (s *LocalStorage) CopyFile(srcPath, dstPath string) error {
 	return nil
 }
 
+// StoragePathFor 返回 Local 存储的完整绝对路径：basePath + ShardPath(fileID, filename)。
+func (s *LocalStorage) StoragePathFor(fileID, filename string) string {
+	return filepath.Join(s.basePath, ShardPath(fileID, filename))
+}
+
 // ComputeFileHash returns the SHA256 hex of a file
 // Deprecated: Use Storage.HashFile() method instead
 func ComputeFileHash(path string) (string, error) {

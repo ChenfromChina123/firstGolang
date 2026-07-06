@@ -240,3 +240,9 @@ func (s *S3Storage) CopyFile(srcPath, dstPath string) error {
 	}
 	return nil
 }
+
+// StoragePathFor 返回 S3 存储的对象键：ShardPath(fileID, filename)。
+// S3 的 storage_path 是相对 bucket 的对象键，无需拼接 basePath。
+func (s *S3Storage) StoragePathFor(fileID, filename string) string {
+	return ShardPath(fileID, filename)
+}

@@ -32,6 +32,10 @@ type Storage interface {
 	// srcPath 为源文件的 storage_path，dstPath 为目标 storage 键。
 	// 实现应保证原子性：失败时不留下部分文件。
 	CopyFile(srcPath, dstPath string) error
+	// StoragePathFor 根据 fileID 和 filename 构造完整的 storage_path。
+	// Local 实现返回 basePath + ShardPath 的绝对路径；S3 实现返回相对对象键。
+	// 用于转存功能生成新文件的 storage_path。
+	StoragePathFor(fileID, filename string) string
 }
 
 // AsyncStorager is an optional interface for backends that support async writes.
