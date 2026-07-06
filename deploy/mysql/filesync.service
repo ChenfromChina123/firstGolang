@@ -8,19 +8,25 @@ Type=simple
 User=root
 WorkingDirectory=/opt/filesync
 ExecStart=/opt/filesync/server
+Environment=DOMAIN=aistudy.icu
 Environment=PORT=8888
 Environment=DATA_DIR=/opt/filesync/data
 Environment=STORAGE_TYPE=local
+Environment=WEB_DIR=/opt/filesync/web
+Environment=CERT_DIR=/opt/filesync/certs
 Environment=MYSQL_DSN=filesync:***REMOVED_DB_PASSWORD***@tcp(127.0.0.1:13306)/filesync?parseTime=true&loc=Local&charset=utf8mb4
 Environment=REDIS_SENTINEL_ADDRS=127.0.0.1:36379,127.0.0.1:36380,127.0.0.1:36381
 Environment=REDIS_SENTINEL_MASTER=mymaster
 Environment=REDIS_PASSWORD=redis123
 Environment=REDIS_DB=0
+Environment=JWT_SECRET=***REMOVED_JWT_SECRET***
+Environment=FILESYNC_INITIAL_USERNAME=admin
+Environment=FILESYNC_INITIAL_PASSWORD=***REMOVED_PASSWORD***
 Environment=SMTP_HOST=smtp.qiye.aliyun.com
 Environment=SMTP_PORT=465
 Environment=SMTP_USER=px-ai@aistudy.icu
 Environment=SMTP_PASS=C2OzrpugzVCEMN6F
-Environment=SMTP_FROM=FileSync <px-ai@aistudy.icu>
+Environment="SMTP_FROM=FileSync <px-ai@aistudy.icu>"
 Environment=APP_BASE_URL=https://aistudy.icu
 Restart=on-failure
 RestartSec=5
