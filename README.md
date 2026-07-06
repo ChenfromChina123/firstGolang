@@ -315,6 +315,7 @@ curl -o docs.zip "http://localhost:8080/api/download/dir?prefix=docs/"
 - 禁止 `..` 路径段（如 `../secret.txt`）
 - 禁止反斜杠 `\`
 - 长度限制 1-1024 字节
+- 禁止空文件（file_size <= 0）：前端选择时拦截并提示"文件为空，已跳过"；后端返回 400 `file_size must be greater than 0`
 
 ### 认证与账号
 

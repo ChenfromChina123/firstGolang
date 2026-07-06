@@ -120,18 +120,26 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 
 	var req model.InitUploadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[Upload] init 400 invalid request: err=%v", err)
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	if req.Filename == "" || req.FileSize <= 0 {
-		http.Error(w, "filename and file_size are required", http.StatusBadRequest)
+	if req.Filename == "" {
+		log.Printf("[Upload] init 400: filename empty, file_size=%d", req.FileSize)
+		http.Error(w, "filename is required", http.StatusBadRequest)
+		return
+	}
+	if req.FileSize <= 0 {
+		log.Printf("[Upload] init 400: file_size<=0, filename=%q, file_size=%d", req.Filename, req.FileSize)
+		http.Error(w, "file_size must be greater than 0 (empty file not allowed)", http.StatusBadRequest)
 		return
 	}
 
 	// 文件名路径校验（路径枚举方案：允许 / 作为虚拟目录分隔符，但禁止危险路径）
 	// 参考 S3/OSS 命名规范：不允许开头 /、连续 //、.. 路径段、反斜杠
 	if err := validateFilePath(req.Filename); err != nil {
+		log.Printf("[Upload] init 400 invalid path: filename=%q, err=%v", req.Filename, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

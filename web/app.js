@@ -214,6 +214,10 @@
 
         /** 初始化上传 session，处理冲突 */
         async init() {
+            // 兜底校验：即使文件选择校验被绕过，也阻止空文件发起请求
+            if (this.file.size <= 0) {
+                throw new Error(`文件 "${this.file.name}" 为空，无法上传`);
+            }
             const fileHash = await calcFileHash(this.file);
             // force/rename 通过 query 参数传递（后端 fastQueryParam 解析）
             let url = API.init;
@@ -249,7 +253,8 @@
                 throw new Error('服务端限流，请稍后重试');
             }
             if (!res.ok) {
-                throw new Error(`init 失败: HTTP ${res.status}`);
+                const errText = await res.text().catch(() => '');
+                throw new Error(`init 失败: HTTP ${res.status} - ${errText || '未知错误'}`);
             }
             const data = await res.json();
             this.sessionId = data.session_id;
@@ -1197,6 +1202,14 @@
         // 先创建所有任务的 DOM（让用户看到排队状态），再控制并发启动
         const tasks = [];
         for (const file of files) {
+            // 空文件不支持上传：跳过并在队列中显示提示，避免发起无效请求触发 400
+            if (file.size <= 0) {
+                const skipped = document.createElement('div');
+                skipped.className = 'task';
+                skipped.innerHTML = `<div class="task-info"><span class="task-name">${escapeHtml(file.name)}</span><span class="task-status" style="color:var(--warn)">文件为空，已跳过</span></div>`;
+                list.appendChild(skipped);
+                continue;
+            }
             const task = new UploadTask(file, { chunkSize, concurrency, targetDir });
             const dom = task.createDom();
             list.appendChild(dom);
