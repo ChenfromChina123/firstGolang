@@ -192,9 +192,10 @@ func main() {
 
 	// 登录速率限制器：5次/分钟/IP（rps=5/60≈0.083, burst=5）
 	loginLimiter := auth.NewLoginRateLimiter(0.083, 5)
-	// 注册/重发激活/忘记密码速率限制器：3次/小时/IP（rps=3/3600≈0.00083, burst=3）
-	registerLimiter := auth.NewLoginRateLimiter(0.00083, 3)
-	forgotLimiter := auth.NewLoginRateLimiter(0.00083, 3)
+	// 注册/重发激活/忘记密码速率限制器：5次突发，每2分钟恢复1次（rps=0.0083, burst=5）
+	// 1小时可恢复约30次，对正常用户友好，对自动化攻击仍有阻拦
+	registerLimiter := auth.NewLoginRateLimiter(0.0083, 5)
+	forgotLimiter := auth.NewLoginRateLimiter(0.0083, 5)
 
 	authHandler := handler.NewAuthHandler(db, jwtManager, mailer, appBaseURL)
 
