@@ -1271,11 +1271,13 @@
 
         const submit = async () => {
             const targetDir = targetPath;
+            // 根目录前缀为空字符串（validateFilePath 禁止以 / 开头）
+            const prefix = targetDir === '/' ? '' : targetDir;
             let success = 0, fail = 0;
             for (const it of items) {
                 try {
                     if (it.type === 'file') {
-                        const newFilename = targetDir + it.name;
+                        const newFilename = prefix + it.name;
                         const res = await apiFetch(API.filesRename, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -1283,7 +1285,7 @@
                         });
                         if (res.ok) success++; else fail++;
                     } else if (it.type === 'dir') {
-                        const newPrefix = targetDir + it.name + '/';
+                        const newPrefix = prefix + it.name + '/';
                         const res = await apiFetch(API.filesMoveDir, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
