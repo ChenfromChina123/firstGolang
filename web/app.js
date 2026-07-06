@@ -689,7 +689,7 @@
             items.push(`
                 <div class="tree-row dir" data-type="dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" tabindex="0">
                     <svg class="tree-icon"><use href="#icon-folder"></use></svg>
-                    <span class="tree-name">${escapeHtml(name)}/</span>
+                    <span class="tree-name">${escapeHtml(name)}</span>
                     <span class="tree-meta">${count} 个文件</span>
                     <span class="tree-meta"></span>
                     <span class="tree-meta"></span>
@@ -1242,7 +1242,7 @@
                     const { dirs } = buildChildren(files, apiPrefix);
                     dirEntries = Array.from(dirs.entries());
                 }
-                let html = `<div class="batch-move-path">当前目录：<strong>${path === '/' ? '根目录' : escapeHtml(path)}</strong></div>`;
+                let html = `<div class="batch-move-path">当前目录：<strong>${path === '/' ? '根目录' : escapeHtml(path.replace(/\/$/, ''))}</strong></div>`;
                 if (path !== '/' && path !== '') {
                     const parts = path.replace(/\/$/, '').split('/');
                     parts.pop();
@@ -1255,7 +1255,7 @@
                     for (const [name, count] of dirEntries) {
                         // 根目录时不加前导 /（与 loadFiles 路径规范一致）
                         const childPath = (path === '/' ? '' : path) + name + '/';
-                        html += `<button type="button" class="batch-move-item" data-path="${escapeHtml(childPath)}">📁 ${escapeHtml(name)}/（${count} 个文件）</button>`;
+                        html += `<button type="button" class="batch-move-item" data-path="${escapeHtml(childPath)}">📁 ${escapeHtml(name)}（${count} 个文件）</button>`;
                     }
                 }
                 selector.innerHTML = html;
