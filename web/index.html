@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260706c">
+    <link rel="stylesheet" href="/web/style.css?v=20260706e">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -88,6 +88,7 @@
                 <h2><span class="idx">02</span> 文件库</h2>
                 <div class="files-head-ops">
                     <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
+                    <button class="ghost-btn" id="share-manage-btn">分享管理</button>
                     <button class="ghost-btn" id="refresh-files">刷新</button>
                     <span class="batch-ops" id="batch-ops" hidden>
                         <span class="batch-count" id="batch-count">已选 0 项</span>
@@ -205,9 +206,57 @@
         </div>
     </div>
 
+    <!-- 分享创建对话框 -->
+    <div class="modal" id="share-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>创建分享</h3>
+                <span class="modal-tag" id="share-name">—</span>
+            </div>
+            <p class="modal-desc">选择分享有效期，生成后可复制链接分享给他人。</p>
+            <div class="modal-input-wrap">
+                <label class="share-expiry-label">
+                    有效期
+                    <select id="share-expiry">
+                        <option value="0">永久</option>
+                        <option value="604800">7 天</option>
+                        <option value="2592000">30 天</option>
+                    </select>
+                </label>
+            </div>
+            <div class="share-result" id="share-result" hidden>
+                <div class="share-link-wrap">
+                    <input type="text" id="share-link" class="modal-input" readonly placeholder="分享链接将显示在这里">
+                    <button class="primary-btn" id="share-copy-btn">复制</button>
+                </div>
+                <p class="share-hint">访客无需登录即可查看和下载，同一访客重复下载不增加计数。</p>
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="share-close-btn">关闭</button>
+                <button class="primary-btn" id="share-create-btn">创建分享</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分享管理对话框 -->
+    <div class="modal" id="share-manage-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card share-manage-card">
+            <div class="modal-head">
+                <h3>分享管理</h3>
+            </div>
+            <p class="modal-desc">管理已创建的分享链接，可复制链接或删除。</p>
+            <div class="share-manage-list" id="share-manage-list"></div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="share-manage-close-btn">关闭</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast 提示 -->
     <div class="toast-wrap" id="toast-wrap"></div>
 
-    <script src="/web/app.js?v=20260706d"></script>
+    <script src="/web/app.js?v=20260706e"></script>
 </body>
 </html>

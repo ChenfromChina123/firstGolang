@@ -551,6 +551,7 @@
                     <span class="tree-meta"></span>
                     <span class="tree-ops">
                         <button class="op-btn" data-action="zip" data-prefix="${escapeHtml(dirPrefix)}" title="打包下载 ZIP">ZIP</button>
+                        <button class="op-btn" data-action="share-dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="分享目录">分享</button>
                         <button class="op-btn" data-action="move-dir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="移动目录">移动</button>
                         <button class="op-btn danger" data-action="rmdir" data-prefix="${escapeHtml(dirPrefix)}" data-name="${escapeHtml(name)}" title="删除目录">删除</button>
                     </span>
@@ -567,6 +568,7 @@
                     <span class="tree-meta"><span class="fstore">${escapeHtml(f.storage_type || 'local')}</span></span>
                     <span class="tree-ops">
                         <a class="op-btn" href="${API.download}/${f.id}" download="${escapeHtml(f.filename)}" title="下载文件">下载</a>
+                        <button class="op-btn" data-action="share-file" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(f.filename)}" title="分享文件">分享</button>
                         <button class="op-btn" data-action="rename" data-id="${escapeHtml(f.id)}" data-filename="${escapeHtml(f.filename)}" title="重命名/移动">重命名</button>
                         <button class="op-btn danger" data-action="rmfile" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(f.filename.split('/').pop())}" title="删除文件">删除</button>
                     </span>
@@ -605,6 +607,10 @@
                     confirmDeleteFile(btn.dataset.id, btn.dataset.name);
                 } else if (action === 'rename') {
                     openRenameDialog(btn.dataset.id, btn.dataset.filename);
+                } else if (action === 'share-dir') {
+                    openShareDialog(null, btn.dataset.prefix, btn.dataset.name || '目录', 'dir');
+                } else if (action === 'share-file') {
+                    openShareDialog(btn.dataset.id, null, btn.dataset.name || '文件', 'file');
                 }
             });
         });
@@ -614,6 +620,150 @@
             cb.addEventListener('change', updateBatchOps);
             cb.addEventListener('click', e => e.stopPropagation()); // 防止点击 checkbox 触发目录进入
         });
+    }
+
+    // === 分享功能 ===
+
+    /** 打开分享对话框
+     * @param {string|null} fileId - 文件 ID（文件分享时非空）
+     * @param {string|null} dirPrefix - 目录前缀（目录分享时非空）
+     * @param {string} displayName - 显示名称
+     * @param {string} shareType - "file" | "dir"
+     */
+    function openShareDialog(fileId, dirPrefix, displayName, shareType) {
+        const modal = document.getElementById('share-modal');
+        const nameEl = document.getElementById('share-name');
+        const expirySelect = document.getElementById('share-expiry');
+        const createBtn = document.getElementById('share-create-btn');
+        const resultEl = document.getElementById('share-result');
+        const linkInput = document.getElementById('share-link');
+        const copyBtn = document.getElementById('share-copy-btn');
+
+        nameEl.textContent = displayName;
+        expirySelect.value = '0'; // 默认永久
+        resultEl.hidden = true;
+        linkInput.value = '';
+        modal.hidden = false;
+
+        // 创建分享按钮
+        const onCreate = async () => {
+            const expiresIn = parseInt(expirySelect.value, 10);
+            const body = { share_type: shareType, expires_in: expiresIn };
+            if (shareType === 'file') body.file_id = fileId;
+            else body.dir_prefix = dirPrefix;
+
+            createBtn.disabled = true;
+            createBtn.textContent = '创建中...';
+            try {
+                const res = await apiFetch(API.share, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.message || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                const fullURL = window.location.origin + data.url;
+                linkInput.value = fullURL;
+                resultEl.hidden = false;
+                toast('分享链接已创建', 'ok');
+            } catch (e) {
+                toast('创建分享失败: ' + e.message, 'err');
+            } finally {
+                createBtn.disabled = false;
+                createBtn.textContent = '创建分享';
+            }
+        };
+
+        // 复制链接按钮
+        const onCopy = () => {
+            if (!linkInput.value) return;
+            linkInput.select();
+            document.execCommand('copy');
+            toast('链接已复制到剪贴板', 'ok');
+        };
+
+        // 清理旧事件监听器（避免重复绑定）
+        const newCreateBtn = createBtn.cloneNode(true);
+        createBtn.parentNode.replaceChild(newCreateBtn, createBtn);
+        newCreateBtn.addEventListener('click', onCreate);
+
+        const newCopyBtn = copyBtn.cloneNode(true);
+        copyBtn.parentNode.replaceChild(newCopyBtn, copyBtn);
+        newCopyBtn.addEventListener('click', onCopy);
+    }
+
+    /** 打开分享管理对话框：列出当前用户的所有分享 */
+    async function openShareManageDialog() {
+        const modal = document.getElementById('share-manage-modal');
+        const listEl = document.getElementById('share-manage-list');
+        modal.hidden = false;
+        listEl.innerHTML = '<div class="loading">加载中...</div>';
+
+        try {
+            const res = await apiFetch(API.share);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const shares = await res.json();
+            if (!shares || shares.length === 0) {
+                listEl.innerHTML = '<div class="empty">暂无分享</div>';
+                return;
+            }
+            listEl.innerHTML = shares.map(s => {
+                const created = new Date(s.created_at * 1000).toLocaleString('zh-CN');
+                const expiry = s.expires_at ? new Date(s.expires_at * 1000).toLocaleString('zh-CN') : '永久';
+                const status = s.is_expired ? '<span class="share-status expired">已过期</span>' :
+                              (s.is_active ? '<span class="share-status active">有效</span>' : '<span class="share-status">已禁用</span>');
+                const fullURL = window.location.origin + s.url;
+                return `
+                    <div class="share-item" data-id="${escapeHtml(s.id)}">
+                        <div class="share-item-head">
+                            <span class="share-item-name">${escapeHtml(s.name)}</span>
+                            <span class="share-item-type">${s.share_type === 'file' ? '文件' : '目录'}</span>
+                            ${status}
+                        </div>
+                        <div class="share-item-meta">
+                            <span>创建: ${created}</span>
+                            <span>过期: ${expiry}</span>
+                            <span>下载: ${s.download_count} 次</span>
+                        </div>
+                        <div class="share-item-link">
+                            <input type="text" value="${escapeHtml(fullURL)}" readonly class="share-link-input">
+                            <button class="op-btn copy-share-link" data-url="${escapeHtml(fullURL)}">复制</button>
+                            <button class="op-btn danger delete-share" data-id="${escapeHtml(s.id)}">删除</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // 绑定复制和删除按钮
+            listEl.querySelectorAll('.copy-share-link').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const url = btn.dataset.url;
+                    const input = btn.previousElementSibling;
+                    input.select();
+                    document.execCommand('copy');
+                    toast('链接已复制', 'ok');
+                });
+            });
+            listEl.querySelectorAll('.delete-share').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const id = btn.dataset.id;
+                    if (!confirm('确认删除此分享？')) return;
+                    try {
+                        const res = await apiFetch(`${API.share}/${id}`, { method: 'DELETE' });
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        toast('分享已删除', 'ok');
+                        btn.closest('.share-item').remove();
+                    } catch (e) {
+                        toast('删除失败: ' + e.message, 'err');
+                    }
+                });
+            });
+        } catch (e) {
+            listEl.innerHTML = `<div class="error">加载失败: ${escapeHtml(e.message)}</div>`;
+        }
     }
 
     // === 文件/目录操作 ===
@@ -993,6 +1143,26 @@
         const batchDeleteBtn = document.getElementById('batch-delete-btn');
         if (batchDeleteBtn) {
             batchDeleteBtn.addEventListener('click', batchDelete);
+        }
+
+        // 分享管理
+        const shareManageBtn = document.getElementById('share-manage-btn');
+        if (shareManageBtn) {
+            shareManageBtn.addEventListener('click', openShareManageDialog);
+        }
+
+        // 分享对话框关闭按钮
+        const shareCloseBtn = document.getElementById('share-close-btn');
+        if (shareCloseBtn) {
+            shareCloseBtn.addEventListener('click', () => {
+                document.getElementById('share-modal').hidden = true;
+            });
+        }
+        const shareManageCloseBtn = document.getElementById('share-manage-close-btn');
+        if (shareManageCloseBtn) {
+            shareManageCloseBtn.addEventListener('click', () => {
+                document.getElementById('share-manage-modal').hidden = true;
+            });
         }
 
         // 清除已完成
