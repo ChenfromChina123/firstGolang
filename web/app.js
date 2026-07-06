@@ -843,19 +843,16 @@
         const selShare = document.getElementById('sel-share');
         const selRename = document.getElementById('sel-rename');
         const selMove = document.getElementById('sel-move');
-        // 下载：仅当选中恰好 1 个文件时显示
-        if (selDownload) selDownload.hidden = !(n === 1 && files.length === 1);
-        // ZIP 下载：1 个目录 或 多项（混合）均可打包
-        if (selZip) selZip.hidden = !(n === 1 && dirs.length === 1) && n < 2;
-        // 实际上目录 ZIP 用单独 API，多项混合暂不支持 ZIP（后端无对应 API）
-        // 简化：仅当选中 1 个目录时显示 ZIP 下载
+        // 下载：含文件时显示（单文件直接下载，多文件批量下载）
+        if (selDownload) selDownload.hidden = files.length === 0;
+        // ZIP 下载：仅当选中 1 个目录时显示（后端无批量 ZIP API）
         if (selZip) selZip.hidden = !(n === 1 && dirs.length === 1);
         // 分享：仅当选中恰好 1 项时显示
         if (selShare) selShare.hidden = n !== 1;
         // 重命名：仅当选中恰好 1 个文件时显示
         if (selRename) selRename.hidden = !(n === 1 && files.length === 1);
-        // 移动：仅当选中恰好 1 个目录时显示
-        if (selMove) selMove.hidden = !(n === 1 && dirs.length === 1);
+        // 移动：选中 ≥1 项时显示（单目录原逻辑，多项批量移动）
+        if (selMove) selMove.hidden = n === 0;
     }
 
     /** 批量删除选中项（支持文件和目录混合）
@@ -1117,7 +1114,12 @@
                 menu.push({ label: '删除', danger: true, action: () => batchDeleteSelected() });
             }
         } else if (n > 1) {
-            // 多选：仅显示删除
+            // 多选：显示批量操作
+            if (files.length > 0) {
+                menu.push({ label: `下载 ${files.length} 个文件`, action: () => downloadSelected() });
+            }
+            menu.push({ label: `移动 ${n} 项`, action: () => moveSelected() });
+            menu.push({ separator: true });
             menu.push({ label: `删除 ${n} 项`, danger: true, action: () => batchDeleteSelected() });
         }
         return menu;
@@ -1125,13 +1127,27 @@
 
     // === 操作执行（基于当前选中项） ===
 
-    /** 下载选中的单个文件 */
+    /** 下载选中的文件（单选直接下载，多选逐个触发批量下载） */
     function downloadSelected() {
         const items = Array.from(selectedItems.values());
-        const file = items.find(it => it.type === 'file');
-        if (file) {
-            window.location.href = `${API.download}/${file.id}`;
+        const files = items.filter(it => it.type === 'file');
+        if (files.length === 0) { toast('请选择至少一个文件', 'err'); return; }
+        if (files.length === 1) {
+            window.location.href = `${API.download}/${files[0].id}`;
+            return;
         }
+        // 多文件：逐个触发下载，间隔 400ms 避免浏览器拦截
+        toast(`开始下载 ${files.length} 个文件...`, 'ok');
+        files.forEach((f, i) => {
+            setTimeout(() => {
+                const a = document.createElement('a');
+                a.href = `${API.download}/${f.id}`;
+                a.download = '';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }, i * 400);
+        });
     }
 
     /** ZIP 下载选中的单个目录 */
@@ -1164,13 +1180,88 @@
         }
     }
 
-    /** 移动选中的单个目录 */
+    /** 移动选中项（单目录用原逻辑，多项批量移动到目标目录） */
     function moveSelected() {
         const items = Array.from(selectedItems.values());
-        const dir = items.find(it => it.type === 'dir');
-        if (dir) {
-            openMoveDirDialog(dir.prefix, dir.name);
+        if (items.length === 0) return;
+        // 单选目录：用原逻辑（输入完整新路径）
+        if (items.length === 1 && items[0].type === 'dir') {
+            openMoveDirDialog(items[0].prefix, items[0].name);
+            return;
         }
+        // 多选或含文件：批量移动到目标目录
+        openBatchMoveDialog(items);
+    }
+
+    /** 批量移动多个选中项到目标目录
+     * @param {Array} items - 选中项数组，每项 {type, id?, prefix?, name, filename?} */
+    function openBatchMoveDialog(items) {
+        const modal = document.getElementById('move-dir-modal');
+        const nameEl = document.getElementById('move-dir-name');
+        const input = document.getElementById('move-dir-input');
+        const confirmBtn = document.getElementById('move-dir-confirm');
+        const cancelBtn = document.getElementById('move-dir-cancel');
+        const head = modal.querySelector('.modal-head h3');
+        const desc = modal.querySelector('.modal-desc');
+        // 保存原始文本，关闭时恢复
+        const origHead = head.textContent;
+        const origDesc = desc.textContent;
+        head.textContent = '批量移动';
+        nameEl.textContent = `已选 ${items.length} 项`;
+        desc.textContent = '输入目标目录路径（如 docs/sub/），所有选中项将移动到该目录下。末尾 / 可省略。';
+        input.value = '';
+        modal.hidden = false;
+        input.focus();
+
+        const submit = async () => {
+            let targetDir = input.value.trim().replace(/\/$/, '');
+            if (!targetDir) { toast('目标目录不能为空', 'err'); return; }
+            targetDir = targetDir + '/';
+            let success = 0, fail = 0;
+            for (const it of items) {
+                try {
+                    if (it.type === 'file') {
+                        // 文件：用 rename API 修改 filename 为目标目录下的新路径
+                        const newFilename = targetDir + it.name;
+                        const res = await apiFetch(API.filesRename, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ id: it.id, new_filename: newFilename }),
+                        });
+                        if (res.ok) success++; else fail++;
+                    } else if (it.type === 'dir') {
+                        // 目录：用 move-dir API 移动整个目录
+                        const newPrefix = targetDir + it.name + '/';
+                        const res = await apiFetch(API.filesMoveDir, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ old_prefix: it.prefix, new_prefix: newPrefix }),
+                        });
+                        if (res.ok) success++; else fail++;
+                    }
+                } catch (e) {
+                    fail++;
+                }
+            }
+            toast(`批量移动完成（成功 ${success}，失败 ${fail}）`, fail > 0 ? 'err' : 'ok');
+            cleanup();
+            loadFiles();
+        };
+        const cleanup = () => {
+            modal.hidden = true;
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+            input.onkeydown = null;
+            // 恢复原始标题和提示
+            head.textContent = origHead;
+            desc.textContent = origDesc;
+        };
+        cancelBtn.onclick = cleanup;
+        confirmBtn.onclick = submit;
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); submit(); }
+            if (e.key === 'Escape') { cleanup(); }
+        };
     }
 
 
