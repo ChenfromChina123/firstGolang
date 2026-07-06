@@ -515,7 +515,7 @@ func (h *ShareHandler) serveSharedFile(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, f.Filename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileBaseName(f.Filename)))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
 	w.WriteHeader(http.StatusOK)

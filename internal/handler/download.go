@@ -64,7 +64,7 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	rangeHeader := r.Header.Get("Range")
 	log.Printf("[DOWNLOAD] req: file=%s id=%s size=%d range=%q ua=%q", file.Filename, fileID, fileSize, rangeHeader, r.UserAgent())
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.Filename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileBaseName(file.Filename)))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Accept-Ranges", "bytes")
 
@@ -213,6 +213,17 @@ func (h *DownloadHandler) DownloadDir(w http.ResponseWriter, r *http.Request) {
 		}
 		reader.Close()
 	}
+}
+
+// fileBaseName 从虚拟路径中提取纯文件名（最后一个 / 之后的部分）。
+// 用于 Content-Disposition 的 filename 字段，避免浏览器把 "docs/sub/file.pdf"
+// 整体当作文件名，导致下载文件名带目录前缀。
+// 例：fileBaseName("docs/sub/file.pdf") → "file.pdf"
+func fileBaseName(filename string) string {
+	if idx := strings.LastIndex(filename, "/"); idx >= 0 {
+		return filename[idx+1:]
+	}
+	return filename
 }
 
 // unused import guard
