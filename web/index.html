@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260707c">
+    <link rel="stylesheet" href="/web/style.css?v=20260707d">
 </head>
 <body>
     <!-- 顶部状态栏：Logo + 服务健康状态 -->
@@ -93,6 +93,7 @@
                     <div class="default-ops" id="default-ops">
                         <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
                         <button class="ghost-btn" id="share-manage-btn">分享管理</button>
+                        <button class="ghost-btn" id="trash-btn">回收站</button>
                         <button class="ghost-btn" id="refresh-files">刷新</button>
                     </div>
                     <!-- 选择操作（选中 ≥1 项时显示，按钮按选中类型动态显示/隐藏） -->
@@ -266,6 +267,23 @@
         </div>
     </div>
 
+    <!-- 回收站对话框 -->
+    <div class="modal" id="trash-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card share-manage-card">
+            <div class="modal-head">
+                <h3>回收站</h3>
+                <span class="modal-tag" id="trash-count-tag">—</span>
+            </div>
+            <p class="modal-desc" id="trash-desc">文件删除后移入回收站，保留 30 天可恢复。过期后自动永久删除。</p>
+            <div class="share-manage-list" id="trash-list"></div>
+            <div class="modal-foot modal-foot-right">
+                <button class="danger-btn" id="trash-empty-btn">清空回收站</button>
+                <button class="ghost-btn" id="trash-close-btn">关闭</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast 提示 -->
     <div class="toast-wrap" id="toast-wrap"></div>
 
@@ -332,6 +350,6 @@
     <!-- 上下文菜单容器（右键菜单动态填充） -->
     <div class="ctx-menu" id="ctx-menu" hidden></div>
 
-    <script src="/web/app.js?v=20260707c"></script>
+    <script src="/web/app.js?v=20260707e"></script>
 </body>
 </html>
