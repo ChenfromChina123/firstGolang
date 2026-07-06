@@ -1483,6 +1483,7 @@
                         <div class="share-item-link">
                             <input type="text" value="${escapeHtml(fullURL)}" readonly class="share-link-input">
                             <button class="op-btn copy-share-link" data-url="${escapeHtml(fullURL)}">复制</button>
+                            <button class="op-btn share-pwd-btn" data-id="${escapeHtml(s.id)}" data-has-pwd="${s.has_password ? '1' : '0'}">${s.has_password ? '修改密码' : '设置密码'}</button>
                             <button class="op-btn danger delete-share" data-id="${escapeHtml(s.id)}">删除</button>
                         </div>
                     </div>
@@ -1513,9 +1514,61 @@
                     }
                 });
             });
+            listEl.querySelectorAll('.share-pwd-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const id = btn.dataset.id;
+                    const hasPwd = btn.dataset.hasPwd === '1';
+                    openSharePasswordDialog(id, hasPwd);
+                });
+            });
         } catch (e) {
             listEl.innerHTML = `<div class="error">加载失败: ${escapeHtml(e.message)}</div>`;
         }
+    }
+
+    /**
+     * 打开修改/设置分享密码对话框
+     * @param {string} id - 分享 ID
+     * @param {boolean} hasPassword - 当前是否已设置密码（true=修改，false=设置）
+     */
+    function openSharePasswordDialog(id, hasPassword) {
+        const modal = document.getElementById('share-password-modal');
+        const title = document.getElementById('share-password-title');
+        const input = document.getElementById('share-password-input');
+        const confirmBtn = document.getElementById('share-password-confirm-btn');
+        const cancelBtn = document.getElementById('share-password-cancel-btn');
+
+        title.textContent = hasPassword ? '修改访问密码' : '设置访问密码';
+        input.value = '';
+        modal.hidden = false;
+
+        // 用克隆替换清除旧事件监听，避免重复绑定
+        const newConfirm = confirmBtn.cloneNode(true);
+        confirmBtn.parentNode.replaceChild(newConfirm, confirmBtn);
+        const newCancel = cancelBtn.cloneNode(true);
+        cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
+
+        newConfirm.addEventListener('click', async () => {
+            const pwd = input.value.trim();
+            try {
+                const res = await apiFetch(`${API.share}/${id}/password`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: pwd })
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                toast(data.action === 'cleared' ? '密码已清除' : '密码已更新', 'ok');
+                modal.hidden = true;
+                openShareManageDialog();
+            } catch (e) {
+                toast('操作失败: ' + e.message, 'err');
+            }
+        });
+
+        newCancel.addEventListener('click', () => {
+            modal.hidden = true;
+        });
     }
 
     // === 回收站操作 ===

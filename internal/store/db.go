@@ -1791,6 +1791,13 @@ func (db *DB) DeleteShare(id string) error {
 	return err
 }
 
+// UpdateSharePassword 更新分享的访问密码哈希。
+// passwordHash 为空字符串时清除密码（变为无密码访问），非空时为 bcrypt 哈希。
+func (db *DB) UpdateSharePassword(shareID, passwordHash string) error {
+	_, err := db.conn.Exec(`UPDATE shares SET password_hash = ? WHERE id = ?`, passwordHash, shareID)
+	return err
+}
+
 // IncrementShareDownload 记录一次下载并增加计数。
 // 利用 UNIQUE(share_id, visitor_id) 约束实现幂等：
 //   - 新访客：INSERT 成功，RowsAffected=1，更新 shares.download_count + 1

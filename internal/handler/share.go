@@ -201,6 +201,23 @@ func (h *ShareHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /api/share/{id}/password - 修改或清除访问密码
+	if strings.HasPrefix(path, "/api/share/") && strings.HasSuffix(path, "/password") {
+		id := strings.TrimPrefix(path, "/api/share/")
+		id = strings.TrimSuffix(id, "/password")
+		id = strings.TrimSuffix(id, "/")
+		if id == "" {
+			http.Error(w, `{"error":"id_required"}`, http.StatusBadRequest)
+			return
+		}
+		if r.Method == http.MethodPost {
+			h.updateSharePassword(w, r, username, id)
+		} else {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
 	// /api/share/{id}
 	if strings.HasPrefix(path, "/api/share/") {
 		id := strings.TrimPrefix(path, "/api/share/")
@@ -499,6 +516,64 @@ func (h *ShareHandler) deleteShare(w http.ResponseWriter, r *http.Request, usern
 	log.Printf("[Share] deleted: id=%s user=%s", id, username)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"success":true}`))
+}
+
+// updateSharePasswordRequest 修改/清除分享密码请求体。
+// Password 为空字符串时清除密码，1-64 字符时设置/修改密码。
+type updateSharePasswordRequest struct {
+	Password string `json:"password"`
+}
+
+// updateSharePassword 修改或清除分享的访问密码。
+// POST /api/share/{id}/password
+// 仅分享创建者可操作；密码为空=清除密码，1-64字符=设置/修改密码。
+// 修改密码后旧 auth cookie 仍有效（7天会话），如需立即使旧会话失效需删除分享重建。
+func (h *ShareHandler) updateSharePassword(w http.ResponseWriter, r *http.Request, username, id string) {
+	s, err := h.db.GetShare(id)
+	if err != nil {
+		http.Error(w, `{"error":"share_not_found"}`, http.StatusNotFound)
+		return
+	}
+	if s.CreatedBy != username {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var req updateSharePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
+		return
+	}
+
+	var passwordHash string
+	var action string
+	if req.Password != "" {
+		if len(req.Password) > 64 {
+			http.Error(w, `{"error":"password_too_long","message":"密码长度不能超过 64 字符"}`, http.StatusBadRequest)
+			return
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			log.Printf("[Share] bcrypt password error: %v", err)
+			http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
+			return
+		}
+		passwordHash = string(hash)
+		action = "updated"
+	} else {
+		action = "cleared"
+	}
+
+	if err := h.db.UpdateSharePassword(id, passwordHash); err != nil {
+		log.Printf("[Share] update password error: id=%s err=%v", id, err)
+		http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[Share] password %s: id=%s user=%s", action, id, username)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(fmt.Sprintf(`{"success":true,"action":"%s"}`, action)))
 }
 
 // getSharePublic 返回公开分享信息（不暴露 file_id/storage_path 等敏感字段）

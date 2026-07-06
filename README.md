@@ -14,7 +14,7 @@
 - **忘记密码**：邮箱 6 位验证码重置密码，10 分钟有效
 - **跨浏览器配置同步**：分片大小与并发数存储在服务器端，换浏览器/换设备后自动加载（同时写入 localStorage 即时响应）
 - **分享链接功能**：将文件或目录生成分享链接，访客无需登录即可查看和下载，支持有效期设置和下载次数去重统计（visitor cookie + UNIQUE 约束）
-- **分享密码保护**：创建分享时可设置访问密码（1-64 字符，bcrypt 哈希存储）。有密码的分享需先通过密码验证（POST `/api/s/{id}/auth`），验证成功后设置 HMAC 签名 cookie（7 天有效，复用 JWT secret），后续下载/浏览请求需携带 cookie。未认证时不返回下载 token，防止绕过密码门直接下载。分享管理界面显示密码标识。
+- **分享密码保护**：创建分享时可设置访问密码（1-64 字符，bcrypt 哈希存储）。有密码的分享需先通过密码验证（POST `/api/s/{id}/auth`），验证成功后设置 HMAC 签名 cookie（7 天有效，复用 JWT secret），后续下载/浏览请求需携带 cookie。未认证时不返回下载 token，防止绕过密码门直接下载。分享管理界面支持修改/清除密码（POST `/api/share/{id}/password`），显示密码标识。
 - **文件所有权隔离**：files 表记录 owner 字段，用户只能下载/删除/重命名/移动/分享自己的文件；admin 可操作所有文件；历史文件 owner 为空时仅 admin 可访问；分享链接公开访问按创建者过滤防止越权下载
 - **深度防盗链**：4 层防护保障资源不被盗链：①安全响应头（X-Frame-Options/CSP 防 iframe 嵌入）；②Referer 校验（只允许空 Referer 或白名单域名）；③签名 Token（分享下载需携带 HMAC-SHA256 token，30 分钟有效，绑定 share_id）；④频率限制（分享下载每 IP 每分钟 10 次）
 - **秒传功能**：上传前通过 Web Worker 在后台线程计算完整文件 SHA256，调用 `/api/upload/check` 接口检查哈希是否已存在。命中时后端 CopyFile 复制存储文件并创建新记录，整个上传流程被跳过，实现"秒级"上传。仅同 owner 范围内秒传（防哈希侧信道探测），hash+size 双重校验避免误判。秒传检查失败自动降级为正常上传（非致命）。
@@ -136,7 +136,7 @@ filesync 内置一个纯 HTML+CSS+JS 的 Web 控制台（无框架依赖，轻�
 - **账号注册**：邮箱+密码+确认密码，注册后发送激活邮件，点击激活链接激活账号
 - **忘记密码**：输入邮箱发送 6 位验证码，凭验证码重置新密码
 - **配置同步**：分片大小与并发数持久化到服务器，换浏览器自动加载（localStorage 即时响应 + 服务器后台同步）
-- **分享链接**：文件/目录可生成分享链接（永久/7天/30天有效期），访客无需登录即可查看和下载，下载次数去重统计。创建时可设置访问密码，有密码的分享访客需先输入密码验证通过后才能查看和下载（密码门 UI + HMAC 签名 cookie 7 天会话）。分享管理界面显示密码标识。
+- **分享链接**：文件/目录可生成分享链接（永久/7天/30天有效期），访客无需登录即可查看和下载，下载次数去重统计。创建时可设置访问密码，有密码的分享访客需先输入密码验证通过后才能查看和下载（密码门 UI + HMAC 签名 cookie 7 天会话）。分享管理界面支持修改/清除密码，显示密码标识。
 - **秒传功能**：上传前 Web Worker 在后台计算完整文件 SHA256，调用 `/api/upload/check` 检查是否已存在相同哈希。命中则跳过整个上传流程，秒级完成；未命中或计算失败自动降级为正常上传
 - **回收站**：文件删除后移入回收站（软删除），30 天内可恢复。回收站对话框支持列出文件、恢复（含冲突检测）、永久删除、清空操作。删除提示文字明确告知"移入回收站，30 天内可恢复"
 
@@ -451,6 +451,7 @@ curl -X POST https://aistudy.icu/api/reset-password \
 | `POST` | `/api/share` | 创建分享（文件或目录，可设置访问密码） | 需认证 |
 | `GET` | `/api/share` | 列出当前用户创建的所有分享（含 has_password 字段） | 需认证 |
 | `DELETE` | `/api/share/{id}` | 删除分享 | 需认证 |
+| `POST` | `/api/share/{id}/password` | 修改/清除访问密码（空密码=清除，1-64字符=设置/修改） | 需认证 |
 | `GET` | `/api/s/{id}` | 获取分享公开信息（访客访问，有密码时不含 download_token） | 公开 |
 | `POST` | `/api/s/{id}/auth` | 验证分享访问密码（验证成功设置 7 天 cookie） | 公开 |
 | `GET` | `/api/s/{id}/download` | 下载分享的文件或目录（目录打包为 ZIP，有密码需先认证） | 公开 |
@@ -481,6 +482,25 @@ curl -X POST http://localhost:8080/api/s/xyz789/auth \
 # 响应 401: {"error":"wrong_password","message":"密码错误"}
 # 响应 400: {"error":"no_password","message":"此分享无需密码"}
 # 验证成功后访问 /api/s/{id} 会返回 download_token，可正常下载
+```
+
+**修改/清除分享密码：**
+```bash
+# POST /api/share/{id}/password（需认证，仅创建者可操作）
+# 修改密码
+curl -X POST http://localhost:8080/api/share/xyz789/password \
+  -H "Content-Type: application/json" \
+  -b "token=..." \
+  -d '{"password":"newsecret456"}'
+# 响应 200: {"success":true,"action":"updated"}
+
+# 清除密码（变为无密码访问）
+curl -X POST http://localhost:8080/api/share/xyz789/password \
+  -H "Content-Type: application/json" \
+  -b "token=..." \
+  -d '{"password":""}'
+# 响应 200: {"success":true,"action":"cleared"}
+# 注意：修改密码后旧 auth cookie 仍有效（7天会话），如需立即使旧会话失效需删除分享重建
 ```
 
 **访客访问分享页面：**
