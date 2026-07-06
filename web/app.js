@@ -1282,8 +1282,21 @@
         body.innerHTML = `<iframe src="${meta.urls.original}"></iframe>`;
     }
 
-    /** 渲染文本/代码预览：fetch 内容 + prism.js 语法高亮 */
+    /** 渲染文本/代码预览：按扩展名分发（Markdown/JSON/CSV 友好渲染，其他 prism 高亮） */
     function renderText(meta) {
+        const ext = meta.filename.split('.').pop().toLowerCase();
+
+        // 友好渲染：Markdown/JSON/CSV
+        if (ext === 'md') return renderMarkdown(meta);
+        if (ext === 'json') return renderJson(meta);
+        if (ext === 'csv') return renderCsv(meta);
+
+        // 默认：prism 语法高亮
+        renderCode(meta);
+    }
+
+    /** 渲染 Markdown：marked.js 转 HTML，加载失败降级为 prism 高亮 */
+    function renderMarkdown(meta) {
         const body = document.getElementById('preview-body');
         body.innerHTML = '<div class="preview-loading">加载内容…</div>';
 
@@ -1293,7 +1306,44 @@
                 return res.text();
             })
             .then(text => {
-                // 限制预览大小（避免大文件卡死浏览器）
+                const MAX = 2 * 1024 * 1024; // Markdown 允许 2MB
+                let truncated = false;
+                if (text.length > MAX) {
+                    text = text.slice(0, MAX);
+                    truncated = true;
+                }
+
+                if (window.marked) {
+                    const html = marked.parse(text);
+                    body.innerHTML = `<div class="markdown-body">${html}</div>`;
+                } else {
+                    // marked.js 加载失败，降级为 prism 高亮
+                    loadPrismLang('markdown', () => {
+                        body.innerHTML = `<pre><code class="language-markdown">${escapeHtml(text)}</code></pre>`;
+                        if (window.Prism) Prism.highlightAllUnder(body);
+                    });
+                }
+
+                if (truncated) {
+                    body.innerHTML += '<div class="preview-empty">（文件过大，仅显示前 2MB 内容）</div>';
+                }
+            })
+            .catch(e => {
+                body.innerHTML = `<div class="preview-empty" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</div>`;
+            });
+    }
+
+    /** 渲染 JSON：JSON.parse 格式化缩进 + prism 高亮，解析失败降级为普通文本 */
+    function renderJson(meta) {
+        const body = document.getElementById('preview-body');
+        body.innerHTML = '<div class="preview-loading">加载内容…</div>';
+
+        fetch(meta.urls.original)
+            .then(res => {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.text();
+            })
+            .then(text => {
                 const MAX = 1024 * 1024; // 1MB
                 let truncated = false;
                 if (text.length > MAX) {
@@ -1301,18 +1351,145 @@
                     truncated = true;
                 }
 
-                // 根据扩展名确定 prism 语言类
+                try {
+                    const obj = JSON.parse(text);
+                    const formatted = JSON.stringify(obj, null, 2);
+                    loadPrismLang('json', () => {
+                        body.innerHTML = `<pre><code class="language-json">${escapeHtml(formatted)}</code></pre>`;
+                        if (window.Prism) Prism.highlightAllUnder(body);
+                    });
+                } catch (e) {
+                    // JSON 解析失败，降级为普通文本
+                    body.innerHTML = `<pre><code class="language-none">${escapeHtml(text)}</code></pre>`;
+                }
+
+                if (truncated) {
+                    body.innerHTML += '<div class="preview-empty">（文件过大，仅显示前 1MB 内容）</div>';
+                }
+            })
+            .catch(e => {
+                body.innerHTML = `<div class="preview-empty" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</div>`;
+            });
+    }
+
+    /** 渲染 CSV：解析为 HTML 表格（首行作为表头 th，最多渲染 1000 行） */
+    function renderCsv(meta) {
+        const body = document.getElementById('preview-body');
+        body.innerHTML = '<div class="preview-loading">加载内容…</div>';
+
+        fetch(meta.urls.original)
+            .then(res => {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.text();
+            })
+            .then(text => {
+                const MAX = 1024 * 1024; // 1MB
+                let truncated = false;
+                if (text.length > MAX) {
+                    text = text.slice(0, MAX);
+                    truncated = true;
+                }
+
+                const rows = parseCsv(text);
+                const MAX_ROWS = 1000; // 最多渲染 1000 行
+                const displayRows = rows.slice(0, MAX_ROWS);
+
+                let html = '<div class="csv-table-wrap"><table class="csv-table"><tbody>';
+                displayRows.forEach((row, idx) => {
+                    html += '<tr>';
+                    row.forEach(cell => {
+                        const tag = idx === 0 ? 'th' : 'td';
+                        html += `<${tag}>${escapeHtml(cell)}</${tag}>`;
+                    });
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+
+                if (truncated || rows.length > MAX_ROWS) {
+                    html += `<div class="preview-empty">（文件过大，仅显示前 ${displayRows.length} 行）</div>`;
+                }
+
+                body.innerHTML = html;
+            })
+            .catch(e => {
+                body.innerHTML = `<div class="preview-empty" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</div>`;
+            });
+    }
+
+    /** 简单 CSV 解析（支持逗号分隔、双引号包裹、换行） */
+    function parseCsv(text) {
+        const rows = [];
+        let row = [];
+        let cell = '';
+        let inQuotes = false;
+
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            const next = text[i + 1];
+
+            if (inQuotes) {
+                if (ch === '"' && next === '"') {
+                    cell += '"';
+                    i++; // 跳过下一个 "
+                } else if (ch === '"') {
+                    inQuotes = false;
+                } else {
+                    cell += ch;
+                }
+            } else {
+                if (ch === '"') {
+                    inQuotes = true;
+                } else if (ch === ',') {
+                    row.push(cell);
+                    cell = '';
+                } else if (ch === '\n') {
+                    row.push(cell);
+                    rows.push(row);
+                    row = [];
+                    cell = '';
+                } else if (ch === '\r') {
+                    // 跳过 \r（Windows 换行符 \r\n）
+                } else {
+                    cell += ch;
+                }
+            }
+        }
+        // 最后一行（文件末尾无换行）
+        if (cell !== '' || row.length > 0) {
+            row.push(cell);
+            rows.push(row);
+        }
+        return rows;
+    }
+
+    /** 渲染代码：prism 语法高亮（原 renderText 逻辑） */
+    function renderCode(meta) {
+        const body = document.getElementById('preview-body');
+        body.innerHTML = '<div class="preview-loading">加载内容…</div>';
+
+        fetch(meta.urls.original)
+            .then(res => {
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                return res.text();
+            })
+            .then(text => {
+                const MAX = 1024 * 1024; // 1MB
+                let truncated = false;
+                if (text.length > MAX) {
+                    text = text.slice(0, MAX);
+                    truncated = true;
+                }
+
                 const ext = meta.filename.split('.').pop().toLowerCase();
                 const langMap = {
                     js: 'javascript', ts: 'typescript', go: 'go', py: 'python',
                     java: 'java', c: 'c', cpp: 'cpp', rs: 'rust', rb: 'ruby',
                     php: 'php', sh: 'bash', sql: 'sql', html: 'markup', htm: 'markup',
-                    css: 'css', json: 'json', xml: 'markup', yml: 'yaml', yaml: 'yaml',
-                    md: 'markdown', txt: 'none', log: 'none', csv: 'none'
+                    css: 'css', xml: 'markup', yml: 'yaml', yaml: 'yaml',
+                    log: 'none', txt: 'none'
                 };
                 const lang = langMap[ext] || 'none';
 
-                // 动态加载语言包（核心已含 markup/css/clike/javascript）
                 loadPrismLang(lang, () => {
                     body.innerHTML = `<pre><code class="language-${lang}">${escapeHtml(text)}</code></pre>`;
                     if (truncated) {
@@ -1360,10 +1537,11 @@
         body.innerHTML = `<audio controls src="${meta.urls.original}"></audio>`;
     }
 
-    /** 渲染视频预览：原生 HTML5 video 控件（第二阶段加 poster + plyr 增强） */
+    /** 渲染视频预览：原生 HTML5 video 控件 + 海报（原画播放，不做转码） */
     function renderVideo(meta) {
         const body = document.getElementById('preview-body');
-        body.innerHTML = `<video controls src="${meta.urls.original}"></video>`;
+        const poster = meta.urls.poster ? ` poster="${meta.urls.poster}"` : '';
+        body.innerHTML = `<video controls${poster} src="${meta.urls.original}" style="max-width:100%;max-height:85vh;background:#000"></video>`;
     }
 
     /** 下载选中的文件（单选直接下载，多选逐个触发批量下载） */

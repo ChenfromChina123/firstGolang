@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/disintegration/imaging"
@@ -81,4 +83,62 @@ func ThumbnailExists(basePath, fileID, size string) bool {
 		return true
 	}
 	return false
+}
+
+// PosterExists 检查视频海报缓存是否已存在。
+// 调用方在生成前应先调用此函数避免重复生成。
+func PosterExists(basePath, fileID string) bool {
+	if _, err := os.Stat(PosterPath(basePath, fileID)); err == nil {
+		return true
+	}
+	return false
+}
+
+// GeneratePoster 调用 ffmpeg 截取视频第一帧生成海报。
+// 输出 JPEG，宽度 800px（保持比例），质量 q:v=5（中等画质，预览画质低一点）。
+// 生成成功返回海报绝对路径。已存在缓存时调用方应先检查 PosterExists。
+//
+// 参数：
+//   - basePath: 存储根目录（LocalStorage.BasePath()）
+//   - srcPath: 源视频绝对路径
+//   - fileID: 文件 UUID（用于构造缓存文件名）
+func GeneratePoster(basePath, srcPath, fileID string) (string, error) {
+	// 检查 ffmpeg 是否可用
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return "", fmt.Errorf("ffmpeg not installed: %w", err)
+	}
+
+	// 确保缓存目录存在
+	dstDir := filepath.Join(basePath, "_posters")
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return "", fmt.Errorf("create poster dir: %w", err)
+	}
+
+	dstPath := PosterPath(basePath, fileID)
+
+	// ffmpeg 命令：
+	//   -ss 0:00:01 跳过第 1 秒（避免黑屏片头）
+	//   -i srcPath  源视频
+	//   -vframes 1  只输出一帧
+	//   -vf scale=800:-1  缩放到宽度 800，高度按比例
+	//   -q:v 5      JPEG 质量（2=最高，31=最低，5=中等画质）
+	//   -y          覆盖已存在文件
+	cmd := exec.Command("ffmpeg",
+		"-ss", "0:00:01",
+		"-i", srcPath,
+		"-vframes", "1",
+		"-vf", "scale=800:-1",
+		"-q:v", "5",
+		"-y",
+		dstPath,
+	)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ffmpeg failed: %w, stderr: %s", err, stderr.String())
+	}
+
+	return dstPath, nil
 }

@@ -85,8 +85,7 @@ func (h *PreviewHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "thumb":
 		h.serveThumb(w, r, fileID)
 	case "poster":
-		// 第二阶段实现
-		http.Error(w, `{"error":"poster not implemented yet"}`, http.StatusNotImplemented)
+		h.servePoster(w, r, fileID)
 	case "transcode":
 		// 第三阶段实现
 		http.Error(w, `{"error":"transcode not implemented yet"}`, http.StatusNotImplemented)
@@ -124,6 +123,10 @@ func (h *PreviewHandler) serveMeta(w http.ResponseWriter, r *http.Request, fileI
 		meta.URLs["thumb_small"] = base + "/thumb?size=small"
 		meta.URLs["thumb_medium"] = base + "/thumb?size=medium"
 		meta.URLs["thumb_large"] = base + "/thumb?size=large"
+	}
+	// 视频类型附加海报 URL（第二阶段：原画播放 + 海报，不做转码）
+	if ftype == "video" {
+		meta.URLs["poster"] = base + "/poster"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -181,6 +184,64 @@ func (h *PreviewHandler) serveThumb(w http.ResponseWriter, r *http.Request, file
 	if err != nil {
 		log.Printf("[PREVIEW] thumb: open cache failed id=%s err=%v", fileID, err)
 		http.Error(w, `{"error":"thumbnail open failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, `{"error":"stat failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	w.Header().Set("Cache-Control", "public, max-age=86400") // 浏览器缓存 1 天
+	w.WriteHeader(http.StatusOK)
+	io.Copy(w, f)
+}
+
+// servePoster 返回视频海报（ffmpeg 截取的第一帧）。
+// 首次请求时调用 ffmpeg 生成并落盘缓存，后续直接流式返回。
+// 用于视频预览时的 poster 属性，提升用户感知体验（避免黑屏等待）。
+func (h *PreviewHandler) servePoster(w http.ResponseWriter, r *http.Request, fileID string) {
+	file, err := h.db.GetFile(fileID)
+	if err != nil {
+		http.Error(w, `{"error":"file not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.checkPermission(w, r, file.Owner) {
+		return
+	}
+	if getFileType(file.Filename) != "video" {
+		http.Error(w, `{"error":"not a video"}`, http.StatusBadRequest)
+		return
+	}
+
+	basePath := h.storage.BasePath()
+	posterPath := storage.PosterPath(basePath, fileID)
+
+	// 缓存未命中 → 调用 ffmpeg 生成
+	if !storage.PosterExists(basePath, fileID) {
+		srcPath := file.StoragePath
+		if _, err := h.storage.FileSize(srcPath); err != nil {
+			log.Printf("[PREVIEW] poster: source not found id=%s path=%s err=%v", fileID, srcPath, err)
+			http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
+			return
+		}
+		if _, err := storage.GeneratePoster(basePath, srcPath, fileID); err != nil {
+			log.Printf("[PREVIEW] poster: generate failed id=%s err=%v", fileID, err)
+			http.Error(w, `{"error":"poster generation failed: ffmpeg not available or video invalid"}`, http.StatusInternalServerError)
+			return
+		}
+		log.Printf("[PREVIEW] poster: generated id=%s", fileID)
+	}
+
+	// 流式返回海报
+	f, err := os.Open(posterPath)
+	if err != nil {
+		log.Printf("[PREVIEW] poster: open cache failed id=%s err=%v", fileID, err)
+		http.Error(w, `{"error":"poster open failed"}`, http.StatusInternalServerError)
 		return
 	}
 	defer f.Close()

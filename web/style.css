@@ -813,6 +813,94 @@ body::after {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Markdown 渲染样式（marked.js 输出） */
+.markdown-body {
+    max-width: 100%;
+    max-height: 85vh;
+    overflow: auto;
+    padding: 24px 32px;
+    color: var(--fg-1);
+    line-height: 1.6;
+    text-align: left;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+    margin: 16px 0 8px;
+    color: var(--fg-1);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+}
+.markdown-body h1 { font-size: 1.6em; }
+.markdown-body h2 { font-size: 1.4em; }
+.markdown-body h3 { font-size: 1.2em; }
+.markdown-body p { margin: 8px 0; }
+.markdown-body ul, .markdown-body ol { margin: 8px 0; padding-left: 24px; }
+.markdown-body li { margin: 4px 0; }
+.markdown-body code {
+    background: var(--bg-2);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 0.9em;
+}
+.markdown-body pre {
+    background: var(--bg-2);
+    padding: 12px 16px;
+    border-radius: 6px;
+    overflow: auto;
+    margin: 8px 0;
+}
+.markdown-body pre code {
+    background: none;
+    padding: 0;
+}
+.markdown-body blockquote {
+    border-left: 3px solid var(--accent);
+    padding-left: 16px;
+    margin: 8px 0;
+    color: var(--fg-3);
+}
+.markdown-body table {
+    border-collapse: collapse;
+    margin: 8px 0;
+}
+.markdown-body th, .markdown-body td {
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+}
+.markdown-body a {
+    color: var(--accent);
+    text-decoration: none;
+}
+.markdown-body a:hover { text-decoration: underline; }
+
+/* CSV 表格样式 */
+.csv-table-wrap {
+    max-width: 100%;
+    max-height: 85vh;
+    overflow: auto;
+}
+.csv-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+}
+.csv-table th, .csv-table td {
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    text-align: left;
+    white-space: nowrap;
+}
+.csv-table th {
+    background: var(--bg-2);
+    color: var(--fg-1);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+.csv-table tr:nth-child(even) td {
+    background: var(--bg-1);
+}
+
 /* 危险按钮（删除等不可逆操作） */
 .danger-btn {
     background: none;
