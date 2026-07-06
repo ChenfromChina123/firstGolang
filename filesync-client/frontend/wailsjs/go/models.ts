@@ -34,3 +34,43 @@ export namespace main {
         }
     }
 }
+
+export namespace auth {
+    export class UserInfo {
+        userId!: string;
+        username!: string;
+        role!: string;
+
+        constructor(source: object = {}) {
+            if ('user_id' in source) this.userId = source['user_id'] as string;
+            if ('username' in source) this.username = source['username'] as string;
+            if ('role' in source) this.role = source['role'] as string;
+        }
+    }
+}
+
+export namespace api {
+    export class FileRecord {
+        id!: string;
+        filename!: string;
+        size!: number;
+        hash!: string;
+        storageType!: string;
+        status!: string;
+        owner!: string;
+        createdAt!: string;
+        updatedAt!: string;
+
+        constructor(source: object = {}) {
+            if ('id' in source) this.id = source['id'] as string;
+            if ('filename' in source) this.filename = source['filename'] as string;
+            if ('size' in source) this.size = source['size'] as number;
+            if ('hash' in source) this.hash = source['hash'] as string;
+            if ('storage_type' in source) this.storageType = source['storage_type'] as string;
+            if ('status' in source) this.status = source['status'] as string;
+            if ('owner' in source) this.owner = source['owner'] as string;
+            if ('created_at' in source) this.createdAt = source['created_at'] as string;
+            if ('updated_at' in source) this.updatedAt = source['updated_at'] as string;
+        }
+    }
+}

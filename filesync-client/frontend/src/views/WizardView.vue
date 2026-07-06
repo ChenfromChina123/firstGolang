@@ -26,7 +26,7 @@ import {
   FolderOpenOutline,
   CheckmarkCircleOutline,
 } from '@vicons/ionicons5'
-import { SelectDirectory, LoadConfig, SaveConfig, TestConnection } from '../../wailsjs/go/main/App'
+import { SelectDirectory, LoadConfig, SaveConfig, TestConnection, Login } from '../../wailsjs/go/main/App'
 
 const message = useMessage()
 
@@ -47,6 +47,9 @@ const testResult = ref<{ ok: boolean; msg: string } | null>(null)
 
 // 保存中状态
 const saving = ref(false)
+
+// 登录中状态
+const loggingIn = ref(false)
 
 /**
  * 测试服务器连接
@@ -91,13 +94,35 @@ async function handleSelectDir() {
 /**
  * 下一步
  */
-function next() {
+async function next() {
   if (currentStep.value === 1 && !form.serverUrl) {
     message.warning('请输入服务器地址')
     return
   }
-  if (currentStep.value === 2 && (!form.username || !form.password)) {
-    message.warning('请输入用户名和密码')
+  if (currentStep.value === 2) {
+    if (!form.username || !form.password) {
+      message.warning('请输入用户名和密码')
+      return
+    }
+    loggingIn.value = true
+    try {
+      await Login(form.username, form.password)
+      message.success('登录成功')
+      currentStep.value++
+    } catch (e) {
+      const errStr = String(e)
+      if (errStr.includes('用户名或密码错误')) {
+        message.error('用户名或密码错误')
+      } else if (errStr.includes('账号未激活')) {
+        message.error('账号未激活，请查收激活邮件后激活账号')
+      } else if (errStr.includes('无法连接服务器')) {
+        message.error('无法连接服务器，请检查服务器地址')
+      } else {
+        message.error('登录失败: ' + errStr)
+      }
+    } finally {
+      loggingIn.value = false
+    }
     return
   }
   if (currentStep.value === 3 && !form.syncDir) {
@@ -240,10 +265,11 @@ const emit = defineEmits<{ (e: 'finish'): void }>()
                 type="password"
                 show-password-on="click"
                 placeholder="请输入密码"
+                @keyup.enter="next"
               />
             </n-form-item>
             <n-text depth="3" style="font-size: 12px">
-              登录功能将在 Phase 2.2 完整实现，此处仅记录账号信息。
+              点击"下一步"将验证账号密码。密码不会保存，每次启动需重新登录。
             </n-text>
           </n-form>
         </div>
@@ -297,6 +323,7 @@ const emit = defineEmits<{ (e: 'finish'): void }>()
           <n-button
             v-if="currentStep < 4"
             type="primary"
+            :loading="loggingIn"
             @click="next"
           >
             下一步
