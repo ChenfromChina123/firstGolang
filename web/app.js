@@ -1257,6 +1257,12 @@
         const body = document.getElementById('preview-body');
         const qualitySel = document.getElementById('preview-quality');
 
+        // 重置选项为图片规格（防止视频预览污染选项）
+        qualitySel.innerHTML = `
+            <option value="small">小</option>
+            <option value="medium" selected>中</option>
+            <option value="large">大</option>
+        `;
         qualitySel.hidden = false;
         qualitySel.value = 'medium';
 
@@ -1538,11 +1544,58 @@
         body.innerHTML = `<audio controls src="${meta.urls.original}"></audio>`;
     }
 
-    /** 渲染视频预览：原生 HTML5 video 控件 + 海报（原画播放，不做转码） */
+    /**
+     * 渲染视频预览：HTML5 video 控件 + 海报 + 三档画质切换（默认中等画质）。
+     * high=原画质（1080p） / medium=720p（默认） / low=480p
+     * 切换画质时保留 currentTime/playbackRate/paused 状态，避免重新播放。
+     * @param {Object} meta - /api/preview/{id} 返回的元数据
+     */
     function renderVideo(meta) {
         const body = document.getElementById('preview-body');
+        const qualitySel = document.getElementById('preview-quality');
+
+        // 复用顶部画质选择器，替换为视频三档选项
+        qualitySel.innerHTML = `
+            <option value="high">高画质</option>
+            <option value="medium" selected>中画质</option>
+            <option value="low">低画质</option>
+        `;
+        qualitySel.hidden = false;
+        qualitySel.value = 'medium';
+
         const poster = meta.urls.poster ? ` poster="${meta.urls.poster}"` : '';
-        body.innerHTML = `<video controls${poster} src="${meta.urls.original}" style="max-width:100%;max-height:85vh;background:#000"></video>`;
+        body.innerHTML = `<video controls${poster} preload="metadata" style="max-width:100%;max-height:85vh;background:#000"></video>`;
+        const video = body.querySelector('video');
+
+        /**
+         * 加载指定画质并恢复播放状态（切换画质用）。
+         * @param {string} q - high|medium|low
+         */
+        const loadQuality = (q) => {
+            // 保存当前播放状态
+            const t = video.currentTime || 0;
+            const rate = video.playbackRate || 1;
+            const wasPaused = video.paused;
+            // 取画质 URL，缺失时 fallback 到 original
+            const url = meta.urls[`video_${q}`] || meta.urls.original;
+            video.src = url;
+            video.playbackRate = rate;
+            // 等 metadata 加载完成后再恢复进度（否则 seek 可能失效）
+            const onLoaded = () => {
+                if (t > 0 && isFinite(t)) {
+                    try { video.currentTime = t; } catch (e) { /* ignore */ }
+                }
+                if (!wasPaused) {
+                    video.play().catch(() => { /* autoplay 可能被浏览器拦截 */ });
+                }
+                video.removeEventListener('loadedmetadata', onLoaded);
+            };
+            video.addEventListener('loadedmetadata', onLoaded);
+        };
+
+        qualitySel.onchange = () => loadQuality(qualitySel.value);
+        // 首次加载默认中等画质
+        loadQuality('medium');
     }
 
     /** 渲染压缩包预览：列出包内文件树，单击文件触发提取预览或下载 */
