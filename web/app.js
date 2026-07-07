@@ -1230,7 +1230,7 @@
                 case 'text':
                 case 'code': renderText(meta); break;
                 case 'audio': renderAudio(meta); break;
-                case 'video': renderVideo(meta); break;
+                case 'video': renderVideo(meta, fileID); break;
                 case 'archive': renderArchive(meta); break;
                 default:
                     body.innerHTML = `<div class="preview-empty">暂不支持 ${escapeHtml(meta.type)} 类型预览</div>`;
@@ -1240,12 +1240,17 @@
         }
     }
 
-    /** 关闭预览 Modal 并清空内容（停止视频/音频播放） */
+    /** 关闭预览 Modal 并清空内容（停止视频/音频播放 + 清理转码轮询定时器） */
     function closePreview() {
         const modal = document.getElementById('preview-modal');
         const body = document.getElementById('preview-body');
         const qualitySel = document.getElementById('preview-quality');
         if (!modal) return;
+        // 清理视频转码轮询定时器（renderVideo 在 video 元素上挂载 _cleanupTranscode）
+        const video = body.querySelector('video');
+        if (video && video._cleanupTranscode) {
+            video._cleanupTranscode();
+        }
         modal.hidden = true;
         body.innerHTML = '';
         qualitySel.hidden = true;
@@ -1545,18 +1550,19 @@
     }
 
     /**
-     * 渲染视频预览：HTML5 video 控件 + 海报 + 三档画质切换（默认中等画质）。
-     * high=原画质（1080p） / medium=720p（默认） / low=480p
+     * 渲染视频预览：HTML5 video 控件 + 海报 + 三档画质切换（默认高画质）。
+     * high=原画质（1080p，默认，直接 fallback 到原文件流式） / medium=720p / low=480p
      * 切换画质时保留 currentTime/playbackRate/paused 状态，避免重新播放。
+     * 中/低画质首次切换时后端异步转码，前端显示进度条并轮询状态，完成后自动加载视频流。
      * @param {Object} meta - /api/preview/{id} 返回的元数据
+     * @param {string} fileID - 文件 ID（用于构造 transcode-status URL）
      */
-    function renderVideo(meta) {
+    function renderVideo(meta, fileID) {
         const body = document.getElementById('preview-body');
         const qualitySel = document.getElementById('preview-quality');
 
         // 复用顶部画质选择器，替换为视频三档选项
         // 默认高画质：直接 fallback 到原文件流式播放，无需等待 ffmpeg 转码
-        // 用户主动选中/低画质时触发转码（首次需等待，后续命中缓存）
         qualitySel.innerHTML = `
             <option value="high" selected>高画质</option>
             <option value="medium">中画质</option>
@@ -1566,23 +1572,39 @@
         qualitySel.value = 'high';
 
         const poster = meta.urls.poster ? ` poster="${meta.urls.poster}"` : '';
-        body.innerHTML = `<video controls${poster} preload="metadata" style="max-width:100%;max-height:85vh;background:#000"></video>`;
+        // video 容器使用 position:relative，进度条绝对定位居中覆盖
+        body.innerHTML = `
+            <div class="video-preview-wrap">
+                <video controls${poster} preload="metadata" style="max-width:100%;max-height:85vh;background:#000"></video>
+                <div class="transcode-progress" hidden>
+                    <div class="transcode-spinner"></div>
+                    <div class="transcode-text">转码中…</div>
+                    <div class="transcode-hint">首次切换中/低画质需要转码，请稍候</div>
+                </div>
+            </div>
+        `;
         const video = body.querySelector('video');
+        const progressEl = body.querySelector('.transcode-progress');
+
+        // 清理函数：清除轮询定时器（供 closePreview 调用）
+        const cleanup = () => {
+            if (video._transcodeTimer) {
+                clearTimeout(video._transcodeTimer);
+                video._transcodeTimer = null;
+            }
+        };
+        video._cleanupTranscode = cleanup;
 
         /**
-         * 加载指定画质并恢复播放状态（切换画质用）。
-         * @param {string} q - high|medium|low
+         * 设置 video.src 并恢复播放状态（currentTime/playbackRate/paused）。
+         * @param {string} url - 视频流 URL
          */
-        const loadQuality = (q) => {
-            // 保存当前播放状态
+        const loadVideoStream = (url) => {
             const t = video.currentTime || 0;
             const rate = video.playbackRate || 1;
             const wasPaused = video.paused;
-            // 取画质 URL，缺失时 fallback 到 original
-            const url = meta.urls[`video_${q}`] || meta.urls.original;
             video.src = url;
             video.playbackRate = rate;
-            // 等 metadata 加载完成后再恢复进度（否则 seek 可能失效）
             const onLoaded = () => {
                 if (t > 0 && isFinite(t)) {
                     try { video.currentTime = t; } catch (e) { /* ignore */ }
@@ -1593,6 +1615,73 @@
                 video.removeEventListener('loadedmetadata', onLoaded);
             };
             video.addEventListener('loadedmetadata', onLoaded);
+        };
+
+        /**
+         * 异步加载指定画质：
+         * - high：直接 fallback 到原文件流式，无需转码
+         * - medium/low：先查 transcode-status，done 直接加载；否则显示进度条 + 触发转码 + 轮询 2s
+         * @param {string} q - high|medium|low
+         */
+        const loadQuality = async (q) => {
+            // 清理上一轮轮询（切 medium→low→medium 时避免叠加定时器）
+            cleanup();
+
+            if (q === 'high') {
+                progressEl.hidden = true;
+                loadVideoStream(meta.urls.original);
+                return;
+            }
+
+            // 中/低画质：先查转码状态
+            const statusUrl = `/api/preview/${fileID}/transcode-status?quality=${q}`;
+            try {
+                const res = await fetch(statusUrl);
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+
+                if (data.status === 'done') {
+                    // 缓存命中，直接加载视频流
+                    progressEl.hidden = true;
+                    loadVideoStream(data.url || meta.urls[`video_${q}`]);
+                    return;
+                }
+
+                // 需要转码，显示进度条
+                progressEl.hidden = false;
+
+                // 若任务未启动，先触发 transcode 端点启动后台任务
+                if (data.status === 'not_started') {
+                    fetch(meta.urls[`video_${q}`]).catch(() => { /* 触发启动，忽略响应 */ });
+                }
+
+                // 启动轮询（2s 间隔）
+                const poll = async () => {
+                    try {
+                        const r = await fetch(statusUrl);
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        const d = await r.json();
+                        if (d.status === 'done') {
+                            progressEl.hidden = true;
+                            loadVideoStream(d.url || meta.urls[`video_${q}`]);
+                            return;
+                        }
+                        if (d.status === 'failed') {
+                            progressEl.hidden = true;
+                            toast('转码失败: ' + (d.error || '未知错误'), 'err');
+                            return;
+                        }
+                        // 继续轮询
+                        video._transcodeTimer = setTimeout(poll, 2000);
+                    } catch (e) {
+                        // 网络错误：继续重试
+                        video._transcodeTimer = setTimeout(poll, 2000);
+                    }
+                };
+                video._transcodeTimer = setTimeout(poll, 2000);
+            } catch (e) {
+                toast('加载画质失败: ' + e.message, 'err');
+            }
         };
 
         qualitySel.onchange = () => loadQuality(qualitySel.value);

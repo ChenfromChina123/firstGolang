@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/disintegration/imaging"
 )
@@ -286,4 +287,167 @@ func GeneratePoster(basePath, srcPath, fileID string) (string, error) {
 	}
 
 	return dstPath, nil
+}
+
+// === 异步转码任务管理 ===
+
+// TranscodeJobStatus 转码任务状态枚举。
+type TranscodeJobStatus string
+
+const (
+	TranscodeStatusPending TranscodeJobStatus = "pending"  // 已创建任务，等待 goroutine 启动
+	TranscodeStatusRunning TranscodeJobStatus = "running"  // goroutine 正在执行 ffmpeg
+	TranscodeStatusDone    TranscodeJobStatus = "done"     // 转码完成，缓存文件可用
+	TranscodeStatusFailed  TranscodeJobStatus = "failed"   // 转码失败（可能重试）
+)
+
+// transcodeJobMaxRetry 失败任务的最大重试次数，超过则不再重启。
+const transcodeJobMaxRetry = 3
+
+// TranscodeJob 描述一个异步转码任务的状态。
+// Status/Error 字段受 mu 保护，支持并发读写（goroutine 写、API 读）。
+type TranscodeJob struct {
+	FileID     string
+	Quality    string
+	Status     TranscodeJobStatus
+	Error      string
+	RetryCount int
+	Started    time.Time
+	mu         sync.RWMutex
+}
+
+// GetStatus 原子读取任务状态。
+func (j *TranscodeJob) GetStatus() TranscodeJobStatus {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.Status
+}
+
+// GetError 原子读取错误信息。
+func (j *TranscodeJob) GetError() string {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.Error
+}
+
+// setStatus 原子更新任务状态。
+func (j *TranscodeJob) setStatus(s TranscodeJobStatus) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Status = s
+}
+
+// setStatusAndError 原子更新状态与错误信息。
+func (j *TranscodeJob) setStatusAndError(s TranscodeJobStatus, e string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Status = s
+	j.Error = e
+}
+
+// transcodeJobs 全局任务表，key="fileID:quality" → *TranscodeJob。
+// 任务完成后由 time.AfterFunc 延迟清理，避免长期运行内存泄漏。
+var transcodeJobs sync.Map
+
+// StartTranscodeJob 启动异步转码任务（若已存在则返回当前状态）。
+//
+// 流程（修正 TOCTOU 竞态）：
+//  1. LoadOrStore 占位 job（status=pending）—— 并发请求必然命中此占位
+//  2. 占位后检查 TranscodeExists，命中则原子改 status=done，不启动 goroutine
+//  3. 若 job 已存在且 status=failed 且 RetryCount<3，CAS 重置为 pending 重新启动
+//  4. 若 job 已存在且 status=running/pending，直接返回当前状态
+//  5. 启动 goroutine：获取全局信号量 → 调 GenerateTranscode → 更新 status
+//  6. goroutine 结束时注册 time.AfterFunc：done 5min / failed 30min 后清理
+//
+// 返回值：当前任务状态字符串（pending/running/done/failed）
+func StartTranscodeJob(basePath, srcPath, fileID, quality string) string {
+	key := fileID + ":" + quality
+
+	// 占位 job：LoadOrStore 保证并发请求只有一个创建成功
+	placeholder := &TranscodeJob{
+		FileID:  fileID,
+		Quality: quality,
+		Status:  TranscodeStatusPending,
+		Started: time.Now(),
+	}
+	actual, loaded := transcodeJobs.LoadOrStore(key, placeholder)
+	job := actual.(*TranscodeJob)
+
+	// 已存在的 job：判断状态
+	if loaded {
+		status := job.GetStatus()
+		switch status {
+		case TranscodeStatusRunning, TranscodeStatusPending:
+			// 任务进行中，直接返回状态（前端轮询即可）
+			return string(status)
+		case TranscodeStatusDone:
+			// 二次检查磁盘缓存（可能被外部清理）
+			if TranscodeExists(basePath, fileID, quality) {
+				return string(TranscodeStatusDone)
+			}
+			// 缓存丢失，删除旧 job 重新启动（落到下面的占位逻辑）
+			transcodeJobs.Delete(key)
+			return StartTranscodeJob(basePath, srcPath, fileID, quality)
+		case TranscodeStatusFailed:
+			// 失败重试：RetryCount < 上限时重置为 pending 重新启动
+			if job.RetryCount >= transcodeJobMaxRetry {
+				return string(TranscodeStatusFailed)
+			}
+			job.RetryCount++
+			job.setStatusAndError(TranscodeStatusPending, "")
+			// 落到下面的 goroutine 启动逻辑
+		}
+	}
+
+	// 持有占位 job（新创建或失败重试），检查磁盘缓存
+	if TranscodeExists(basePath, fileID, quality) {
+		job.setStatus(TranscodeStatusDone)
+		scheduleJobCleanup(key, TranscodeStatusDone)
+		return string(TranscodeStatusDone)
+	}
+
+	// 启动后台 goroutine 执行 ffmpeg 转码
+	go func() {
+		job.setStatus(TranscodeStatusRunning)
+
+		// GenerateTranscode 内部已有单飞锁 + 全局信号量 + 失败清理，
+		// 这里不重复获取信号量（会导致死锁：信号量缓冲大小=1）
+		_, err := GenerateTranscode(basePath, srcPath, fileID, quality)
+		if err != nil {
+			job.setStatusAndError(TranscodeStatusFailed, err.Error())
+			scheduleJobCleanup(key, TranscodeStatusFailed)
+			return
+		}
+		job.setStatus(TranscodeStatusDone)
+		scheduleJobCleanup(key, TranscodeStatusDone)
+	}()
+
+	return string(TranscodeStatusPending)
+}
+
+// GetTranscodeJob 查询转码任务状态（只读）。
+// 返回 nil 时调用方应 fallback 到 TranscodeExists 检查磁盘缓存。
+func GetTranscodeJob(fileID, quality string) *TranscodeJob {
+	key := fileID + ":" + quality
+	if v, ok := transcodeJobs.Load(key); ok {
+		return v.(*TranscodeJob)
+	}
+	return nil
+}
+
+// scheduleJobCleanup 延迟清理已完成的任务，避免 transcodeJobs 长期运行内存泄漏。
+// done 状态 5 分钟后清理（前端轮询窗口足够）；failed 状态 30 分钟后清理（保留重试窗口）。
+func scheduleJobCleanup(key string, status TranscodeJobStatus) {
+	var delay time.Duration
+	switch status {
+	case TranscodeStatusDone:
+		delay = 5 * time.Minute
+	case TranscodeStatusFailed:
+		delay = 30 * time.Minute
+	default:
+		return
+	}
+	time.AfterFunc(delay, func() {
+		transcodeJobs.Delete(key)
+	})
 }

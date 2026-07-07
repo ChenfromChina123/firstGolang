@@ -89,6 +89,8 @@ func (h *PreviewHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.servePoster(w, r, fileID)
 	case "transcode":
 		h.serveTranscode(w, r, fileID)
+	case "transcode-status":
+		h.serveTranscodeStatus(w, r, fileID)
 	case "archive":
 		h.serveArchive(w, r, fileID)
 	case "content":
@@ -273,8 +275,8 @@ func (h *PreviewHandler) servePoster(w http.ResponseWriter, r *http.Request, fil
 // serveTranscode 返回指定画质的转码视频流，支持 HTTP Range（206 Partial Content）。
 // 查询参数 quality: high | medium | low（默认 medium）。
 // high 直接 fallback 到原文件 serveContent（无需转码，避免无意义重编码）；
-// medium/low 命中缓存直接流式返回，未命中同步调 ffmpeg 转码后返回（首次可能阻塞较久）。
-// 输出统一 mp4(H.264+AAC)，浏览器原生兼容；movflags +faststart 支持边下边播。
+// medium/low 缓存命中直接流式返回，未命中启动异步转码任务并返回 202 Accepted + status_url。
+// 前端通过轮询 /transcode-status 获取转码状态，完成后重新请求本端点加载视频流。
 func (h *PreviewHandler) serveTranscode(w http.ResponseWriter, r *http.Request, fileID string) {
 	quality := r.URL.Query().Get("quality")
 	if quality == "" {
@@ -305,29 +307,43 @@ func (h *PreviewHandler) serveTranscode(w http.ResponseWriter, r *http.Request, 
 	}
 
 	basePath := h.storage.BasePath()
-	transcodePath := storage.TranscodePath(basePath, fileID, quality)
 
-	// 缓存未命中 → 同步调 ffmpeg 转码
-	if !storage.TranscodeExists(basePath, fileID, quality) {
-		srcPath := file.StoragePath
-		if _, err := h.storage.FileSize(srcPath); err != nil {
-			log.Printf("[PREVIEW] transcode: source not found id=%s path=%s err=%v", fileID, srcPath, err)
-			http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
-			return
-		}
-		log.Printf("[PREVIEW] transcode: generating id=%s quality=%s (may take a while)", fileID, quality)
-		if _, err := storage.GenerateTranscode(basePath, srcPath, fileID, quality); err != nil {
-			log.Printf("[PREVIEW] transcode: generate failed id=%s quality=%s err=%v", fileID, quality, err)
-			http.Error(w, `{"error":"transcode failed: ffmpeg not available or video invalid"}`, http.StatusInternalServerError)
-			return
-		}
-		log.Printf("[PREVIEW] transcode: generated id=%s quality=%s", fileID, quality)
+	// 缓存命中 → 流式返回转码文件（支持 Range 206）
+	if storage.TranscodeExists(basePath, fileID, quality) {
+		h.serveTranscodeFile(w, r, file, fileID, quality)
+		return
 	}
 
-	// 流式返回转码文件，支持 Range（与 serveContent 同款实现）
+	// 缓存未命中 → 启动异步转码任务，返回 202 + status_url（前端轮询）
+	srcPath := file.StoragePath
+	if _, err := h.storage.FileSize(srcPath); err != nil {
+		log.Printf("[PREVIEW] transcode: source not found id=%s path=%s err=%v", fileID, srcPath, err)
+		http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
+		return
+	}
+
+	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality)
+	log.Printf("[PREVIEW] transcode: job started id=%s quality=%s status=%s", fileID, quality, status)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted) // 202 Accepted：转码任务已启动，前端轮询 status_url
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":     status,
+		"quality":    quality,
+		"file_id":    fileID,
+		"status_url": fmt.Sprintf("/api/preview/%s/transcode-status?quality=%s", fileID, quality),
+	})
+}
+
+// serveTranscodeFile 流式返回已转码的缓存文件，支持 HTTP Range（206 Partial Content）。
+// 仅在 TranscodeExists 命中后调用，调用方需先校验文件存在与权限。
+func (h *PreviewHandler) serveTranscodeFile(w http.ResponseWriter, r *http.Request, file *model.FileRecord, fileID, quality string) {
+	basePath := h.storage.BasePath()
+	transcodePath := storage.TranscodePath(basePath, fileID, quality)
+
 	f, err := os.Open(transcodePath)
 	if err != nil {
-		log.Printf("[PREVIEW] transcode: open failed id=%s quality=%s err=%v", fileID, quality, err)
+		log.Printf("[PREVIEW] transcode: open cache failed id=%s quality=%s err=%v", fileID, quality, err)
 		http.Error(w, `{"error":"transcode open failed"}`, http.StatusInternalServerError)
 		return
 	}
@@ -378,6 +394,65 @@ func (h *PreviewHandler) serveTranscode(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
 	w.WriteHeader(http.StatusPartialContent)
 	io.CopyN(w, f, chunkSize)
+}
+
+// serveTranscodeStatus 查询转码任务状态（前端轮询用）。
+// 查询参数 quality: high | medium | low（默认 medium）。
+// 返回 JSON：{status: "done|pending|running|failed|not_started", url?, error?}
+//   - done：磁盘缓存命中（最权威状态源），附加 url 供前端直接加载
+//   - not_started：任务表无记录（服务器重启或从未启动），前端应触发 transcode 端点启动
+//   - pending/running/failed：返回 job 当前状态与错误信息
+func (h *PreviewHandler) serveTranscodeStatus(w http.ResponseWriter, r *http.Request, fileID string) {
+	quality := r.URL.Query().Get("quality")
+	if quality == "" {
+		quality = "medium"
+	}
+	if quality != "high" && quality != "medium" && quality != "low" {
+		http.Error(w, `{"error":"invalid quality"}`, http.StatusBadRequest)
+		return
+	}
+
+	file, err := h.db.GetFile(fileID)
+	if err != nil {
+		http.Error(w, `{"error":"file not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.checkPermission(w, r, file.Owner) {
+		return
+	}
+	if getFileType(file.Filename) != "video" {
+		http.Error(w, `{"error":"not a video"}`, http.StatusBadRequest)
+		return
+	}
+
+	basePath := h.storage.BasePath()
+
+	// 先检查磁盘缓存（最权威状态源：文件存在即等价于转码完成可用）
+	if storage.TranscodeExists(basePath, fileID, quality) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "done",
+			"url":    fmt.Sprintf("/api/preview/%s/transcode?quality=%s", fileID, quality),
+		})
+		return
+	}
+
+	// 查询内存任务表
+	job := storage.GetTranscodeJob(fileID, quality)
+	if job == nil {
+		// 任务不存在（从未启动或已被 time.AfterFunc 清理）
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "not_started",
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": string(job.GetStatus()),
+		"error":  job.GetError(),
+	})
 }
 
 // serveContent 流式返回文件原始内容，支持 HTTP Range（206 Partial Content）。
