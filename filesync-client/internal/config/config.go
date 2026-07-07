@@ -20,7 +20,7 @@ type Config struct {
 	Username     string `json:"username"`       // 登录用户名
 	SyncDir      string `json:"sync_dir"`       // 本地同步目录绝对路径
 	AutoStart    bool   `json:"auto_start"`     // 是否开机自启
-	SyncStrategy string `json:"sync_strategy"`  // 冲突默认策略：ask|keep_local|keep_remote|create_copy
+	SyncStrategy string `json:"sync_strategy"`  // 冲突默认策略：ask|always_upload|always_download
 	LastSyncTime string `json:"last_sync_time"` // 上次同步时间（ISO 8601）
 	AutoSync     bool   `json:"auto_sync"`      // 是否启用自动同步
 	SyncInterval int    `json:"sync_interval"`  // 同步间隔（秒），默认 30

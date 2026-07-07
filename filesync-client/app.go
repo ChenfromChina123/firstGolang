@@ -9,6 +9,7 @@ import (
 	"filesync-client/internal/api"
 	"filesync-client/internal/auth"
 	"filesync-client/internal/config"
+	syncpkg "filesync-client/internal/sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -18,6 +19,7 @@ type App struct {
 	ctx       context.Context
 	authMgr   *auth.AuthManager
 	apiClient *api.Client
+	uploader  *syncpkg.Uploader
 }
 
 // NewApp 创建应用实例。
@@ -36,6 +38,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.authMgr = auth.New(cfg.ServerURL)
 	a.apiClient = api.New(a.authMgr)
+	a.uploader = syncpkg.NewUploader(ctx, a.apiClient, cfg)
 }
 
 // IsFirstRun 检查是否首次启动（配置文件不存在）。
@@ -55,6 +58,9 @@ func (a *App) LoadConfig() (*config.Config, error) {
 func (a *App) SaveConfig(cfg config.Config) error {
 	if a.authMgr != nil && a.authMgr.ServerURL() != cfg.ServerURL {
 		a.authMgr.SetServerURL(cfg.ServerURL)
+	}
+	if a.uploader != nil {
+		a.uploader.UpdateConfig(&cfg)
 	}
 	return config.Save(&cfg)
 }
@@ -138,4 +144,32 @@ func (a *App) ListFiles(prefix string) ([]api.FileRecord, error) {
 		return nil, fmt.Errorf("API 客户端未初始化")
 	}
 	return a.apiClient.ListFiles(prefix)
+}
+
+// UploadFile 上传单个文件（绝对路径）。
+// 透传给 uploader，完成 CheckUpload → InitUpload → UploadChunk → CompleteUpload 全流程。
+// 进度通过 upload:progress / upload:complete / upload:error 事件推送。
+func (a *App) UploadFile(absPath string) error {
+	if a.uploader == nil {
+		return fmt.Errorf("上传器未初始化")
+	}
+	return a.uploader.UploadFile(absPath)
+}
+
+// ScanAndUpload 扫描 SyncDir 并上传所有新增/修改文件。
+// 透传给 uploader，扫描结果通过 upload:scan 事件推送，然后逐个上传。
+func (a *App) ScanAndUpload() error {
+	if a.uploader == nil {
+		return fmt.Errorf("上传器未初始化")
+	}
+	return a.uploader.ScanAndUpload()
+}
+
+// GetUploadProgress 返回所有文件的上传进度快照。
+// 供前端轮询或事件丢失时主动拉取。
+func (a *App) GetUploadProgress() map[string]syncpkg.UploadProgress {
+	if a.uploader == nil {
+		return map[string]syncpkg.UploadProgress{}
+	}
+	return a.uploader.GetProgress()
 }

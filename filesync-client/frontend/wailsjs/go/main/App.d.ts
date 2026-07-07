@@ -7,6 +7,8 @@ export function CheckAuth(): Promise<boolean>;
 
 export function GetCurrentUser(): Promise<auth.UserInfo | null>;
 
+export function GetUploadProgress(): Promise<{[key: string]: main.UploadProgress}>;
+
 export function Greet(arg1: string): Promise<string>;
 
 export function IsFirstRun(): Promise<boolean>;
@@ -21,6 +23,10 @@ export function Logout(): Promise<void>;
 
 export function SaveConfig(arg1: main.Config): Promise<void>;
 
+export function ScanAndUpload(): Promise<void>;
+
 export function SelectDirectory(): Promise<string>;
 
 export function TestConnection(arg1: string): Promise<main.TestResult>;
+
+export function UploadFile(arg1: string): Promise<void>;

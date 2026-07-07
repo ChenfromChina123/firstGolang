@@ -33,6 +33,28 @@ export namespace main {
             if ('msg' in source) this.msg = source['msg'] as string;
         }
     }
+
+    export class UploadProgress {
+        filename!: string;
+        totalBytes!: number;
+        sentBytes!: number;
+        totalChunks!: number;
+        sentChunks!: number;
+        status!: string;
+        error!: string;
+        sessionId!: string;
+
+        constructor(source: object = {}) {
+            if ('filename' in source) this.filename = source['filename'] as string;
+            if ('total_bytes' in source) this.totalBytes = source['total_bytes'] as number;
+            if ('sent_bytes' in source) this.sentBytes = source['sent_bytes'] as number;
+            if ('total_chunks' in source) this.totalChunks = source['total_chunks'] as number;
+            if ('sent_chunks' in source) this.sentChunks = source['sent_chunks'] as number;
+            if ('status' in source) this.status = source['status'] as string;
+            if ('error' in source) this.error = source['error'] as string;
+            if ('session_id' in source) this.sessionId = source['session_id'] as string;
+        }
+    }
 }
 
 export namespace auth {

@@ -10,6 +10,10 @@ export function GetCurrentUser() {
     return window['go']['main']['App']['GetCurrentUser']();
 }
 
+export function GetUploadProgress() {
+    return window['go']['main']['App']['GetUploadProgress']();
+}
+
 export function Greet(arg1) {
     return window['go']['main']['App']['Greet'](arg1);
 }
@@ -38,10 +42,18 @@ export function SaveConfig(arg1) {
     return window['go']['main']['App']['SaveConfig'](arg1);
 }
 
+export function ScanAndUpload() {
+    return window['go']['main']['App']['ScanAndUpload']();
+}
+
 export function SelectDirectory() {
     return window['go']['main']['App']['SelectDirectory']();
 }
 
 export function TestConnection(arg1) {
     return window['go']['main']['App']['TestConnection'](arg1);
+}
+
+export function UploadFile(arg1) {
+    return window['go']['main']['App']['UploadFile'](arg1);
 }

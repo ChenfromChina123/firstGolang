@@ -1,18 +1,21 @@
 <script setup lang="ts">
 /**
  * App 根组件
- * 根据是否首次启动，显示配置向导或主界面
+ * 首次启动显示配置向导，否则显示主界面（n-tabs 切换同步/配置）
  */
 import { ref, onMounted } from 'vue'
-import { NConfigProvider, NMessageProvider, NDialogProvider, zhCN, dateZhCN } from 'naive-ui'
+import { NConfigProvider, NMessageProvider, NDialogProvider, NTabs, NTabPane, zhCN, dateZhCN } from 'naive-ui'
 import WizardView from './views/WizardView.vue'
 import SyncView from './views/SyncView.vue'
+import ConfigView from './views/ConfigView.vue'
 import { IsFirstRun } from '../wailsjs/go/main/App'
 
 // 是否首次启动
 const isFirstRun = ref(true)
 // 是否已加载
 const loaded = ref(false)
+// 当前激活的标签页
+const activeTab = ref('sync')
 
 onMounted(async () => {
   try {
@@ -44,7 +47,14 @@ function handleWizardFinish() {
           v-else-if="isFirstRun"
           @finish="handleWizardFinish"
         />
-        <SyncView v-else />
+        <n-tabs v-else v-model:value="activeTab" type="line" animated>
+          <n-tab-pane name="sync" tab="同步">
+            <SyncView />
+          </n-tab-pane>
+          <n-tab-pane name="config" tab="配置">
+            <ConfigView />
+          </n-tab-pane>
+        </n-tabs>
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
