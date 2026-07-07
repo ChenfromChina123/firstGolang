@@ -252,6 +252,49 @@ body::after {
 .pick-btn:hover { border-color: var(--accent); color: var(--accent); }
 .pick-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
+/* === 上传下拉菜单（悬停展开） === */
+.upload-dropdown { position: relative; display: inline-block; }
+.upload-trigger { white-space: nowrap; }
+.upload-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px;
+    min-width: 160px;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-4px);
+    transition: opacity 0.15s, transform 0.15s, visibility 0.15s;
+}
+.upload-dropdown:hover .upload-menu,
+.upload-dropdown:focus-within .upload-menu {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+.upload-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-1);
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+}
+.upload-menu-item:hover { background: var(--bg-3); color: var(--accent); }
+.upload-menu-icon { flex-shrink: 0; opacity: 0.8; }
+.upload-menu-item:hover .upload-menu-icon { opacity: 1; }
+
 /* 拖拽高亮：绑定到 upload-panel，整个面板边框高亮 */
 .upload-panel.dragover {
     border-color: var(--accent);

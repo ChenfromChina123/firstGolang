@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260707a">
+    <link rel="stylesheet" href="/web/style.css?v=20260707b">
     <link rel="stylesheet" href="/web/lib/prism/themes_prism-tomorrow.min.css">
 </head>
 <body>
@@ -72,10 +72,21 @@
                             <option value="12">12</option>
                         </select>
                     </label>
-                    <label class="pick-btn" id="pick-btn" title="选择文件上传">+ 选择文件</label>
-                    <input type="file" id="file-input" multiple hidden>
-                    <label class="pick-btn" id="folder-pick-btn" title="选择文件夹上传（保留目录结构）">+ 上传文件夹</label>
-                    <input type="file" id="folder-input" webkitdirectory multiple hidden>
+                    <div class="upload-dropdown" id="upload-dropdown">
+                        <label class="pick-btn upload-trigger" title="上传文件或文件夹">+ 上传 ▾</label>
+                        <div class="upload-menu">
+                            <label class="upload-menu-item" id="pick-btn" title="选择文件上传">
+                                <svg class="upload-menu-icon" width="14" height="14"><use href="#icon-file"/></svg>
+                                选择文件
+                            </label>
+                            <label class="upload-menu-item" id="folder-pick-btn" title="选择文件夹上传（保留目录结构）">
+                                <svg class="upload-menu-icon" width="14" height="14"><use href="#icon-folder"/></svg>
+                                上传文件夹
+                            </label>
+                        </div>
+                        <input type="file" id="file-input" multiple hidden>
+                        <input type="file" id="folder-input" webkitdirectory multiple hidden>
+                    </div>
                 </div>
             </div>
 
@@ -406,6 +417,6 @@
     <script src="/web/lib/prism/prism.min.js"></script>
     <!-- marked.js Markdown 渲染（用于 .md 文件预览） -->
     <script src="/web/lib/marked/marked.min.js"></script>
-    <script src="/web/app.js?v=20260707a"></script>
+    <script src="/web/app.js?v=20260707b"></script>
 </body>
 </html>
