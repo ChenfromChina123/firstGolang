@@ -37,6 +37,8 @@
                 <span class="dot"></span>
                 <span class="name" id="user-name">—</span>
                 <span class="role" id="user-role">user</span>
+                <span class="storage" id="user-storage" hidden>已用 0 B</span>
+                <a href="/web/admin.html" class="admin-link" id="admin-link" hidden>管理后台</a>
             </div>
             <button class="logout-btn" id="logout-btn" hidden>登出</button>
         </div>
@@ -72,6 +74,8 @@
                     </label>
                     <label class="pick-btn" id="pick-btn" title="选择文件上传">+ 选择文件</label>
                     <input type="file" id="file-input" multiple hidden>
+                    <label class="pick-btn" id="folder-pick-btn" title="选择文件夹上传（保留目录结构）">+ 上传文件夹</label>
+                    <input type="file" id="folder-input" webkitdirectory multiple hidden>
                 </div>
             </div>
 

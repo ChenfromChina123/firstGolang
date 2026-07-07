@@ -30,6 +30,7 @@
         trashRestore: '/api/trash', // 回收站恢复：/api/trash/{id}/restore（前缀，拼接用）
         trashDelete: '/api/trash', // 回收站永久删除：/api/trash/{id}（前缀，拼接用）
         preview: '/api/preview', // 文件预览（元数据/缩略图/原始内容流）
+        storageUsage: '/api/storage-usage', // 存储用量查询
     };
 
     // === 认证：路由守卫 + 401 拦截 ===
@@ -85,6 +86,13 @@
                 infoEl.hidden = false;
             }
             if (logoutBtn) logoutBtn.hidden = false;
+            // admin 显示管理后台入口
+            if (user.role === 'admin') {
+                const adminLink = document.getElementById('admin-link');
+                if (adminLink) adminLink.hidden = false;
+            }
+            // 获取存储用量
+            fetchStorageUsage();
             return true;
         } catch (e) {
             // 网络错误等：不跳转，仅提示（可能是后端未启动）
@@ -104,6 +112,25 @@
             // 忽略网络错误，仍然跳转登录页
         }
         window.location.href = '/web/login.html';
+    }
+
+    /**
+     * 获取存储用量并更新导航栏显示
+     * 在登录成功、上传完成、删除文件后调用
+     */
+    async function fetchStorageUsage() {
+        try {
+            const res = await apiFetch(API.storageUsage);
+            if (!res.ok) return;
+            const usage = await res.json();
+            const el = document.getElementById('user-storage');
+            if (el) {
+                el.textContent = '已用 ' + fmtSize(usage.used_size || 0);
+                el.hidden = false;
+            }
+        } catch (e) {
+            console.error('fetchStorageUsage error:', e);
+        }
     }
 
     // === 工具函数 ===
@@ -255,9 +282,13 @@
             this.fullHash = null; // 完整文件 SHA256（秒传检查用，null=未计算）
         }
 
-        /** 构造上传到后端的完整文件名（含目录前缀） */
+        /** 构造上传到后端的完整文件名（含目录前缀）
+         *  文件夹上传场景：file.webkitRelativePath 含相对路径（如 "subdir/file.txt"），
+         *  普通文件 webkitRelativePath 为空，回退到 file.name。
+         *  targetDir 是当前浏览的目录前缀（如 "3/"），最终 filename = targetDir + relativePath。 */
         getUploadFilename() {
-            return this.targetDir ? this.targetDir + this.file.name : this.file.name;
+            const relativePath = this.file.webkitRelativePath || this.file.name;
+            return this.targetDir ? this.targetDir + relativePath : relativePath;
         }
 
         /** 获取用于 UI 展示的文件名（含目录前缀） */
@@ -905,8 +936,18 @@
         if (selShare) selShare.hidden = n !== 1;
         // 重命名：仅当选中恰好 1 个文件时显示
         if (selRename) selRename.hidden = !(n === 1 && files.length === 1);
-        // 移动：选中 ≥1 项时显示（单目录原逻辑，多项批量移动）
-        if (selMove) selMove.hidden = n === 0;
+        // 移动：选中 ≥1 项时显示（单目录用 MoveDir 重命名路径，多项批量移动）
+        if (selMove) {
+            selMove.hidden = n === 0;
+            // 动态文案：单选目录 → "重命名目录"；多选 → "移动 N 项"；其他 → "移动"
+            if (n === 1 && dirs.length === 1) {
+                selMove.textContent = '重命名目录';
+            } else if (n > 1) {
+                selMove.textContent = `移动 ${n} 项`;
+            } else {
+                selMove.textContent = '移动';
+            }
+        }
     }
 
     /** 批量删除选中项（支持文件和目录混合）
@@ -1173,7 +1214,7 @@
             } else {
                 menu.push({ label: 'ZIP 下载', action: () => zipDownloadSelected() });
                 menu.push({ label: '分享', action: () => shareSelected() });
-                menu.push({ label: '移动目录', action: () => moveSelected() });
+                menu.push({ label: '重命名目录', action: () => moveSelected() });
                 menu.push({ separator: true });
                 menu.push({ label: '删除', danger: true, action: () => batchDeleteSelected() });
             }
@@ -2555,13 +2596,24 @@
         const input = document.getElementById('move-dir-input');
         const confirmBtn = document.getElementById('move-dir-confirm');
         const cancelBtn = document.getElementById('move-dir-cancel');
+        const head = modal.querySelector('.modal-head h3');
+        const origHead = head.textContent;
+        // 单选目录场景：标题改"重命名目录"（MoveDir 批量改前缀即重命名）
+        head.textContent = '重命名目录';
 
         nameEl.textContent = dirName + '/';
         // 默认填入源目录去掉末尾 / 的路径，方便用户在原基础上修改
         input.value = prefix.replace(/\/$/, '');
         modal.hidden = false;
         input.focus();
-        input.select();
+        // 默认选中末级目录名（如 prefix="docs/sub/" → 选中 "sub"），降低误改父级风险
+        const trimmed = prefix.replace(/\/$/, '');
+        const lastSlash = trimmed.lastIndexOf('/');
+        if (lastSlash >= 0) {
+            input.setSelectionRange(lastSlash + 1, trimmed.length);
+        } else {
+            input.select();
+        }
 
         const submit = async () => {
             const rawPath = input.value.trim();
@@ -2597,6 +2649,8 @@
             confirmBtn.onclick = null;
             cancelBtn.onclick = null;
             input.onkeydown = null;
+            // 恢复 modal 原始标题（避免影响 openBatchMoveDialog 等其他场景）
+            head.textContent = origHead;
         };
         cancelBtn.onclick = cleanup;
         confirmBtn.onclick = submit;
@@ -2689,6 +2743,21 @@
             if (files.length) handleFiles(files);
             fileInput.value = ''; // 允许重复选择同一文件
         });
+
+        // 选择文件夹：webkitdirectory 返回的 File 对象含 webkitRelativePath
+        // getUploadFilename 会优先用 webkitRelativePath 作为 filename，保留目录结构
+        const folderPickBtn = document.getElementById('folder-pick-btn');
+        const folderInput = document.getElementById('folder-input');
+        if (folderPickBtn && folderInput) {
+            folderPickBtn.addEventListener('click', () => {
+                folderInput.click();
+            });
+            folderInput.addEventListener('change', e => {
+                const files = Array.from(e.target.files);
+                if (files.length) handleFiles(files);
+                folderInput.value = ''; // 允许重复选择同一文件夹
+            });
+        }
 
         // 持久化分片大小和并发数：localStorage 即时响应 + 服务器跨浏览器同步
         const chunkSizeSelect = document.getElementById('chunk-size');
@@ -2863,6 +2932,8 @@
         const queue = document.getElementById('queue');
         const list = document.getElementById('queue-list');
         queue.hidden = false;
+        // 每次新批次上传重置全局冲突策略，避免上次"应用到后续所有冲突"残留影响本次决策
+        globalStrategy = null;
 
         const chunkSize = parseInt(document.getElementById('chunk-size').value, 10);
         const concurrency = parseInt(document.getElementById('concurrency').value, 10);
