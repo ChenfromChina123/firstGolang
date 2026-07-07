@@ -52,7 +52,7 @@
                 </div>
                 <h2 class="share-lock-title">需要访问密码</h2>
                 <p class="share-lock-msg">此分享已设置访问密码，请输入密码后查看。</p>
-                <form class="share-lock-form" id="share-lock-form">
+                <form class="share-lock-form" id="share-lock-form" method="POST" action="/api/s/">
                     <input type="password" id="share-lock-password" class="modal-input" placeholder="请输入访问密码" autocomplete="off" maxlength="64">
                     <button type="submit" class="primary-btn" id="share-lock-submit">验证</button>
                 </form>

@@ -201,9 +201,9 @@
     function userActions(u) {
         if (u.role === 'admin') return '<span style="color:#7a8a9e;">—</span>';
         const toggleBtn = u.status === 'active'
-            ? `<button class="btn btn-danger" onclick="toggleUserStatus('${escapeHtml(u.id)}','disabled')">禁用</button>`
-            : `<button class="btn btn-primary" onclick="toggleUserStatus('${escapeHtml(u.id)}','active')">启用</button>`;
-        const resetBtn = `<button class="btn" onclick="openResetPwdModal('${escapeHtml(u.id)}','${escapeHtml(u.username)}')">重置密码</button>`;
+            ? `<button class="btn btn-danger" data-action="toggle-user" data-user-id="${escapeHtml(u.id)}" data-target-status="disabled" type="button">禁用</button>`
+            : `<button class="btn btn-primary" data-action="toggle-user" data-user-id="${escapeHtml(u.id)}" data-target-status="active" type="button">启用</button>`;
+        const resetBtn = `<button class="btn" data-action="reset-pwd" data-user-id="${escapeHtml(u.id)}" data-username="${escapeHtml(u.username)}" type="button">重置密码</button>`;
         return toggleBtn + resetBtn;
     }
 
@@ -428,7 +428,7 @@
                             <td>${shareStatusTag(s)}</td>
                             <td>
                                 <a class="btn" href="/web/share.html?id=${encodeURIComponent(s.id)}" target="_blank">查看</a>
-                                <button class="btn btn-danger" onclick="deleteShare('${escapeHtml(s.id)}')">删除</button>
+                                <button class="btn btn-danger" data-action="delete-share" data-share-id="${escapeHtml(s.id)}" type="button">删除</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -478,6 +478,47 @@
             });
         }
 
+        // 绑定刷新按钮（替代原 onclick 内联绑定，满足 CSP script-src 'self'）
+        const btnRefreshUsers = document.getElementById('btn-refresh-users');
+        if (btnRefreshUsers) btnRefreshUsers.addEventListener('click', loadUsers);
+        const btnRefreshFiles = document.getElementById('btn-refresh-files');
+        if (btnRefreshFiles) btnRefreshFiles.addEventListener('click', loadFiles);
+        const btnRefreshShares = document.getElementById('btn-refresh-shares');
+        if (btnRefreshShares) btnRefreshShares.addEventListener('click', loadShares);
+
+        // 绑定重置密码弹窗按钮
+        const btnCancelResetPwd = document.getElementById('btn-cancel-reset-pwd');
+        if (btnCancelResetPwd) btnCancelResetPwd.addEventListener('click', closeResetPwdModal);
+        const btnConfirmResetPwd = document.getElementById('btn-confirm-reset-pwd');
+        if (btnConfirmResetPwd) btnConfirmResetPwd.addEventListener('click', confirmResetPwd);
+
+        // 事件委托：用户表格内的动态按钮（禁用/启用/重置密码）
+        const usersWrapper = document.getElementById('users-table-wrapper');
+        if (usersWrapper) {
+            usersWrapper.addEventListener('click', e => {
+                const btn = e.target.closest('button[data-action]');
+                if (!btn) return;
+                const action = btn.dataset.action;
+                if (action === 'toggle-user') {
+                    toggleUserStatus(btn.dataset.userId, btn.dataset.targetStatus);
+                } else if (action === 'reset-pwd') {
+                    openResetPwdModal(btn.dataset.userId, btn.dataset.username);
+                }
+            });
+        }
+
+        // 事件委托：分享表格内的删除按钮
+        const sharesWrapper = document.getElementById('shares-table-wrapper');
+        if (sharesWrapper) {
+            sharesWrapper.addEventListener('click', e => {
+                const btn = e.target.closest('button[data-action]');
+                if (!btn) return;
+                if (btn.dataset.action === 'delete-share') {
+                    deleteShare(btn.dataset.shareId);
+                }
+            });
+        }
+
         // 权限守卫
         const user = await checkAdmin();
         if (!user) return;
@@ -485,16 +526,6 @@
         // 默认加载系统总览
         loadStats();
     }
-
-    // === 11. 全局函数暴露（admin.html onclick 内联绑定需要） ===
-    window.loadUsers = loadUsers;
-    window.loadFiles = loadFiles;
-    window.loadShares = loadShares;
-    window.toggleUserStatus = toggleUserStatus;
-    window.openResetPwdModal = openResetPwdModal;
-    window.closeResetPwdModal = closeResetPwdModal;
-    window.confirmResetPwd = confirmResetPwd;
-    window.deleteShare = deleteShare;
 
     document.addEventListener('DOMContentLoaded', init);
 })();

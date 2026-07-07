@@ -159,7 +159,7 @@
         <!-- 用户管理 -->
         <div class="tab-pane" id="pane-users">
             <div style="margin-bottom: 16px;">
-                <button class="btn btn-primary" onclick="loadUsers()">刷新</button>
+                <button class="btn btn-primary" id="btn-refresh-users" type="button">刷新</button>
             </div>
             <div id="users-table-wrapper">
                 <div class="loading">加载中...</div>
@@ -169,7 +169,7 @@
         <!-- 文件管理 -->
         <div class="tab-pane" id="pane-files">
             <div style="margin-bottom: 16px;">
-                <button class="btn btn-primary" onclick="loadFiles()">刷新</button>
+                <button class="btn btn-primary" id="btn-refresh-files" type="button">刷新</button>
                 <span style="color: #7a8a9e; font-size: 13px; margin-left: 12px;">显示所有用户的文件</span>
             </div>
             <div id="files-table-wrapper">
@@ -180,7 +180,7 @@
         <!-- 分享管理 -->
         <div class="tab-pane" id="pane-shares">
             <div style="margin-bottom: 16px;">
-                <button class="btn btn-primary" onclick="loadShares()">刷新</button>
+                <button class="btn btn-primary" id="btn-refresh-shares" type="button">刷新</button>
             </div>
             <div id="shares-table-wrapper">
                 <div class="loading">加载中...</div>
@@ -195,14 +195,14 @@
             <p style="color: #7a8a9e; font-size: 13px; margin: 0 0 12px;">用户：<span id="reset-pwd-username" style="color:#5ae0c8;"></span></p>
             <input type="password" id="reset-pwd-input" placeholder="输入新密码（至少 8 位，含大小写和数字）">
             <div class="modal-actions">
-                <button class="btn" onclick="closeResetPwdModal()">取消</button>
-                <button class="btn btn-primary" onclick="confirmResetPwd()">确认重置</button>
+                <button class="btn" id="btn-cancel-reset-pwd" type="button">取消</button>
+                <button class="btn btn-primary" id="btn-confirm-reset-pwd" type="button">确认重置</button>
             </div>
         </div>
     </div>
 
     <div class="toast" id="toast"></div>
 
-    <script src="/web/admin.js?v=20260712"></script>
+    <script src="/web/admin.js?v=20260713"></script>
 </body>
 </html>
