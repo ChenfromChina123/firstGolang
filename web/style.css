@@ -255,6 +255,9 @@ body::after {
 /* === 上传下拉菜单（悬停展开） === */
 .upload-dropdown { position: relative; display: inline-block; }
 .upload-trigger { white-space: nowrap; }
+/* 允许下拉菜单溢出 .panel 的 overflow:hidden */
+.upload-panel { overflow: visible; }
+.upload-panel .panel-head { overflow: visible; }
 .upload-menu {
     position: absolute;
     top: 100%;
