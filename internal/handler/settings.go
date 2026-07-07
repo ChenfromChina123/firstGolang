@@ -121,3 +121,48 @@ func (h *SettingsHandler) saveSettings(w http.ResponseWriter, r *http.Request, u
 		Concurrency: req.Concurrency,
 	})
 }
+
+// StorageUsage 处理存储用量查询
+// GET /api/storage-usage - 返回当前用户存储用量
+// admin 可通过 ?username=xxx 查看指定用户，?username= 查看全局
+func (h *SettingsHandler) StorageUsage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	username := auth.UsernameFromContext(r.Context())
+	role := auth.RoleFromContext(r.Context())
+	if username == "" {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// admin 可通过 ?username= 查看指定用户或全局；普通用户只能看自己
+	targetOwner := username
+	if role == "admin" {
+		if q := r.URL.Query().Get("username"); q != "" {
+			targetOwner = q
+		} else if r.URL.Query().Has("username") {
+			// ?username= 显式空值 → 全局统计
+			targetOwner = ""
+		}
+	}
+
+	usage, err := h.db.GetUserStorageUsage(targetOwner)
+	if err != nil {
+		log.Printf("[StorageUsage] error: owner=%s err=%v", targetOwner, err)
+		http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(usage)
+}

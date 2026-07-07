@@ -46,7 +46,7 @@ func (h *FileHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var resp []model.FileInfoResponse
+	resp := make([]model.FileInfoResponse, 0, len(files))
 	for _, f := range files {
 		resp = append(resp, model.FileInfoResponse{
 			ID:          f.ID,
@@ -55,6 +55,8 @@ func (h *FileHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 			Hash:        f.Hash,
 			StoragePath: f.StoragePath,
 			StorageType: f.StorageType,
+			Owner:       f.Owner,
+			Status:      f.Status,
 			CreatedAt:   f.CreatedAt.Format(time.RFC3339),
 		})
 	}
@@ -102,6 +104,8 @@ func (h *FileHandler) GetFileInfo(w http.ResponseWriter, r *http.Request) {
 		Hash:        f.Hash,
 		StoragePath: f.StoragePath,
 		StorageType: f.StorageType,
+		Owner:       f.Owner,
+		Status:      f.Status,
 		CreatedAt:   f.CreatedAt.Format(time.RFC3339),
 	}
 

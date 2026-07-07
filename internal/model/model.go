@@ -104,6 +104,8 @@ type FileInfoResponse struct {
 	Hash        string `json:"hash"`
 	StoragePath string `json:"storage_path"`
 	StorageType string `json:"storage_type"`
+	Owner       string `json:"owner"`     // 文件归属用户名（admin 视图用）
+	Status      string `json:"status"`    // completed/failed
 	CreatedAt   string `json:"created_at"`
 }
 
@@ -185,7 +187,7 @@ type SharePublicInfo struct {
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	DownloadCount int        `json:"download_count"`
 	IsExpired     bool       `json:"is_expired"`
-	DownloadToken string     `json:"download_token,omitempty"` // 下载签名 token（防盗链，30 分钟有效；空表示未授权）
+	DownloadToken string     `json:"download_token"`           // 下载签名 token（防盗链，30 分钟有效）
 	HasPassword   bool       `json:"has_password"`             // 是否设置了密码保护
 }
 

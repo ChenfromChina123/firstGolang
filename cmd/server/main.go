@@ -135,6 +135,7 @@ func main() {
 	fileHandler := handler.NewFileHandler(db, st, rc)
 	trashHandler := handler.NewTrashHandler(db, st, rc)
 	settingsHandler := handler.NewSettingsHandler(db)
+	adminHandler := handler.NewAdminHandler(db)
 
 	// === 认证系统初始化 ===
 	// JWT 密钥：优先从环境变量读取，否则随机生成（每次重启失效）
@@ -282,6 +283,10 @@ func main() {
 	mux.Handle("/api/s/", shareHandler)
 	// 用户配置同步（需认证）：跨浏览器同步分片大小和并发数
 	mux.Handle("/api/settings", settingsHandler)
+	// 存储用量查询（需认证）：返回当前用户已用空间，admin 可查指定用户
+	mux.HandleFunc("/api/storage-usage", settingsHandler.StorageUsage)
+	// 管理员后台 API（需认证 + admin 权限）：系统统计/用户管理/分享管理
+	mux.Handle("/api/admin/", adminHandler)
 	// 文件预览（需认证）：元数据/缩略图/原始内容流，权限同下载
 	mux.Handle("/api/preview/", previewHandler)
 
