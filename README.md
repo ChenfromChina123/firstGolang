@@ -19,6 +19,8 @@
 - **秒传功能（全局存储）**：上传前通过 Web Worker 在后台线程计算完整文件 SHA256，调用 `/api/upload/check` 接口检查哈希是否已存在。命中时后端直接共享源文件 storage_path（不复制物理文件）并创建新记录，整个上传流程被跳过，实现"秒级"上传。**跨用户秒传**：任意用户上传相同 hash+size 文件均可命中，多个 DB 记录共享同一物理文件，永久删除时通过引用计数（CountByStoragePath）判断是否删除物理文件。hash+size 双重校验避免误判，秒传检查失败自动降级为正常上传（非致命）。
 - **回收站功能**：文件删除采用软删除机制（deleted_at 字段），移入回收站保留 30 天可恢复。支持列出回收站、恢复文件（含文件名冲突检测）、永久删除单个文件、清空回收站。服务启动时自动清理过期回收站文件（物理删除数据库记录 + 删除存储文件）。admin 可通过 `?all=true` 查看和管理所有用户的回收站。
 - **压缩包在线解压**：支持 zip / tar / tar.gz / tar.bz2 四种格式在线预览，单击压缩包即列出包内文件树（目录可折叠），文件可在线预览或下载，无需将整个压缩包下载到本地。安全防护：Zip Slip 路径穿越拒绝、压缩炸弹限制（包 ≤2GB / 条目 ≤10000 / 单文件 ≤500MB）、加密压缩包拒绝。tar.gz/tar.bz2 真流式解析，zip 采用临时文件方案（标准库要求 ReaderAt）。
+- **存储用量显示**：顶部导航栏实时显示当前用户已用云空间（`GET /api/storage-usage`），admin 可通过 `?username=xxx` 查看指定用户或 `?username=` 查看全局用量。统计含正常文件和回收站文件两部分。
+- **管理员后台**：独立的管理后台页面（`/web/admin.html`），4 个 Tab 模块：①系统总览（用户/文件/存储/分享/回收站统计卡片）；②用户管理（列表/禁用启用/重置密码，防止管理员禁用自己或修改其他 admin）；③文件管理（所有用户文件列表，含 owner 列）；④分享管理（所有分享列表/删除分享/查看分享页）。权限守卫：非 admin 访问自动重定向到首页。
 
 
 ## 项目结构
@@ -494,6 +496,55 @@ curl -X POST http://localhost:8080/api/settings \
   -H "Content-Type: application/json" \
   -b "token=..." \
   -d '{"chunk_size":1048576,"concurrency":8}'
+```
+
+### 存储用量与管理员后台
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| `GET` | `/api/storage-usage` | 当前用户存储用量（admin 可用 `?username=xxx` 查指定用户，`?username=` 查全局） | 需认证 |
+| `GET` | `/api/admin/stats` | 系统统计总览（用户/文件/存储/分享/回收站） | 需认证 + admin |
+| `GET` | `/api/admin/users` | 用户列表（含各自存储用量） | 需认证 + admin |
+| `POST` | `/api/admin/users/{id}/status` | 禁用/启用用户（body: `{"status":"active"\|"disabled"}`） | 需认证 + admin |
+| `POST` | `/api/admin/users/{id}/reset-password` | 重置用户密码（body: `{"new_password":"xxx"}`） | 需认证 + admin |
+| `GET` | `/api/admin/shares` | 所有分享列表 | 需认证 + admin |
+| `DELETE` | `/api/admin/shares/{id}` | 删除分享 | 需认证 + admin |
+
+**存储用量查询：**
+```bash
+# 普通用户查询自己的用量
+curl http://localhost:8080/api/storage-usage -b "token=..."
+# 响应: {"used_size":12345678,"file_count":42,"trash_size":1024,"trash_count":3}
+
+# admin 查看指定用户
+curl "http://localhost:8080/api/storage-usage?username=alice" -b "token=..."
+# admin 查看全局总量
+curl "http://localhost:8080/api/storage-usage?username=" -b "token=..."
+```
+
+**管理员后台页面：**
+```
+GET http://<server>/web/admin.html
+# 需 admin 权限，非 admin 自动重定向到 /web/index.html
+# 4 个 Tab：系统总览 / 用户管理 / 文件管理 / 分享管理
+```
+
+**禁用/启用用户：**
+```bash
+curl -X POST http://localhost:8080/api/admin/users/<userID>/status \
+  -H "Content-Type: application/json" \
+  -b "token=..." \
+  -d '{"status":"disabled"}'
+# 防护：不能禁用自己、不能修改其他 admin 账号
+```
+
+**重置用户密码：**
+```bash
+curl -X POST http://localhost:8080/api/admin/users/<userID>/reset-password \
+  -H "Content-Type: application/json" \
+  -b "token=..." \
+  -d '{"new_password":"NewPass@123"}'
+# 密码需通过强度校验（至少 8 位，含大小写和数字）
 ```
 
 ### 预览与压缩包解压
