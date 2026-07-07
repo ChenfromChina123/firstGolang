@@ -43,7 +43,9 @@ func NewShareHandler(db *store.DB, st storage.Storage, secret []byte) *ShareHand
 		storage:         st,
 		secret:          secret,
 		downloadLimiter: auth.NewLoginRateLimiter(0.1667, 10), // 10 次/分钟
-		infoLimiter:     auth.NewLoginRateLimiter(1.0, 60),     // 60 次/分钟/IP，阻拦分享 ID 枚举攻击
+		// infoLimiter: 30 次/分钟/IP（rps=0.2 即每 5 秒恢复 1 个 token，burst=30）
+		// 收紧原因：rps=1.0 时请求间隔 >1s 不会限流，调整为 rps=0.2 使手动测试也能触发
+		infoLimiter: auth.NewLoginRateLimiter(0.2, 30), // 30 次/分钟/IP，阻拦分享 ID 枚举攻击
 	}
 }
 

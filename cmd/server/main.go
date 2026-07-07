@@ -220,10 +220,10 @@ func main() {
 		log.Printf("[Trash] cleanup expired error: %v", err)
 	}
 
-	// 登录速率限制器：5次/分钟/IP（rps=5/60≈0.083, burst=3）
-	// burst=3 收紧突发上限：5/min + burst 3 = 共 8 次/分钟，正常用户输入 3 次足够，
-	// 攻击者第 9 次起收到 429（原 burst=5 时第 11 次才被拦截）
-	loginLimiter := auth.NewLoginRateLimiter(0.083, 3)
+	// 登录速率限制器：3次/分钟/IP（rps=0.05 即每 20 秒恢复 1 个 token，burst=2）
+	// burst=2 收紧突发上限：2 次尝试后需等 20 秒才能再试，正常用户 2 次足够，
+	// 攻击者第 3 次起收到 429（原 rps=0.083/burst=3 时请求间隔 >12s 不会限流）
+	loginLimiter := auth.NewLoginRateLimiter(0.05, 2)
 	// 注册/重发激活/忘记密码速率限制器：5次突发，每2分钟恢复1次（rps=0.0083, burst=5）
 	// 1小时可恢复约30次，对正常用户友好，对自动化攻击仍有阻拦
 	registerLimiter := auth.NewLoginRateLimiter(0.0083, 5)
@@ -344,13 +344,15 @@ func main() {
 	}
 	log.Printf("[Middleware] Referer whitelist: %v", allowedDomains)
 
-	// 中间件链：SecurityHeaders -> MethodGuard -> RefererCheck -> JWT -> mux
-	// SecurityHeaders 最外层：所有响应（含 405/403）都带安全头
+	// 中间件链：SecurityHeaders -> MethodGuard -> PathGuard -> RefererCheck -> JWT -> mux
+	// SecurityHeaders 最外层：所有响应（含 405/403/400）都带安全头
 	// MethodGuard 次外层：拒绝 TRACE/CONNECT 方法，避免触发后续不必要检查
+	// PathGuard：拒绝包含 .. 或 . 序列的恶意路径，纵深防御
 	// RefererCheck：防盗链
 	// JWT：认证白名单检查
 	referered := middleware.RefererCheck(allowedDomains, jwtAuthed)
-	guarded := middleware.MethodGuard(referered)
+	pathGuarded := middleware.PathGuard(referered)
+	guarded := middleware.MethodGuard(pathGuarded)
 	finalHandler := middleware.SecurityHeaders(enableHTTPS, guarded)
 
 	log.Printf("API endpoints:")
