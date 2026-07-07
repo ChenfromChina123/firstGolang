@@ -164,10 +164,10 @@ func (q *AsyncWriteQueue) flush(jobs []writeJob) {
 			)
 		case "file":
 			_, execErr = tx.Exec(
-				q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
-				j.f.ChunkSize, j.f.TotalChunks, j.f.Status,
+				j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
 				j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
 			)
 		case "update_status":
@@ -177,10 +177,10 @@ func (q *AsyncWriteQueue) flush(jobs []writeJob) {
 			)
 		case "file_and_status":
 			_, execErr = tx.Exec(
-				q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
-				j.f.ChunkSize, j.f.TotalChunks, j.f.Status,
+				j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
 				j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
 			)
 			if execErr == nil {
@@ -231,10 +231,10 @@ func (q *AsyncWriteQueue) execSync(j writeJob) {
 		)
 	case "file":
 		_, err = q.db.Exec(
-			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
-			j.f.ChunkSize, j.f.TotalChunks, j.f.Status,
+			j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
 			j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
 		)
 	case "update_status":
@@ -244,10 +244,10 @@ func (q *AsyncWriteQueue) execSync(j writeJob) {
 		)
 	case "file_and_status":
 		_, err = q.db.Exec(
-			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
-			j.f.ChunkSize, j.f.TotalChunks, j.f.Status,
+			j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
 			j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
 		)
 		if err == nil {
@@ -263,12 +263,14 @@ func (q *AsyncWriteQueue) execSync(j writeJob) {
 }
 
 // AsyncCreateSession enqueues a session for batch write.
+// 队列满时回退到同步写入，避免丢失 session 记录导致后续上传状态查询失败。
 func (db *DB) AsyncCreateSession(session *model.UploadSession) {
 	if db.asyncQ != nil {
 		select {
 		case db.asyncQ.ch <- writeJob{kind: "session", s: session}:
 		default:
-			log.Printf("[AsyncSQLite] Queue full! Dropping session %s", session.ID)
+			log.Printf("[AsyncSQLite] Queue full! Falling back to sync write for session %s", session.ID)
+			db.CreateUploadSession(session)
 		}
 	} else {
 		db.CreateUploadSession(session)
@@ -276,12 +278,14 @@ func (db *DB) AsyncCreateSession(session *model.UploadSession) {
 }
 
 // AsyncSaveChunk enqueues a chunk record for batch write.
+// 队列满时回退到同步写入，避免丢失 chunk 记录导致断点续传失效。
 func (db *DB) AsyncSaveChunk(sessionID string, chunkIndex int, size int64, hash string) {
 	if db.asyncQ != nil {
 		select {
 		case db.asyncQ.ch <- writeJob{kind: "chunk", sid: sessionID, idx: chunkIndex, size: size, hash: hash}:
 		default:
-			log.Printf("[AsyncSQLite] Queue full! Dropping chunk %s/%d", sessionID, chunkIndex)
+			log.Printf("[AsyncSQLite] Queue full! Falling back to sync write for chunk %s/%d", sessionID, chunkIndex)
+			db.SaveChunk(sessionID, chunkIndex, size, hash)
 		}
 	} else {
 		db.SaveChunk(sessionID, chunkIndex, size, hash)
@@ -289,12 +293,14 @@ func (db *DB) AsyncSaveChunk(sessionID string, chunkIndex int, size int64, hash 
 }
 
 // AsyncCreateFile enqueues a file record for batch write.
+// 队列满时回退到同步写入，避免丢失 file 记录导致文件不可见。
 func (db *DB) AsyncCreateFile(f *model.FileRecord) {
 	if db.asyncQ != nil {
 		select {
 		case db.asyncQ.ch <- writeJob{kind: "file", f: f}:
 		default:
-			log.Printf("[AsyncSQLite] Queue full! Dropping file %s", f.ID)
+			log.Printf("[AsyncSQLite] Queue full! Falling back to sync write for file %s", f.ID)
+			db.CreateFile(f)
 		}
 	} else {
 		db.CreateFile(f)
@@ -302,24 +308,31 @@ func (db *DB) AsyncCreateFile(f *model.FileRecord) {
 }
 
 // AsyncUpdateStatus enqueues a session status update for batch write.
+// 队列满时回退到同步写入，避免丢失 status 更新导致 session 永久卡在 uploading。
 func (db *DB) AsyncUpdateStatus(sessionID string) {
 	if db.asyncQ != nil {
 		select {
 		case db.asyncQ.ch <- writeJob{kind: "update_status", sid: sessionID}:
 		default:
-			log.Printf("[AsyncSQLite] Queue full! Dropping status update %s", sessionID)
+			log.Printf("[AsyncSQLite] Queue full! Falling back to sync write for status update %s", sessionID)
+			db.UpdateUploadSessionStatus(sessionID, "completed")
 		}
+	} else {
+		db.UpdateUploadSessionStatus(sessionID, "completed")
 	}
 }
 
 // AsyncCreateFileAndStatus atomically enqueues a file record + session status update.
 // These two operations are always written together in the same transaction, ensuring consistency.
+// 队列满时回退到同步写入，避免丢失 file 记录导致上传成功但文件不可见。
 func (db *DB) AsyncCreateFileAndStatus(f *model.FileRecord, sessionID string) {
 	if db.asyncQ != nil {
 		select {
 		case db.asyncQ.ch <- writeJob{kind: "file_and_status", f: f, sid: sessionID}:
 		default:
-			log.Printf("[AsyncSQLite] Queue full! Dropping file_and_status %s/%s", f.ID, sessionID)
+			log.Printf("[AsyncSQLite] Queue full! Falling back to sync write for file_and_status %s/%s", f.ID, sessionID)
+			db.CreateFile(f)
+			db.UpdateUploadSessionStatus(sessionID, "completed")
 		}
 	} else {
 		db.CreateFile(f)
@@ -1788,13 +1801,6 @@ func (db *DB) ListSharesByCreator(username string) ([]*model.Share, error) {
 // DeleteShare 删除分享记录（调用方应先验证所有权）。
 func (db *DB) DeleteShare(id string) error {
 	_, err := db.conn.Exec(`DELETE FROM shares WHERE id = ?`, id)
-	return err
-}
-
-// UpdateSharePassword 更新分享的访问密码哈希。
-// passwordHash 为空字符串时清除密码（变为无密码访问），非空时为 bcrypt 哈希。
-func (db *DB) UpdateSharePassword(shareID, passwordHash string) error {
-	_, err := db.conn.Exec(`UPDATE shares SET password_hash = ? WHERE id = ?`, passwordHash, shareID)
 	return err
 }
 
