@@ -105,29 +105,21 @@ body::after {
 .brand-mark { color: var(--accent); display: flex; filter: drop-shadow(0 0 8px var(--accent-glow)); }
 .brand-mark img { display: block; }
 
-/* === 品牌横幅（首页 topbar 下方装饰条） === */
+/* === 品牌横幅（首页 topbar 下方装饰条，撑满屏幕宽度） === */
 .brand-banner {
     position: relative;
     z-index: 5;
     width: 100%;
-    max-width: 1280px;
-    margin: 16px auto 0;
-    padding: 0 24px;
+    margin: 0;
+    padding: 0;
     box-sizing: border-box;
+    overflow: hidden;
 }
 .brand-banner .banner-img {
     width: 100%;
     height: auto;
-    max-height: 160px;
-    object-fit: cover;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
     display: block;
-}
-@media (max-width: 768px) {
-    .brand-banner { padding: 0 16px; margin-top: 12px; }
-    .brand-banner .banner-img { max-height: 100px; }
+    border-bottom: 1px solid var(--border);
 }
 .brand-text h1 {
     font-family: var(--mono);
