@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260707c">
+    <link rel="stylesheet" href="/web/style.css?v=20260707d">
     <link rel="stylesheet" href="/web/lib/prism/themes_prism-tomorrow.min.css">
 </head>
 <body>
@@ -108,6 +108,7 @@
                     <!-- 默认操作（选中 0 项时显示） -->
                     <div class="default-ops" id="default-ops">
                         <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
+                        <button class="ghost-btn" id="select-mode-btn">多选</button>
                         <button class="ghost-btn" id="share-manage-btn">分享管理</button>
                         <button class="ghost-btn" id="trash-btn">回收站</button>
                         <button class="ghost-btn" id="refresh-files">刷新</button>
@@ -115,6 +116,7 @@
                     <!-- 选择操作（选中 ≥1 项时显示，按钮按选中类型动态显示/隐藏） -->
                     <div class="selection-ops" id="selection-ops" hidden>
                         <span class="selection-count" id="selection-count">已选 0 项</span>
+                        <button class="ghost-btn" id="sel-all">全选</button>
                         <button class="ghost-btn" id="sel-download" hidden>下载</button>
                         <button class="ghost-btn" id="sel-zip" hidden>ZIP 下载</button>
                         <button class="ghost-btn" id="sel-share" hidden>分享</button>
@@ -417,6 +419,6 @@
     <script src="/web/lib/prism/prism.min.js"></script>
     <!-- marked.js Markdown 渲染（用于 .md 文件预览） -->
     <script src="/web/lib/marked/marked.min.js"></script>
-    <script src="/web/app.js?v=20260707c"></script>
+    <script src="/web/app.js?v=20260707d"></script>
 </body>
 </html>

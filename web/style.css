@@ -255,8 +255,9 @@ body::after {
 /* === 上传下拉菜单（悬停展开） === */
 .upload-dropdown { position: relative; display: inline-block; }
 .upload-trigger { white-space: nowrap; }
-/* 允许下拉菜单溢出 .panel 的 overflow:hidden */
-.upload-panel { overflow: visible; }
+/* 允许下拉菜单溢出 .panel 的 overflow:hidden，并提升 upload-panel 层级
+   避免 .files-panel（后置兄弟元素）覆盖下拉菜单 */
+.upload-panel { overflow: visible; position: relative; z-index: 20; }
 .upload-panel .panel-head { overflow: visible; }
 .upload-menu {
     position: absolute;
@@ -537,6 +538,9 @@ body::after {
     accent-color: var(--accent);
     justify-self: center;
 }
+/* 非多选模式隐藏 checkbox，多选模式显示 */
+.file-tree:not(.selection-mode) .row-check { display: none; }
+.file-tree.selection-mode .row-check { display: inline-block; }
 
 .tree-name {
     font-family: var(--mono);
