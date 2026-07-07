@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FileSync favicon：圆角方形 + 文件图标 + 双向同步箭头 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+    <defs>
+        <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#0d1320"/>
+            <stop offset="100%" stop-color="#0a0e14"/>
+        </linearGradient>
+        <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#00d9ff"/>
+            <stop offset="100%" stop-color="#3fb950"/>
+        </linearGradient>
+    </defs>
+    <rect x="1" y="1" width="30" height="30" rx="7" fill="url(#bg)" stroke="url(#accent)" stroke-width="1.5"/>
+    <path d="M11 8h6l4 4v11a1 1 0 0 1-1 1H11a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"
+          fill="none" stroke="url(#accent)" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M17 8v4h4" fill="none" stroke="url(#accent)" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M13 16h5M17 14.5l2 1.5-2 1.5" fill="none" stroke="#00d9ff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M19 21h-5M15 22.5l-2-1.5 2-1.5" fill="none" stroke="#3fb950" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
