@@ -896,7 +896,47 @@
         selectedItems.clear();
         selectionMode = false;
         shiftAnchorRow = null;
+        // 退出多选模式：移除 file-tree 的 selection-mode 类，隐藏 checkbox
+        const tree = document.getElementById('file-tree');
+        if (tree) tree.classList.remove('selection-mode');
         if (updateUi !== false) updateToolbar();
+    }
+
+    /**
+     * enterSelectionMode - 进入多选模式
+     * 显示所有行的 checkbox，切换工具栏到选择操作
+     */
+    function enterSelectionMode() {
+        selectionMode = true;
+        const tree = document.getElementById('file-tree');
+        if (tree) tree.classList.add('selection-mode');
+        // 切换工具栏：隐藏 default-ops，显示 selection-ops
+        const defaultOps = document.getElementById('default-ops');
+        const selectionOps = document.getElementById('selection-ops');
+        if (defaultOps) defaultOps.hidden = true;
+        if (selectionOps) selectionOps.hidden = false;
+        const countEl = document.getElementById('selection-count');
+        if (countEl) countEl.textContent = '已选 0 项';
+        // 重置选择操作按钮的显示状态（全选按钮始终显示）
+        updateToolbar();
+    }
+
+    /**
+     * selectAll - 全选当前列表中的所有行（目录+文件）
+     */
+    function selectAll() {
+        if (!selectionMode) return;
+        const rows = document.querySelectorAll('#file-tree .tree-row');
+        rows.forEach(row => {
+            const item = rowToItem(row);
+            if (!selectedItems.has(item.key)) {
+                selectedItems.set(item.key, item);
+                row.classList.add('selected');
+                const cb = row.querySelector('.row-check');
+                if (cb) cb.checked = true;
+            }
+        });
+        updateToolbar();
     }
 
     /**
@@ -911,23 +951,36 @@
         const selectionOps = document.getElementById('selection-ops');
         const countEl = document.getElementById('selection-count');
         const n = selectedItems.size;
-        if (n === 0) {
+        if (n === 0 && !selectionMode) {
             if (defaultOps) defaultOps.hidden = false;
             if (selectionOps) selectionOps.hidden = true;
             return;
         }
+        // 多选模式下即使 0 项选中，也保持 selection-ops 显示
         if (defaultOps) defaultOps.hidden = true;
         if (selectionOps) selectionOps.hidden = false;
         if (countEl) countEl.textContent = `已选 ${n} 项`;
-        // 统计类型
-        const items = Array.from(selectedItems.values());
-        const files = items.filter(it => it.type === 'file');
-        const dirs = items.filter(it => it.type === 'dir');
+        // 多选模式下隐藏所有操作按钮（0 项时只有全选/取消可用）
         const selDownload = document.getElementById('sel-download');
         const selZip = document.getElementById('sel-zip');
         const selShare = document.getElementById('sel-share');
         const selRename = document.getElementById('sel-rename');
         const selMove = document.getElementById('sel-move');
+        const selDelete = document.getElementById('sel-delete');
+        if (n === 0) {
+            if (selDownload) selDownload.hidden = true;
+            if (selZip) selZip.hidden = true;
+            if (selShare) selShare.hidden = true;
+            if (selRename) selRename.hidden = true;
+            if (selMove) selMove.hidden = true;
+            if (selDelete) selDelete.hidden = true;
+            return;
+        }
+        if (selDelete) selDelete.hidden = false;
+        // 统计类型
+        const items = Array.from(selectedItems.values());
+        const files = items.filter(it => it.type === 'file');
+        const dirs = items.filter(it => it.type === 'dir');
         // 下载：含文件时显示（单文件直接下载，多文件批量下载）
         if (selDownload) selDownload.hidden = files.length === 0;
         // ZIP 下载：仅当选中 1 个目录时显示（后端无批量 ZIP API）
@@ -1016,14 +1069,14 @@
                 toggleSelection(row, true);
                 return;
             }
-            // 普通点击：目录行进入子目录，文件行切换选中
+            // 普通点击：目录行进入子目录，文件行打开预览
             if (row.dataset.type === 'dir') {
                 currentPath += row.dataset.name + '/';
                 loadFiles();
             } else {
-                // 文件行单击：切换选中
-                shiftAnchorRow = row;
-                toggleSelection(row, e.ctrlKey || e.metaKey);
+                // 文件行单击：打开预览（非多选模式下不再误触选中）
+                e.preventDefault();
+                previewFile(row.dataset.id, row.dataset.filename);
             }
         });
 
@@ -1055,15 +1108,17 @@
             });
         }
 
-        // 键盘：Enter/Space 进入目录或切换选中
+        // 键盘：Enter/Space 进入目录/打开预览/切换选中
         row.addEventListener('keydown', e => {
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                if (row.dataset.type === 'dir' && !selectionMode) {
+                if (selectionMode) {
+                    toggleSelection(row, true);
+                } else if (row.dataset.type === 'dir') {
                     currentPath += row.dataset.name + '/';
                     loadFiles();
                 } else {
-                    toggleSelection(row, true);
+                    previewFile(row.dataset.id, row.dataset.filename);
                 }
             }
         });
@@ -2792,11 +2847,22 @@
         // 新建目录
         document.getElementById('mkdir-btn').addEventListener('click', mkdir);
 
+        // 多选模式：进入多选模式，显示 checkbox
+        const selectModeBtn = document.getElementById('select-mode-btn');
+        if (selectModeBtn) {
+            selectModeBtn.addEventListener('click', enterSelectionMode);
+        }
+
         // === 选择操作栏按钮（selection-ops）===
-        // 取消选择：清空选中状态
+        // 取消选择：清空选中状态，退出多选模式
         const selCancelBtn = document.getElementById('sel-cancel');
         if (selCancelBtn) {
             selCancelBtn.addEventListener('click', () => clearSelection());
+        }
+        // 全选：选中当前列表所有行
+        const selAllBtn = document.getElementById('sel-all');
+        if (selAllBtn) {
+            selAllBtn.addEventListener('click', selectAll);
         }
         // 下载选中文件
         const selDownloadBtn = document.getElementById('sel-download');
