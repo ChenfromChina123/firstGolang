@@ -715,12 +715,13 @@ func (h *UploadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// CheckUpload 检查文件哈希是否已存在，命中则秒传（复制存储文件，创建新引用记录）。
+// CheckUpload 检查文件哈希是否已存在，命中则秒传（全局存储，共享 storage_path）。
 // POST /api/upload/check
-// 权限：需认证。秒传范围仅限当前 owner（同用户），不跨用户（防哈希侧信道探测）。
-// 命中条件：hash + file_size 双重匹配，且 owner = 当前用户。
-// 命中后流程：生成新 fileID → CopyFile 复制存储 → CreateFile 创建记录 → 返回 instant_upload=true
-// 失败回滚：CopyFile 失败不建 DB；CreateFile 失败删存储文件（与 saveShareToMyFiles 一致）
+// 权限：需认证。秒传范围全局（跨用户），相同 hash+size 命中即秒传。
+// 命中条件：hash + file_size 双重匹配，任意 owner 的已完成文件。
+// 命中后流程：生成新 fileID → 共享 srcFile.StoragePath（不复制物理文件）→ CreateFile 创建记录 → 返回 instant_upload=true
+// 全局存储说明：多个用户秒传同一文件时，DB 记录各自独立（owner 不同），但 storage_path 共享同一物理文件。
+// 永久删除时通过引用计数（CountByStoragePath）判断是否删除物理文件。
 func (h *UploadHandler) CheckUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
@@ -754,8 +755,8 @@ func (h *UploadHandler) CheckUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 秒传范围仅限当前 owner（admin 也只查自己的，不跨用户）
-	srcFile, err := h.db.GetFileByHash(req.FileHash, username, req.FileSize)
+	// 全局秒传：owner="" 跨用户查找已存在的相同 hash+size 文件
+	srcFile, err := h.db.GetFileByHash(req.FileHash, "", req.FileSize)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// 未命中，需正常上传
@@ -775,23 +776,15 @@ func (h *UploadHandler) CheckUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 生成新 fileID 和 storage_path，复制存储文件
+	// 全局存储：共享 srcFile.StoragePath，不复制物理文件
 	newFileID := generateID()
-	dstStoragePath := h.storage.StoragePathFor(newFileID, req.Filename)
-	if err := h.storage.CopyFile(srcFile.StoragePath, dstStoragePath); err != nil {
-		log.Printf("[Upload] instant upload copy file error: src=%s dst=%s err=%v", srcFile.StoragePath, dstStoragePath, err)
-		http.Error(w, `{"error":"copy_failed"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// 创建新的 DB 记录（失败则回滚存储文件）
 	now := time.Now()
 	newRecord := &model.FileRecord{
 		ID:          newFileID,
 		Filename:    req.Filename,
 		Size:        srcFile.Size,
 		Hash:        srcFile.Hash,
-		StoragePath: dstStoragePath,
+		StoragePath: srcFile.StoragePath, // 共享源文件物理路径
 		StorageType: srcFile.StorageType,
 		ChunkSize:   srcFile.ChunkSize,
 		TotalChunks: srcFile.TotalChunks,
@@ -801,8 +794,7 @@ func (h *UploadHandler) CheckUpload(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:   now,
 	}
 	if err := h.db.CreateFile(newRecord); err != nil {
-		log.Printf("[Upload] instant upload create file record error: %v, rolling back storage", err)
-		h.storage.DeleteFile(dstStoragePath) // 回滚
+		log.Printf("[Upload] instant upload create file record error: %v", err)
 		http.Error(w, `{"error":"db_create_failed"}`, http.StatusInternalServerError)
 		return
 	}
@@ -812,8 +804,8 @@ func (h *UploadHandler) CheckUpload(w http.ResponseWriter, r *http.Request) {
 		h.redis.MarkFileExists(r.Context(), req.Filename)
 	}
 
-	log.Printf("[Upload] instant upload success: user=%s file=%s hash=%s src=%s",
-		username, req.Filename, req.FileHash[:16], srcFile.ID)
+	log.Printf("[Upload] instant upload success (global): user=%s file=%s hash=%s src=%s shared_path=%s",
+		username, req.Filename, req.FileHash[:16], srcFile.ID, srcFile.StoragePath)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(model.CheckUploadResponse{

@@ -205,10 +205,20 @@ func (h *TrashHandler) PermanentDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 删除存储文件
-	if err := h.storage.DeleteFile(f.StoragePath); err != nil {
-		log.Printf("[Trash] permanent delete storage %s error: %v", f.StoragePath, err)
-		// 存储删除失败不阻断（数据库已删除，避免残留记录）
+	// 全局存储引用计数：检查是否还有其他记录引用同一 storage_path
+	// count > 0 说明还有其他用户/记录共享此物理文件，不能删除物理文件
+	refCount, err := h.db.CountByStoragePath(f.StoragePath)
+	if err != nil {
+		log.Printf("[Trash] count by storage path %s error: %v (skip physical delete)", f.StoragePath, err)
+	} else if refCount > 0 {
+		log.Printf("[Trash] skip physical delete %s: %d other references exist (global storage)",
+			f.StoragePath, refCount)
+	} else {
+		// 引用计数为 0，安全删除物理文件
+		if err := h.storage.DeleteFile(f.StoragePath); err != nil {
+			log.Printf("[Trash] permanent delete storage %s error: %v", f.StoragePath, err)
+			// 存储删除失败不阻断（数据库已删除，避免残留记录）
+		}
 	}
 
 	log.Printf("[Trash] permanently deleted: file=%s user=%s", fileID, username)
@@ -248,7 +258,7 @@ func (h *TrashHandler) EmptyTrash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 逐个永久删除（数据库 + 存储）
+	// 逐个永久删除（数据库 + 存储），全局存储引用计数检查
 	var successCount, failCount int
 	for _, f := range files {
 		_, affected, err := h.db.PermanentlyDeleteFile(f.ID, owner)
@@ -257,8 +267,16 @@ func (h *TrashHandler) EmptyTrash(w http.ResponseWriter, r *http.Request) {
 			failCount++
 			continue
 		}
-		if err := h.storage.DeleteFile(f.StoragePath); err != nil {
-			log.Printf("[Trash] empty: storage delete %s error: %v", f.StoragePath, err)
+		// 引用计数：还有其他记录引用同一 storage_path 时不删物理文件
+		refCount, err := h.db.CountByStoragePath(f.StoragePath)
+		if err != nil {
+			log.Printf("[Trash] empty: count refs %s error: %v (skip physical delete)", f.StoragePath, err)
+		} else if refCount > 0 {
+			log.Printf("[Trash] empty: skip physical delete %s: %d refs exist", f.StoragePath, refCount)
+		} else {
+			if err := h.storage.DeleteFile(f.StoragePath); err != nil {
+				log.Printf("[Trash] empty: storage delete %s error: %v", f.StoragePath, err)
+			}
 		}
 		successCount++
 	}

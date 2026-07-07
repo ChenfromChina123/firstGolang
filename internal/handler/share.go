@@ -201,23 +201,6 @@ func (h *ShareHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// /api/share/{id}/password - 修改或清除访问密码
-	if strings.HasPrefix(path, "/api/share/") && strings.HasSuffix(path, "/password") {
-		id := strings.TrimPrefix(path, "/api/share/")
-		id = strings.TrimSuffix(id, "/password")
-		id = strings.TrimSuffix(id, "/")
-		if id == "" {
-			http.Error(w, `{"error":"id_required"}`, http.StatusBadRequest)
-			return
-		}
-		if r.Method == http.MethodPost {
-			h.updateSharePassword(w, r, username, id)
-		} else {
-			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
-		}
-		return
-	}
-
 	// /api/share/{id}
 	if strings.HasPrefix(path, "/api/share/") {
 		id := strings.TrimPrefix(path, "/api/share/")
@@ -516,64 +499,6 @@ func (h *ShareHandler) deleteShare(w http.ResponseWriter, r *http.Request, usern
 	log.Printf("[Share] deleted: id=%s user=%s", id, username)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"success":true}`))
-}
-
-// updateSharePasswordRequest 修改/清除分享密码请求体。
-// Password 为空字符串时清除密码，1-64 字符时设置/修改密码。
-type updateSharePasswordRequest struct {
-	Password string `json:"password"`
-}
-
-// updateSharePassword 修改或清除分享的访问密码。
-// POST /api/share/{id}/password
-// 仅分享创建者可操作；密码为空=清除密码，1-64字符=设置/修改密码。
-// 修改密码后旧 auth cookie 仍有效（7天会话），如需立即使旧会话失效需删除分享重建。
-func (h *ShareHandler) updateSharePassword(w http.ResponseWriter, r *http.Request, username, id string) {
-	s, err := h.db.GetShare(id)
-	if err != nil {
-		http.Error(w, `{"error":"share_not_found"}`, http.StatusNotFound)
-		return
-	}
-	if s.CreatedBy != username {
-		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	var req updateSharePasswordRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
-		return
-	}
-
-	var passwordHash string
-	var action string
-	if req.Password != "" {
-		if len(req.Password) > 64 {
-			http.Error(w, `{"error":"password_too_long","message":"密码长度不能超过 64 字符"}`, http.StatusBadRequest)
-			return
-		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-		if err != nil {
-			log.Printf("[Share] bcrypt password error: %v", err)
-			http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
-			return
-		}
-		passwordHash = string(hash)
-		action = "updated"
-	} else {
-		action = "cleared"
-	}
-
-	if err := h.db.UpdateSharePassword(id, passwordHash); err != nil {
-		log.Printf("[Share] update password error: id=%s err=%v", id, err)
-		http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("[Share] password %s: id=%s user=%s", action, id, username)
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(fmt.Sprintf(`{"success":true,"action":"%s"}`, action)))
 }
 
 // getSharePublic 返回公开分享信息（不暴露 file_id/storage_path 等敏感字段）
@@ -1108,10 +1033,10 @@ func (h *ShareHandler) batchDownloadShare(w http.ResponseWriter, r *http.Request
 	log.Printf("[Share] batch downloaded: id=%s success=%d fail=%d", id, successCount, failCount)
 }
 
-// saveShareToMyFiles 转存分享文件到自己的文件中心。
+// saveShareToMyFiles 转存分享文件到自己的文件中心（全局存储，共享 storage_path）。
 // POST /api/share/save  Body: {"share_id":"xxx","file_ids":["id1","id2"],"target_dir":"docs/"}
 // 权限：必须登录；每个文件校验属于该分享范围（isFileInShare）。
-// 失败回滚：CopyFile 失败时不创建 DB 记录；CreateFile 失败时删除已复制的存储文件。
+// 全局存储：新记录共享源文件 storage_path，不复制物理文件；CreateFile 失败仅返回错误（不删物理文件）。
 // 同名冲突自动重命名（file.pdf → file_1.pdf）。
 func (h *ShareHandler) saveShareToMyFiles(w http.ResponseWriter, r *http.Request, username string) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
@@ -1198,26 +1123,17 @@ func (h *ShareHandler) saveShareToMyFiles(w http.ResponseWriter, r *http.Request
 		// 同 owner 下避免重名
 		newFilename = generateUniqueFilename(newFilename, username, h.db)
 
-		// 生成新 fileID 和 storage_path
+		// 全局存储：共享源文件 storage_path，不复制物理文件
 		newFileID := generateID()
-		dstStoragePath := h.storage.StoragePathFor(newFileID, newFilename)
 
-		// 复制存储文件（失败则不创建 DB 记录）
-		if err := h.storage.CopyFile(f.StoragePath, dstStoragePath); err != nil {
-			log.Printf("[Share] save copy file error: src=%s dst=%s err=%v", f.StoragePath, dstStoragePath, err)
-			results = append(results, result{FileID: fileID, Filename: f.Filename, Success: false, Error: "copy_failed"})
-			failCount++
-			continue
-		}
-
-		// 创建新的 DB 记录（owner=当前用户；失败则回滚存储文件）
+		// 创建新的 DB 记录（owner=当前用户，共享源文件 storage_path）
 		now := time.Now()
 		newRecord := &model.FileRecord{
 			ID:          newFileID,
 			Filename:    newFilename,
 			Size:        f.Size,
 			Hash:        f.Hash,
-			StoragePath: dstStoragePath,
+			StoragePath: f.StoragePath, // 共享源文件物理路径
 			StorageType: f.StorageType,
 			ChunkSize:   f.ChunkSize,
 			TotalChunks: f.TotalChunks,
@@ -1227,8 +1143,7 @@ func (h *ShareHandler) saveShareToMyFiles(w http.ResponseWriter, r *http.Request
 			UpdatedAt:   now,
 		}
 		if err := h.db.CreateFile(newRecord); err != nil {
-			log.Printf("[Share] save create file record error: %v, rolling back storage", err)
-			h.storage.DeleteFile(dstStoragePath) // 回滚
+			log.Printf("[Share] save create file record error: %v", err)
 			results = append(results, result{FileID: fileID, Filename: f.Filename, Success: false, Error: "db_create_failed"})
 			failCount++
 			continue

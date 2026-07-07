@@ -196,13 +196,25 @@ func main() {
 
 	// 清理过期回收站文件（30 天保留期，物理删除数据库记录 + 删除存储文件）
 	// 在 st 初始化后执行，避免 storage 未就绪导致存储文件残留
+	// 全局存储：删物理文件前检查引用计数，有其他记录引用时不删
 	if expired, err := db.CleanupExpiredTrash(30); err == nil && len(expired) > 0 {
+		var deletedCount int
 		for _, f := range expired {
+			refCount, refErr := db.CountByStoragePath(f.StoragePath)
+			if refErr != nil {
+				log.Printf("[Trash] cleanup: count refs %s error: %v (skip physical delete)", f.StoragePath, refErr)
+				continue
+			}
+			if refCount > 0 {
+				log.Printf("[Trash] cleanup: skip physical delete %s: %d refs exist", f.StoragePath, refCount)
+				continue
+			}
 			if err := st.DeleteFile(f.StoragePath); err != nil {
 				log.Printf("[Trash] cleanup: delete storage %s error: %v", f.StoragePath, err)
 			}
+			deletedCount++
 		}
-		log.Printf("[Trash] cleaned %d expired trash files", len(expired))
+		log.Printf("[Trash] cleaned %d expired trash files (%d physical deleted)", len(expired), deletedCount)
 	} else if err != nil {
 		log.Printf("[Trash] cleanup expired error: %v", err)
 	}

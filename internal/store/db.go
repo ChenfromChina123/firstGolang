@@ -1204,15 +1204,24 @@ func (db *DB) FindFileByName(filename, owner string) (*model.FileRecord, error) 
 	return f, nil
 }
 
-// GetFileByHash 按 hash + owner + size 查询已完成文件（秒传检查用）。
-// hash 必须非空（完整 SHA256 hex，64 字符）；owner 非空时按用户过滤（防跨用户哈希侧信道探测）。
+// GetFileByHash 按 hash + size 查询已完成文件（秒传检查用）。
+// hash 必须非空（完整 SHA256 hex，64 字符）。
+// owner 非空时按用户过滤（仅查自己的）；owner 为空时全局查找（跨用户秒传）。
 // 返回 sql.ErrNoRows 时表示未命中（调用方据此判断是否秒传）。
 // 校验条件：hash 匹配 + size 匹配 + status='completed'，三重校验避免误判。
 func (db *DB) GetFileByHash(hash, owner string, fileSize int64) (*model.FileRecord, error) {
-	row := db.conn.QueryRow(
-		`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+	var row *sql.Row
+	if owner == "" {
+		row = db.conn.QueryRow(
+			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+		 FROM files WHERE hash = ? AND size = ? AND status = 'completed' AND deleted_at IS NULL
+		 ORDER BY created_at DESC LIMIT 1`, hash, fileSize)
+	} else {
+		row = db.conn.QueryRow(
+			`SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
 		 FROM files WHERE hash = ? AND size = ? AND status = 'completed' AND owner = ? AND deleted_at IS NULL
 		 ORDER BY created_at DESC LIMIT 1`, hash, fileSize, owner)
+	}
 	f := &model.FileRecord{}
 	var createdAt, updatedAt string
 	err := row.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
@@ -1625,6 +1634,19 @@ func (db *DB) PermanentlyDeleteFile(id, owner string) (*model.FileRecord, int64,
 		return nil, 0, err
 	}
 	return f, affected, nil
+}
+
+// CountByStoragePath 统计引用同一 storage_path 的记录数（全局存储引用计数）。
+// 用于永久删除时判断是否可以删除物理文件：count > 0 说明还有其他记录引用，不能删物理文件。
+// 统计范围：所有未永久删除的记录（包括回收站中的软删除记录，因为恢复后还需要物理文件）。
+func (db *DB) CountByStoragePath(storagePath string) (int64, error) {
+	var count int64
+	err := db.conn.QueryRow(
+		`SELECT COUNT(*) FROM files WHERE storage_path = ?`, storagePath).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // CleanupExpiredTrash 清理回收站中超过保留期的文件（物理删除数据库记录 + 删除存储文件）。
