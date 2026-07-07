@@ -120,7 +120,7 @@
     // === 4. Tab 切换 ===
 
     /**
-     * switchTab - 切换 Tab 激活状态
+     * switchTab - 切换 Tab 激活状态并自动加载对应数据
      * @param {string} tabName - Tab 名称：stats|users|files|shares
      */
     function switchTab(tabName) {
@@ -130,6 +130,11 @@
         document.querySelectorAll('.tab-pane').forEach(pane => {
             pane.classList.toggle('active', pane.id === 'pane-' + tabName);
         });
+        // 切换 Tab 时自动加载对应数据，保证首次点击即可见数据
+        if (tabName === 'stats') loadStats();
+        else if (tabName === 'users') loadUsers();
+        else if (tabName === 'files') loadFiles();
+        else if (tabName === 'shares') loadShares();
     }
 
     // === 5. 系统总览 ===
