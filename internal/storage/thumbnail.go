@@ -214,6 +214,10 @@ func GenerateTranscode(basePath, srcPath, fileID, quality string) (string, error
 		audioBitrate = "96k"
 	}
 
+	// 使用临时文件写入，转码成功后原子 rename 到目标路径
+	// 避免浏览器在文件写入过程中请求到不完整数据触发 DEMUXER_ERROR
+	// 临时文件名保留 .mp4 后缀，否则 ffmpeg 无法通过扩展名推断输出格式
+	tmpPath := dstPath + ".part.mp4"
 	cmd := exec.Command(ffmpegPath,
 		"-i", srcPath,
 		"-vf", fmt.Sprintf("scale=-2:%d", spec.maxHeight),
@@ -225,16 +229,23 @@ func GenerateTranscode(basePath, srcPath, fileID, quality string) (string, error
 		"-b:a", audioBitrate,
 		"-movflags", "+faststart",
 		"-y",
-		dstPath,
+		tmpPath,
 	)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		// 失败时清理部分写入的文件，防止下次请求读到损坏文件触发 DEMUXER_ERROR
-		os.Remove(dstPath)
+		// 失败时清理临时文件，防止磁盘残留
+		os.Remove(tmpPath)
 		return "", fmt.Errorf("ffmpeg transcode failed: %w, stderr: %s", err, stderr.String())
+	}
+
+	// 原子 rename：目标文件要么不存在（转码中），要么完整可用（转码后）
+	// 浏览器不会读到部分写入的数据
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("rename transcode file: %w", err)
 	}
 	return dstPath, nil
 }
