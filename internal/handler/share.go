@@ -32,6 +32,7 @@ type ShareHandler struct {
 	storage         storage.Storage
 	secret          []byte                  // HMAC 签名密钥（复用 JWT secret）
 	downloadLimiter *auth.LoginRateLimiter  // 分享下载频率限制（每 IP 每分钟 10 次）
+	infoLimiter     *auth.LoginRateLimiter   // 分享信息查询频率限制（每 IP 每分钟 60 次，防暴力枚举）
 }
 
 // NewShareHandler 创建分享 handler
@@ -42,6 +43,7 @@ func NewShareHandler(db *store.DB, st storage.Storage, secret []byte) *ShareHand
 		storage:         st,
 		secret:          secret,
 		downloadLimiter: auth.NewLoginRateLimiter(0.1667, 10), // 10 次/分钟
+		infoLimiter:     auth.NewLoginRateLimiter(1.0, 60),     // 60 次/分钟/IP，阻拦分享 ID 枚举攻击
 	}
 }
 
@@ -504,6 +506,12 @@ func (h *ShareHandler) deleteShare(w http.ResponseWriter, r *http.Request, usern
 // getSharePublic 返回公开分享信息（不暴露 file_id/storage_path 等敏感字段）
 // GET /api/s/{id}
 func (h *ShareHandler) getSharePublic(w http.ResponseWriter, r *http.Request, id string) {
+	// 频率限制：每 IP 每分钟最多 60 次查询分享信息（防暴力枚举分享 ID）
+	if !h.infoLimiter.Allow(r) {
+		http.Error(w, `{"error":"rate_limited","message":"too many requests, try again later"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	s, err := h.db.GetShare(id)
 	if err != nil {
 		http.Error(w, `{"error":"share_not_found","message":"分享不存在或已删除"}`, http.StatusNotFound)
@@ -808,6 +816,12 @@ func (h *ShareHandler) downloadSharedDir(w http.ResponseWriter, r *http.Request,
 // 响应：{path:"子目录", dirs:[{name,file_count}], files:[{id,name,size,created_at}]}
 // 浏览不计数（仅下载计数）。
 func (h *ShareHandler) listShareDir(w http.ResponseWriter, r *http.Request, id string) {
+	// 频率限制：每 IP 每分钟最多 60 次列表查询（防暴力枚举分享 ID）
+	if !h.infoLimiter.Allow(r) {
+		http.Error(w, `{"error":"rate_limited","message":"too many requests, try again later"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	// 防盗链：校验 token（防止目录枚举攻击）
 	token := r.URL.Query().Get("token")
 	if !validateShareToken(token, id, h.secret) {
