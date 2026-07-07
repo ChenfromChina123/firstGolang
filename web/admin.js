@@ -427,7 +427,7 @@
                             <td>${s.expires_at ? fmtDate(s.expires_at) : '永久'}</td>
                             <td>${shareStatusTag(s)}</td>
                             <td>
-                                <a class="btn" href="/api/s/${encodeURIComponent(s.id)}" target="_blank">查看</a>
+                                <a class="btn" href="/web/share.html?id=${encodeURIComponent(s.id)}" target="_blank">查看</a>
                                 <button class="btn btn-danger" onclick="deleteShare('${escapeHtml(s.id)}')">删除</button>
                             </td>
                         </tr>
