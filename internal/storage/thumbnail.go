@@ -375,7 +375,7 @@ var transcodeJobs sync.Map
 //   - 非 nil：走 HLS（GenerateHLSTranscode，边转边播 + OSS 缓存）
 //
 // 返回值：当前任务状态字符串（pending/running/done/failed）
-func StartTranscodeJob(basePath, srcPath, fileID, quality string, cacheStore TranscodeCacheStore) string {
+func StartTranscodeJob(basePath, srcPath, fileID, quality string, cacheStore TranscodeCacheStore, cleanupSrc bool) string {
 	key := fileID + ":" + quality
 
 	// 占位 job：LoadOrStore 保证并发请求只有一个创建成功
@@ -402,7 +402,7 @@ func StartTranscodeJob(basePath, srcPath, fileID, quality string, cacheStore Tra
 			}
 			// 缓存丢失，删除旧 job 重新启动（落到下面的占位逻辑）
 			transcodeJobs.Delete(key)
-			return StartTranscodeJob(basePath, srcPath, fileID, quality, cacheStore)
+			return StartTranscodeJob(basePath, srcPath, fileID, quality, cacheStore, cleanupSrc)
 		case TranscodeStatusFailed:
 			// 失败重试：RetryCount < 上限时重置为 pending 重新入队
 			if job.RetryCount >= transcodeJobMaxRetry {
@@ -431,6 +431,7 @@ func StartTranscodeJob(basePath, srcPath, fileID, quality string, cacheStore Tra
 		Priority:    priorityHigh,
 		EnqueueTime: time.Now(),
 		CacheStore:  cacheStore,
+		CleanupSrc:  cleanupSrc,
 	})
 
 	return string(TranscodeStatusPending)
@@ -444,6 +445,12 @@ func transcodeCacheComplete(basePath, fileID, quality string, cacheStore Transco
 		return complete
 	}
 	return TranscodeExists(basePath, fileID, quality)
+}
+
+// TranscodeCacheComplete 检查转码缓存是否完整可用（导出版本，供 handler 调用）。
+// cacheStore != nil 时检查 OSS + 本地 HLS 产物；否则检查本地 MP4 产物。
+func TranscodeCacheComplete(basePath, fileID, quality string, cacheStore TranscodeCacheStore) bool {
+	return transcodeCacheComplete(basePath, fileID, quality, cacheStore)
 }
 
 // GetTranscodeJob 查询转码任务状态（只读）。

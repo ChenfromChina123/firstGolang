@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,14 +9,24 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"filesync/internal/auth"
 	"filesync/internal/model"
 	"filesync/internal/storage"
 	"filesync/internal/store"
 )
+
+// s3TranscodeMaxSize s3 视频启用服务端转码的最大文件大小。
+// 超过此大小的 s3 视频直接返回原文件流，避免下载大文件占用磁盘和带宽。
+const s3TranscodeMaxSize = 200 * 1024 * 1024
+
+// hlsSegNamePattern 合法的 HLS 切片文件名格式（防路径穿越）。
+// 形如 seg_00001.ts，序号补零 5 位。
+var hlsSegNamePattern = regexp.MustCompile(`^seg_\d{5}\.ts$`)
 
 // PreviewHandler 处理文件预览请求：元数据查询、缩略图生成、原始内容流式返回。
 // 第一阶段支持图片/PDF/文本/音频；视频海报与转码在后续阶段实现。
@@ -92,6 +103,8 @@ func (h *PreviewHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveTranscode(w, r, fileID)
 	case "transcode-status":
 		h.serveTranscodeStatus(w, r, fileID)
+	case "hls":
+		h.serveHLS(w, r, fileID)
 	case "archive":
 		h.serveArchive(w, r, fileID)
 	case "content":
@@ -134,13 +147,16 @@ func (h *PreviewHandler) serveMeta(w http.ResponseWriter, r *http.Request, fileI
 		meta.URLs["archive_list"] = base + "/archive"
 		meta.URLs["archive_extract"] = base + "/archive?path="
 	}
-	// 视频类型附加海报与三档画质 URL（第三阶段：多画质转码）
-	// video_high=1080p / video_medium=720p（默认）/ video_low=480p
+	// 视频类型附加海报与三档画质 URL
+	// hls_* = HLS 流式播放（边转边播，hls.js）；transcode_* = MP4 fallback
 	if ftype == "video" {
 		meta.URLs["poster"] = base + "/poster"
 		meta.URLs["video_high"] = base + "/transcode?quality=high"
 		meta.URLs["video_medium"] = base + "/transcode?quality=medium"
 		meta.URLs["video_low"] = base + "/transcode?quality=low"
+		meta.URLs["hls_high"] = base + "/hls?quality=high"
+		meta.URLs["hls_medium"] = base + "/hls?quality=medium"
+		meta.URLs["hls_low"] = base + "/hls?quality=low"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -349,31 +365,58 @@ func (h *PreviewHandler) serveTranscode(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// s3 视频不支持服务端转码（需先下载大文件且异步清理复杂），直接返回 OSS 原文件流
-	if file.StorageType == "s3" {
-		h.serveContent(w, r, fileID)
-		return
-	}
-
 	basePath := h.storage.BasePath()
 
-	// 缓存命中 → 流式返回转码文件（支持 Range 206）
-	if storage.TranscodeExists(basePath, fileID, quality) {
-		h.serveTranscodeFile(w, r, file, fileID, quality)
+	// 缓存命中 → 流式返回转码文件
+	// cacheStore 可用时检查 OSS HLS 产物；否则检查本地 MP4
+	if storage.TranscodeCacheComplete(basePath, fileID, quality, h.cacheStore) {
+		if h.cacheStore != nil {
+			// HLS 缓存命中：重定向到 hls playlist 端点（前端用 hls.js 播放）
+			http.Redirect(w, r, fmt.Sprintf("/api/preview/%s/hls?quality=%s", fileID, quality), http.StatusFound)
+		} else {
+			h.serveTranscodeFile(w, r, file, fileID, quality)
+		}
 		return
 	}
 
 	// 缓存未命中 → 启动异步转码任务，返回 202 + status_url（前端轮询）
-	// local 文件的 StoragePath 带 "local:" 前缀，需去掉后交给 ffmpeg
-	srcPath := strings.TrimPrefix(file.StoragePath, storage.LocalPrefix)
-	if _, err := h.storage.FileSize(srcPath); err != nil {
-		log.Printf("[PREVIEW] transcode: source not found id=%s path=%s err=%v", fileID, srcPath, err)
-		http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
-		return
+	var srcPath string
+	var tempCleanup func()
+	cleanupSrc := false
+	if file.StorageType == "s3" {
+		// s3 视频 ≤200MB：下载到本地临时文件转码（worker 完成后自动清理）
+		// >200MB：直接返回原文件流，避免下载大文件占用磁盘
+		if file.Size > s3TranscodeMaxSize {
+			h.serveContent(w, r, fileID)
+			return
+		}
+		p, cleanup, err := h.resolveLocalSource(file)
+		if err != nil {
+			log.Printf("[PREVIEW] transcode: download s3 source failed id=%s err=%v", fileID, err)
+			http.Error(w, `{"error":"source file unavailable"}`, http.StatusInternalServerError)
+			return
+		}
+		srcPath = p
+		tempCleanup = cleanup
+		cleanupSrc = true
+	} else {
+		// local 文件的 StoragePath 带 "local:" 前缀，需去掉后交给 ffmpeg
+		srcPath = strings.TrimPrefix(file.StoragePath, storage.LocalPrefix)
+		if _, err := h.storage.FileSize(srcPath); err != nil {
+			log.Printf("[PREVIEW] transcode: source not found id=%s path=%s err=%v", fileID, srcPath, err)
+			http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
+			return
+		}
 	}
 
-	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality, h.cacheStore)
-	log.Printf("[PREVIEW] transcode: job started id=%s quality=%s status=%s", fileID, quality, status)
+	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality, h.cacheStore, cleanupSrc)
+	log.Printf("[PREVIEW] transcode: job started id=%s quality=%s status=%s srcType=%s", fileID, quality, status, file.StorageType)
+
+	// pending：worker 会使用临时文件并负责清理（CleanupSrc=true）
+	// 非 pending（running/done/failed）：当前临时文件不会被使用，立即清理
+	if tempCleanup != nil && status != "pending" {
+		tempCleanup()
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted) // 202 Accepted：转码任务已启动，前端轮询 status_url
@@ -477,12 +520,16 @@ func (h *PreviewHandler) serveTranscodeStatus(w http.ResponseWriter, r *http.Req
 
 	basePath := h.storage.BasePath()
 
-	// 先检查磁盘缓存（最权威状态源：文件存在即等价于转码完成可用）
-	if storage.TranscodeExists(basePath, fileID, quality) {
+	// 先检查缓存（最权威状态源：cacheStore 可用时检查 OSS HLS；否则检查本地 MP4）
+	if storage.TranscodeCacheComplete(basePath, fileID, quality, h.cacheStore) {
+		url := fmt.Sprintf("/api/preview/%s/transcode?quality=%s", fileID, quality)
+		if h.cacheStore != nil {
+			url = fmt.Sprintf("/api/preview/%s/hls?quality=%s", fileID, quality)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "done",
-			"url":    fmt.Sprintf("/api/preview/%s/transcode?quality=%s", fileID, quality),
+			"url":    url,
 		})
 		return
 	}
@@ -503,6 +550,197 @@ func (h *PreviewHandler) serveTranscodeStatus(w http.ResponseWriter, r *http.Req
 		"status": string(job.GetStatus()),
 		"error":  job.GetError(),
 	})
+}
+
+// serveHLS 分发 HLS 请求：无 seg 参数返回 m3u8 playlist，有 seg 参数返回 ts 切片。
+// 路由：GET /api/preview/{fileID}/hls?quality={q}&seg={segName}
+//   - seg 为空：返回 m3u8 playlist（转码中从本地读，完成从 OSS 读）
+//   - seg 非空：返回 ts 切片（转码中从本地读，完成 302 重定向到 OSS presigned URL）
+func (h *PreviewHandler) serveHLS(w http.ResponseWriter, r *http.Request, fileID string) {
+	quality := r.URL.Query().Get("quality")
+	if quality == "" {
+		quality = "medium"
+	}
+	if quality != "high" && quality != "medium" && quality != "low" {
+		http.Error(w, `{"error":"invalid quality"}`, http.StatusBadRequest)
+		return
+	}
+
+	file, err := h.db.GetFile(fileID)
+	if err != nil {
+		http.Error(w, `{"error":"file not found"}`, http.StatusNotFound)
+		return
+	}
+	if !h.checkPermission(w, r, file.Owner) {
+		return
+	}
+	if getFileType(file.Filename) != "video" {
+		http.Error(w, `{"error":"not a video"}`, http.StatusBadRequest)
+		return
+	}
+
+	seg := r.URL.Query().Get("seg")
+	if seg == "" {
+		h.serveHLSPlaylist(w, r, fileID, file, quality)
+	} else {
+		h.serveHLSSegment(w, r, fileID, quality, seg)
+	}
+}
+
+// serveHLSPlaylist 返回 m3u8 播放列表。
+// 转码完成（OSS）：从 OSS 读取 m3u8，重写 segment URL 为绝对路径。
+// 转码中（本地）：从本地临时目录读取 m3u8，重写 segment URL。
+// 未启动：触发转码任务，返回 202 Accepted。
+func (h *PreviewHandler) serveHLSPlaylist(w http.ResponseWriter, r *http.Request, fileID string, file *model.FileRecord, quality string) {
+	basePath := h.storage.BasePath()
+
+	// 检查转码产物是否已完整可用（OSS 或本地）
+	complete, location := storage.HLSTranscodeComplete(basePath, fileID, quality, h.cacheStore)
+
+	if complete {
+		var m3u8Data []byte
+		if location == "oss" && h.cacheStore != nil {
+			// 从 OSS 读取 m3u8
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			rc, err := h.cacheStore.GetTranscodePlaylist(ctx, fileID, quality)
+			if err != nil {
+				log.Printf("[PREVIEW] hls: get playlist from oss failed id=%s quality=%s err=%v", fileID, quality, err)
+				http.Error(w, `{"error":"playlist read failed"}`, http.StatusInternalServerError)
+				return
+			}
+			defer rc.Close()
+			m3u8Data, err = io.ReadAll(rc)
+			if err != nil {
+				http.Error(w, `{"error":"playlist read failed"}`, http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// 从本地临时目录读取 m3u8
+			playlistPath := storage.HLSLocalPlaylistPath(basePath, fileID, quality)
+			data, err := os.ReadFile(playlistPath)
+			if err != nil {
+				log.Printf("[PREVIEW] hls: read local playlist failed id=%s quality=%s err=%v", fileID, quality, err)
+				http.Error(w, `{"error":"playlist read failed"}`, http.StatusInternalServerError)
+				return
+			}
+			m3u8Data = data
+		}
+
+		// 重写 segment URL：seg_00001.ts → /api/preview/{fileID}/hls?quality={q}&seg=seg_00001.ts
+		m3u8Text := string(m3u8Data)
+		segURLPrefix := fmt.Sprintf("/api/preview/%s/hls?quality=%s&seg=", fileID, quality)
+		rewritten := regexp.MustCompile(`(seg_\d{5}\.ts)`).ReplaceAllString(m3u8Text, segURLPrefix+"$1")
+
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(rewritten))
+		return
+	}
+
+	// 转码产物不完整，检查本地临时 m3u8 是否存在（转码中）
+	playlistPath := storage.HLSLocalPlaylistPath(basePath, fileID, quality)
+	if data, err := os.ReadFile(playlistPath); err == nil {
+		m3u8Text := string(data)
+		segURLPrefix := fmt.Sprintf("/api/preview/%s/hls?quality=%s&seg=", fileID, quality)
+		rewritten := regexp.MustCompile(`(seg_\d{5}\.ts)`).ReplaceAllString(m3u8Text, segURLPrefix+"$1")
+
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-cache") // 转码中需重新请求获取新切片
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(rewritten))
+		return
+	}
+
+	// 转码未启动：解析源文件路径并触发转码
+	var srcPath string
+	var tempCleanup func()
+	cleanupSrc := false
+	if file.StorageType == "s3" {
+		if file.Size > s3TranscodeMaxSize {
+			http.Error(w, `{"error":"s3 video too large for transcode"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
+		p, cleanup, err := h.resolveLocalSource(file)
+		if err != nil {
+			log.Printf("[PREVIEW] hls: download s3 source failed id=%s err=%v", fileID, err)
+			http.Error(w, `{"error":"source file unavailable"}`, http.StatusInternalServerError)
+			return
+		}
+		srcPath = p
+		tempCleanup = cleanup
+		cleanupSrc = true
+	} else {
+		srcPath = strings.TrimPrefix(file.StoragePath, storage.LocalPrefix)
+	}
+
+	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality, h.cacheStore, cleanupSrc)
+	if tempCleanup != nil && status != "pending" {
+		tempCleanup()
+	}
+
+	log.Printf("[PREVIEW] hls: transcode triggered id=%s quality=%s status=%s", fileID, quality, status)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":     status,
+		"quality":    quality,
+		"file_id":    fileID,
+		"status_url": fmt.Sprintf("/api/preview/%s/transcode-status?quality=%s", fileID, quality),
+	})
+}
+
+// serveHLSSegment 返回单个 ts 切片。
+// 转码完成（OSS）：302 重定向到 presigned URL（前端直连 OSS，省服务器流量）。
+// 转码中（本地）：serve 本地 ts 文件（支持边转边播）。
+// 不存在：404。
+func (h *PreviewHandler) serveHLSSegment(w http.ResponseWriter, r *http.Request, fileID, quality, segName string) {
+	// 校验 segName 格式（防路径穿越）
+	if !hlsSegNamePattern.MatchString(segName) {
+		http.Error(w, `{"error":"invalid segment name"}`, http.StatusBadRequest)
+		return
+	}
+
+	basePath := h.storage.BasePath()
+
+	// 转码完成（OSS）：302 重定向到 presigned URL
+	complete, location := storage.HLSTranscodeComplete(basePath, fileID, quality, h.cacheStore)
+	if complete && location == "oss" && h.cacheStore != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		url, err := h.cacheStore.PresignedTranscodeURL(ctx, fileID, quality, segName, 1*time.Hour)
+		if err != nil {
+			log.Printf("[PREVIEW] hls: presigned url failed id=%s seg=%s err=%v", fileID, segName, err)
+			http.Error(w, `{"error":"presigned url failed"}`, http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, url, http.StatusFound)
+		return
+	}
+
+	// 转码中或本地完成：serve 本地 ts 文件
+	segPath := storage.HLSLocalSegmentPath(basePath, fileID, quality, segName)
+	f, err := os.Open(segPath)
+	if err != nil {
+		log.Printf("[PREVIEW] hls: segment not found id=%s seg=%s err=%v", fileID, segName, err)
+		http.Error(w, `{"error":"segment not found"}`, http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		http.Error(w, `{"error":"stat failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "video/mp2t")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+	w.WriteHeader(http.StatusOK)
+	io.Copy(w, f)
 }
 
 // serveContent 流式返回文件原始内容，支持 HTTP Range（206 Partial Content）。

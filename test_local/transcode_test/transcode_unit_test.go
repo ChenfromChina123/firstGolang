@@ -106,7 +106,7 @@ func TestStartTranscodeJob_ConcurrentSameKey(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			statuses[idx] = storage.StartTranscodeJob(basePath, srcPath, fileID, quality, nil)
+			statuses[idx] = storage.StartTranscodeJob(basePath, srcPath, fileID, quality, nil, false)
 		}(i)
 	}
 	wg.Wait()
@@ -172,7 +172,7 @@ func TestStartTranscodeJob_CacheHit(t *testing.T) {
 	}
 
 	// 调用 StartTranscodeJob，应立即返回 done（缓存命中）
-	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality, nil)
+	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality, nil, false)
 	if status != "done" {
 		t.Fatalf("expected status=done for cache hit, got %s", status)
 	}

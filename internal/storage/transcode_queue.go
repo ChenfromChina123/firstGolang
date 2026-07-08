@@ -3,6 +3,7 @@ package storage
 import (
 	"container/heap"
 	"log"
+	"os"
 	"sync"
 	"time"
 )
@@ -30,6 +31,7 @@ type transcodeRequest struct {
 	Priority    transcodePriority   // 优先级
 	EnqueueTime time.Time           // 入队时间（用于排序和饥饿判断）
 	CacheStore  TranscodeCacheStore // OSS 缓存后端（nil 时走 MP4 fallback）
+	CleanupSrc  bool                // s3 视频下载到本地临时文件时为 true，转码完成后需删除
 }
 
 // transcodePriorityQueue 实现 heap.Interface。
@@ -145,6 +147,11 @@ func promoteStarvedJobs() {
 // 根据 CacheStore 是否可用选择 HLS 或 MP4 转码路径，更新 job 状态并注册清理。
 func executeTranscodeRequest(req *transcodeRequest) {
 	key := req.FileID + ":" + req.Quality
+
+	// s3 视频下载到本地临时文件时，转码完成后（成功或失败）需清理
+	if req.CleanupSrc {
+		defer os.Remove(req.SrcPath)
+	}
 
 	jobIface, ok := transcodeJobs.Load(key)
 	if !ok {
