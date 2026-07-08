@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1335,6 +1336,47 @@ func (db *DB) ListFiles(prefix, owner string) ([]model.FileRecord, error) {
 		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 		files = append(files, f)
+	}
+	return files, rows.Err()
+}
+
+// ListRecentVideoFiles 列出近 N 天的视频文件（按文件名后缀过滤，仅 local 存储）。
+// 用于预转码 worker 扫描待转码视频。days<=0 时默认30天。
+// 视频后缀集合与 handler.getFileType 保持一致：mp4/webm/mkv/avi/mov。
+func (db *DB) ListRecentVideoFiles(days int) ([]model.FileRecord, error) {
+	if days <= 0 {
+		days = 30
+	}
+	since := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
+	const query = `SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+                   FROM files WHERE status = 'completed' AND deleted_at IS NULL
+                   AND storage_type = 'local' AND created_at >= ?
+                   ORDER BY created_at DESC`
+	rows, err := db.conn.Query(query, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []model.FileRecord
+	// 视频后缀集合（与 handler.getFileType 的 video 分支一致）
+	videoExts := map[string]bool{
+		".mp4": true, ".webm": true, ".mkv": true, ".avi": true, ".mov": true,
+	}
+	for rows.Next() {
+		var f model.FileRecord
+		var createdAt, updatedAt string
+		if err := rows.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
+			&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		// Go 代码过滤视频类型（SQL 不方便做后缀匹配）
+		ext := strings.ToLower(filepath.Ext(f.Filename))
+		if videoExts[ext] {
+			files = append(files, f)
+		}
 	}
 	return files, rows.Err()
 }

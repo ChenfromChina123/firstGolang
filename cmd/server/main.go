@@ -259,6 +259,25 @@ func main() {
 	// 必须在入队前启动，否则任务永远不执行
 	storage.StartTranscodeScheduler()
 
+	// 启动预转码 worker（仅 cacheStore 可用时启动）
+	// 服务器空闲时（转码队列为空）提前转码近30天 local 视频的 medium/low 画质到 OSS。
+	// listRecentVideos 回调：查询近30天 local 视频文件（避免 storage 包依赖 store 包）
+	storage.StartPreemptWorker(tcs, router.BasePath(), func() ([]storage.VideoFile, error) {
+		files, err := db.ListRecentVideoFiles(30)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]storage.VideoFile, 0, len(files))
+		for _, f := range files {
+			result = append(result, storage.VideoFile{
+				FileID:   f.ID,
+				SrcPath:  strings.TrimPrefix(f.StoragePath, storage.LocalPrefix),
+				Filename: f.Filename,
+			})
+		}
+		return result, nil
+	})
+
 	mux := http.NewServeMux()
 
 	// 公开路由（无需认证）
