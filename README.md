@@ -403,7 +403,7 @@ curl -X DELETE http://localhost:8080/api/trash
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/login` | 登录（支持用户名或邮箱，速率限制 5次/分钟） |
+| `POST` | `/api/login` | 登录（支持用户名或邮箱，速率限制 40次/分钟/IP） |
 | `POST` | `/api/logout` | 登出 |
 | `GET` | `/api/me` | 当前用户信息（需认证） |
 | `POST` | `/api/register` | 注册（邮箱+密码+确认密码，速率限制 3次/小时） |

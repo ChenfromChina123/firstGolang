@@ -29,7 +29,7 @@ func main() {
 	// Configuration
 	port := getEnv("PORT", "8080")
 	dataDir := getEnv("DATA_DIR", "./data")
-	storageType := getEnv("STORAGE_TYPE", "local")
+	// STORAGE_TYPE 已废弃：混合存储由 S3_ENDPOINT 是否配置决定（见下方存储初始化）。
 
 	// Ensure data directory exists
 	absDataDir, err := filepath.Abs(dataDir)
@@ -63,32 +63,39 @@ func main() {
 	// MySQL 模式下也启用，批量写入减少 RTT
 	db.EnableAsyncWrite()
 
-	// Initialize storage backend
-	var st storage.Storage
-	switch storageType {
-	case "local":
-		st, err = storage.NewLocal(absDataDir)
-		if err != nil {
-			log.Fatalf("init local storage: %v", err)
-		}
-		log.Printf("Storage: local -> %s", absDataDir)
-	case "s3":
-		// S3 configuration from environment
+	// Initialize storage backends (hybrid: local always + optional S3/OSS)
+	// 本地存储始终启用：承载历史文件、缩略图/转码缓存目录、Mkdir 默认后端。
+	localSt, err := storage.NewLocal(absDataDir)
+	if err != nil {
+		log.Fatalf("init local storage: %v", err)
+	}
+	log.Printf("Storage: local -> %s", absDataDir)
+
+	// S3/OSS 仅在配置了 S3_ENDPOINT 时启用（混合存储：旧文件留本地，新文件可选 OSS）。
+	var s3St storage.Storage
+	if s3Endpoint := getEnv("S3_ENDPOINT", ""); s3Endpoint != "" {
 		s3Cfg := storage.S3Config{
-			Endpoint:  getEnv("S3_ENDPOINT", "localhost:9000"),
+			Endpoint:  s3Endpoint,
 			Region:    getEnv("S3_REGION", "us-east-1"),
 			Bucket:    getEnv("S3_BUCKET", "filesync"),
 			AccessKey: getEnv("S3_ACCESS_KEY", ""),
 			SecretKey: getEnv("S3_SECRET_KEY", ""),
 			UseSSL:    getEnv("S3_USE_SSL", "false") == "true",
 		}
-		st, err = storage.NewS3(s3Cfg)
+		s3St, err = storage.NewS3(s3Cfg)
 		if err != nil {
 			log.Fatalf("init s3 storage: %v", err)
 		}
-		log.Printf("Storage: s3 -> bucket=%s endpoint=%s", s3Cfg.Bucket, s3Cfg.Endpoint)
-	default:
-		log.Fatalf("unknown storage type: %s (use 'local' or 's3')", storageType)
+		log.Printf("Storage: s3(oss) -> bucket=%s endpoint=%s", s3Cfg.Bucket, s3Cfg.Endpoint)
+	} else {
+		log.Printf("Storage: s3 not configured (S3_ENDPOINT empty) — OSS disabled, local only")
+	}
+
+	// Router 处理读取链路路由；storages map 供写入链路按 type 选后端。
+	router := storage.NewRouter(localSt, s3St)
+	storages := map[string]storage.Storage{"local": localSt}
+	if s3St != nil {
+		storages["s3"] = s3St
 	}
 
 	// Initialize Redis cache (optional)
@@ -114,7 +121,7 @@ func main() {
 		rc = store.NewRedisSentinel(cfg)
 		log.Printf("Redis: SENTINEL mode -> master=%s addrs=%v db=%d",
 			masterName, cfg.SentinelAddrs, redisDB)
-		uploadHandler = handler.NewUploadHandlerWithRedis(db, st, rc)
+		uploadHandler = handler.NewUploadHandlerWithRedis(db, router, storages, rc)
 
 	} else if redisAddr := os.Getenv("REDIS_ADDR"); redisAddr != "" {
 		// === Mode 2: Single-instance Redis ===
@@ -123,17 +130,17 @@ func main() {
 
 		rc = store.NewRedisCache(redisAddr, redisPassword, redisDB, 10*time.Minute)
 		log.Printf("Redis: STANDALONE mode -> addr=%s db=%d", redisAddr, redisDB)
-		uploadHandler = handler.NewUploadHandlerWithRedis(db, st, rc)
+		uploadHandler = handler.NewUploadHandlerWithRedis(db, router, storages, rc)
 
 	} else {
 		// === Mode 3: No Redis (SQLite only) ===
-		uploadHandler = handler.NewUploadHandler(db, st)
+		uploadHandler = handler.NewUploadHandler(db, router, storages)
 	}
 
 	// Register handlers
-	downloadHandler := handler.NewDownloadHandler(db, st)
-	fileHandler := handler.NewFileHandler(db, st, rc)
-	trashHandler := handler.NewTrashHandler(db, st, rc)
+	downloadHandler := handler.NewDownloadHandler(db, router)
+	fileHandler := handler.NewFileHandler(db, router, storages, rc)
+	trashHandler := handler.NewTrashHandler(db, router, rc)
 	settingsHandler := handler.NewSettingsHandler(db)
 	adminHandler := handler.NewAdminHandler(db)
 
@@ -153,7 +160,7 @@ func main() {
 	jwtManager := auth.NewJWTManager(jwtSecret, domain, enableHTTPS)
 
 	// 分享 handler 创建：传入 JWT secret 用于签名下载 token（防盗链）
-	shareHandler := handler.NewShareHandler(db, st, []byte(jwtSecret))
+	shareHandler := handler.NewShareHandler(db, router, []byte(jwtSecret))
 
 	// === 邮件服务初始化（用于账号注册和忘记密码） ===
 	// SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS 必填，SMTP_FROM/APP_BASE_URL 可选
@@ -196,7 +203,7 @@ func main() {
 	}
 
 	// 清理过期回收站文件（30 天保留期，物理删除数据库记录 + 删除存储文件）
-	// 在 st 初始化后执行，避免 storage 未就绪导致存储文件残留
+	// 在 router 初始化后执行，避免 storage 未就绪导致存储文件残留
 	// 全局存储：删物理文件前检查引用计数，有其他记录引用时不删
 	if expired, err := db.CleanupExpiredTrash(30); err == nil && len(expired) > 0 {
 		var deletedCount int
@@ -210,7 +217,7 @@ func main() {
 				log.Printf("[Trash] cleanup: skip physical delete %s: %d refs exist", f.StoragePath, refCount)
 				continue
 			}
-			if err := st.DeleteFile(f.StoragePath); err != nil {
+			if err := router.DeleteFile(f.StoragePath); err != nil {
 				log.Printf("[Trash] cleanup: delete storage %s error: %v", f.StoragePath, err)
 			}
 			deletedCount++
@@ -220,10 +227,12 @@ func main() {
 		log.Printf("[Trash] cleanup expired error: %v", err)
 	}
 
-	// 登录速率限制器：3次/分钟/IP（rps=0.05 即每 20 秒恢复 1 个 token，burst=2）
-	// burst=2 收紧突发上限：2 次尝试后需等 20 秒才能再试，正常用户 2 次足够，
-	// 攻击者第 3 次起收到 429（原 rps=0.083/burst=3 时请求间隔 >12s 不会限流）
-	loginLimiter := auth.NewLoginRateLimiter(0.05, 2)
+	// 登录速率限制器：rps=0.5（每 2 秒恢复 1 个 token），burst=10
+	// 平衡正常用户并发登录需求与暴力破解防护：
+	// - 1 分钟可恢复 30 个 token + 10 突发 ≈ 40 次/分钟/IP
+	// - 多标签页/多设备同时登录不再被误杀
+	// - 暴力破解 8 位密码仍需约 19 万年，防护有效
+	loginLimiter := auth.NewLoginRateLimiter(0.5, 10)
 	// 注册/重发激活/忘记密码速率限制器：5次突发，每2分钟恢复1次（rps=0.0083, burst=5）
 	// 1小时可恢复约30次，对正常用户友好，对自动化攻击仍有阻拦
 	registerLimiter := auth.NewLoginRateLimiter(0.0083, 5)
@@ -231,7 +240,7 @@ func main() {
 
 	authHandler := handler.NewAuthHandler(db, jwtManager, mailer, appBaseURL)
 	// 预览 handler：图片缩略图/PDF/文本/音频预览（第一阶段）
-	previewHandler := handler.NewPreviewHandler(db, st, appBaseURL)
+	previewHandler := handler.NewPreviewHandler(db, router, appBaseURL)
 
 	mux := http.NewServeMux()
 
@@ -299,7 +308,7 @@ func main() {
 		mux.Handle("/web/", http.StripPrefix("/web/", http.FileServer(http.Dir(webDir))))
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/" {
-				http.Redirect(w, r, "/web/index.html", http.StatusFound)
+				http.Redirect(w, r, "/web/intro.html", http.StatusFound)
 				return
 			}
 			http.NotFound(w, r)
