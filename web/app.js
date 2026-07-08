@@ -277,10 +277,12 @@
             this.totalChunks = 0;
             this.received = new Set(); // 已上传分片索引
             this.uploaded = 0;
-            this.status = 'pending'; // pending | uploading | done | error | paused
+            this.status = 'pending'; // pending | uploading | done | error | paused | cancelled
             this.error = null;
             this.dom = null;
             this._domUpdatePending = false; // requestAnimationFrame 节流标志
+            this.abortController = null; // AbortController 实例，用于中断正在进行的 fetch 请求
+            this.cancelled = false; // 用户是否已取消（用于 worker 循环检查）
             this.fullHash = null; // 完整文件 SHA256（秒传检查用，null=未计算）
             this.presigned = null; // presigned 直连信息（InitUpload 返回，null=走中转模式）
             this.isPresigned = false; // 是否走 presigned 直连 OSS
@@ -407,7 +409,7 @@
             form.append('chunk_index', idx);
             form.append('chunk_data', blob);
 
-            const res = await apiFetch(API.chunk, { method: 'POST', body: form });
+            const res = await apiFetch(API.chunk, { method: 'POST', body: form, signal: this.abortController?.signal });
             if (!res.ok) throw new Error(`chunk ${idx} 失败: HTTP ${res.status}`);
             this.received.add(idx);
             // 用 received.size 计算总上传量，而非 (idx+1)*chunkSize。
@@ -435,10 +437,12 @@
             const workers = [];
             const worker = async () => {
                 while (cursor < missing.length) {
+                    if (this.cancelled) return; // 用户已取消，停止 worker
                     const idx = missing[cursor++];
                     try {
                         await this.uploadChunk(idx);
                     } catch (e) {
+                        if (this.cancelled || e.name === 'AbortError') return; // 取消导致的失败，不记录
                         failed.push(idx);
                         console.warn(`[Upload] chunk ${idx} failed (will retry): ${e.message}`);
                     }
@@ -449,14 +453,19 @@
             }
             await Promise.all(workers);
 
+            // 用户已取消，直接返回（不抛异常，run() 的 catch 会处理状态）
+            if (this.cancelled) return;
+
             // 重试失败的 chunks（最多 2 次，串行重试避免并发压力）
             for (let retry = 0; retry < 2 && failed.length > 0; retry++) {
+                if (this.cancelled) return; // 取消则停止重试
                 const stillFailed = [];
                 for (const idx of failed) {
                     if (this.received.has(idx)) continue; // 可能被其他 worker 重试成功了
                     try {
                         await this.uploadChunk(idx);
                     } catch (e) {
+                        if (this.cancelled || e.name === 'AbortError') return; // 取消导致的失败
                         stillFailed.push(idx);
                         console.warn(`[Upload] chunk ${idx} retry ${retry + 1} failed: ${e.message}`);
                     }
@@ -515,6 +524,7 @@
                 method: 'PUT',
                 body: this.file,
                 headers: { 'Content-Type': 'application/octet-stream' },
+                signal: this.abortController?.signal,
             });
             if (!res.ok) {
                 const txt = await res.text().catch(() => '');
@@ -535,10 +545,12 @@
             const failed = [];
             const worker = async () => {
                 while (cursor < missing.length) {
+                    if (this.cancelled) return; // 用户已取消，停止 worker
                     const part = missing[cursor++];
                     try {
                         await this.uploadPartPresigned(part);
                     } catch (e) {
+                        if (this.cancelled || e.name === 'AbortError') return; // 取消导致的失败，不记录
                         failed.push(part);
                         console.warn(`[Upload] presigned part ${part.part_number} failed (will retry): ${e.message}`);
                     }
@@ -550,14 +562,19 @@
             }
             await Promise.all(workers);
 
+            // 用户已取消，直接返回
+            if (this.cancelled) return;
+
             // 重试失败的 parts（最多 2 次）
             for (let retry = 0; retry < 2 && failed.length > 0; retry++) {
+                if (this.cancelled) return; // 取消则停止重试
                 const stillFailed = [];
                 for (const part of failed) {
                     if (this.received.has(part.part_number)) continue;
                     try {
                         await this.uploadPartPresigned(part);
                     } catch (e) {
+                        if (this.cancelled || e.name === 'AbortError') return; // 取消导致的失败
                         stillFailed.push(part);
                         console.warn(`[Upload] presigned part ${part.part_number} retry ${retry + 1} failed: ${e.message}`);
                     }
@@ -578,6 +595,7 @@
                 method: 'PUT',
                 body: blob,
                 headers: { 'Content-Type': 'application/octet-stream' },
+                signal: this.abortController?.signal,
             });
             if (!res.ok) {
                 const txt = await res.text().catch(() => '');
@@ -606,6 +624,7 @@
 
         /** 完整上传流程 */
         async run() {
+            this.abortController = new AbortController(); // 创建 AbortController 用于取消上传
             try {
                 this.status = 'uploading';
                 this.updateDom();
@@ -634,6 +653,9 @@
                     console.warn('[Upload] 秒传检查失败，降级为正常上传:', e.message);
                 }
 
+                // 用户在秒传阶段取消
+                if (this.cancelled) return;
+
                 // === 正常上传流程 ===
                 const ok = await this.init();
                 if (!ok) return; // 跳过
@@ -650,11 +672,30 @@
                 }
                 toast(`「${this.getDisplayName()}」上传完成`, 'ok');
             } catch (e) {
-                this.status = 'error';
-                this.error = e.message;
+                // 区分用户取消和其他错误
+                if (this.cancelled || e.name === 'AbortError') {
+                    this.status = 'cancelled';
+                    this.error = '已取消';
+                } else {
+                    this.status = 'error';
+                    this.error = e.message;
+                    toast(`「${this.getDisplayName()}」上传失败: ${e.message}`, 'err');
+                }
                 this.updateDom();
-                toast(`「${this.getDisplayName()}」上传失败: ${e.message}`, 'err');
             }
+        }
+
+        /** 取消上传：中断所有正在进行的 fetch 请求，更新状态为 cancelled
+         *  已完成/已失败/已取消的任务再次调用无效（幂等） */
+        abort() {
+            if (this.status === 'done' || this.status === 'error' || this.status === 'cancelled') return;
+            this.cancelled = true;
+            if (this.abortController) {
+                this.abortController.abort();
+            }
+            this.status = 'cancelled';
+            this.error = '已取消';
+            this.updateDom();
         }
 
         /** 创建队列 DOM 节点 */
@@ -675,6 +716,11 @@
                 </div>
             `;
             this.dom = li;
+            // 绑定取消按钮事件：点击时调用 abort() 中断上传
+            const cancelBtn = li.querySelector('.qi-cancel');
+            if (cancelBtn) {
+                cancelBtn.addEventListener('click', () => this.abort());
+            }
             return li;
         }
 
@@ -686,7 +732,7 @@
         updateDom() {
             if (!this.dom) return;
             // 终态立即更新，确保用户看到最终状态
-            if (this.status === 'done' || this.status === 'error') {
+            if (this.status === 'done' || this.status === 'error' || this.status === 'cancelled') {
                 this._domUpdatePending = false;
                 this._renderDom();
                 return;
@@ -715,6 +761,9 @@
                 status.className = 'qi-status done';
             } else if (this.status === 'error') {
                 status.textContent = '失败';
+                status.className = 'qi-status error';
+            } else if (this.status === 'cancelled') {
+                status.textContent = '已取消';
                 status.className = 'qi-status error';
             } else if (this.status === 'uploading') {
                 status.textContent = '上传中';
@@ -1506,6 +1555,11 @@
         if (!modal) return;
         // 清理视频转码轮询定时器（renderVideo 在 video 元素上挂载 _cleanupTranscode）
         const video = body.querySelector('video');
+        // 清理 hls.js 实例（防止内存泄漏：切画质/关闭预览时销毁旧 Hls 对象）
+        if (video && video._hls) {
+            video._hls.destroy();
+            video._hls = null;
+        }
         if (video && video._cleanupTranscode) {
             video._cleanupTranscode();
         }
@@ -1876,9 +1930,62 @@
         };
 
         /**
+         * 用 hls.js 加载 HLS 流（支持边转边播）。
+         * Safari 原生支持 HLS（video.canPlayType），其他浏览器用 hls.js（MSE）。
+         * @param {string} url - m3u8 playlist URL
+         * @returns {boolean} 是否成功加载（false 表示不支持 HLS 或加载失败）
+         */
+        const loadHLSStream = (url) => {
+            // 清理旧的 Hls 实例
+            if (video._hls) {
+                video._hls.destroy();
+                video._hls = null;
+            }
+
+            // Safari 原生支持 HLS
+            if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = url;
+                return true;
+            }
+
+            // 其他浏览器用 hls.js
+            if (window.Hls && window.Hls.isSupported()) {
+                const hls = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: false,
+                    backBufferLength: 90,
+                });
+                hls.loadSource(url);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (data.fatal) {
+                        console.error('[HLS] fatal error:', data);
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                hls.startLoad();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                hls.destroy();
+                                video._hls = null;
+                                break;
+                        }
+                    }
+                });
+                video._hls = hls;
+                return true;
+            }
+
+            // 不支持 HLS
+            return false;
+        };
+
+        /**
          * 异步加载指定画质：
          * - high：直接 fallback 到原文件流式，无需转码
-         * - medium/low：先查 transcode-status，done 直接加载；否则显示进度条 + 触发转码 + 轮询 2s
+         * - medium/low：优先用 HLS 流式播放（边转边播），不支持时 fallback 到 MP4 轮询
          * @param {string} q - high|medium|low
          */
         const loadQuality = async (q) => {
@@ -1891,7 +1998,49 @@
                 return;
             }
 
-            // 中/低画质：先查转码状态
+            // medium/low：优先用 HLS 流式播放（支持边转边播）
+            const hlsUrl = meta.urls[`hls_${q}`];
+            if (hlsUrl) {
+                try {
+                    const res = await fetch(hlsUrl);
+                    if (res.ok) {
+                        const contentType = res.headers.get('Content-Type') || '';
+                        if (contentType.includes('mpegurl')) {
+                            // m3u8 可用，用 hls.js 播放（hls.js 自动轮询新切片）
+                            progressEl.hidden = true;
+                            if (loadHLSStream(hlsUrl)) {
+                                return; // HLS 播放成功
+                            }
+                            // HLS 不支持，fallback 到 MP4 轮询
+                        } else {
+                            // 转码刚启动（202 JSON），显示进度条 + 2s 后重试 HLS 端点
+                            progressEl.hidden = false;
+                            const pollHLS = async () => {
+                                try {
+                                    const r = await fetch(hlsUrl);
+                                    if (r.ok) {
+                                        const ct = r.headers.get('Content-Type') || '';
+                                        if (ct.includes('mpegurl')) {
+                                            progressEl.hidden = true;
+                                            if (loadHLSStream(hlsUrl)) return;
+                                        }
+                                    }
+                                    video._transcodeTimer = setTimeout(pollHLS, 2000);
+                                } catch (e) {
+                                    video._transcodeTimer = setTimeout(pollHLS, 2000);
+                                }
+                            };
+                            video._transcodeTimer = setTimeout(pollHLS, 2000);
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    // HLS 请求失败，fallback 到 MP4 轮询
+                    console.warn('[Video] HLS failed, fallback to mp4:', e);
+                }
+            }
+
+            // fallback：MP4 轮询逻辑（cacheStore 不可用或 HLS 不支持时）
             const statusUrl = `/api/preview/${fileID}/transcode-status?quality=${q}`;
             try {
                 const res = await fetch(statusUrl);
@@ -3141,9 +3290,9 @@
             trashEmptyBtn.addEventListener('click', emptyTrash);
         }
 
-        // 清除已完成
+        // 清除已完成（包括 done、error、cancelled 状态的项）
         document.getElementById('clear-done').addEventListener('click', () => {
-            document.querySelectorAll('.queue-item.done').forEach(el => el.remove());
+            document.querySelectorAll('.queue-item.done, .queue-item.error, .queue-item.cancelled').forEach(el => el.remove());
             const list = document.getElementById('queue-list');
             if (!list.children.length) document.getElementById('queue').hidden = true;
         });
