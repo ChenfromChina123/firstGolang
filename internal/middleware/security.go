@@ -40,14 +40,14 @@ func SecurityHeaders(enableHSTS bool, next http.Handler) http.Handler {
 		// style-src 'unsafe-inline' fonts.googleapis.com：内联样式 + Google Fonts CSS
 		// img-src data: blob:：缩略图使用 data URL，预览使用 blob URL
 		// font-src data: fonts.gstatic.com：Google Fonts 字体文件在 gstatic.com
-		// connect-src 'self'：fetch/XHR 仅同源
+		// connect-src：fetch/XHR 同源 + OSS presigned 直连（上传 PUT / 下载 GET）
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
 				"script-src 'self'; "+
 				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
 				"img-src 'self' data: blob:; "+
 				"font-src 'self' data: https://fonts.gstatic.com; "+
-				"connect-src 'self'; "+
+				"connect-src 'self' https://aistudy-filesync.oss-cn-shenzhen.aliyuncs.com; "+
 				"frame-ancestors 'self'; "+
 				"base-uri 'self'; "+
 				"form-action 'self'")

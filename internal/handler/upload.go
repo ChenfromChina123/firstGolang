@@ -260,6 +260,21 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 				TotalChunks: existing.TotalChunks,
 				StorageType: existing.StorageType,
 			}
+			// presigned 模式断点续传：presigned URL 可能已过期，需重新生成
+			if existing.UploadMode == "presigned" && existing.StorageType == "s3" {
+				backend := h.backendFor("s3")
+				if ps, ok := backend.(storage.PresignedStorage); ok {
+					base := filepath.Base(existing.ObjectKey)
+					ext := filepath.Ext(existing.Filename)
+					fileID := strings.TrimSuffix(base, ext)
+					info, err := h.buildPresignedUploadInfo(r.Context(), ps, existing.ID, fileID, existing.Filename, existing.FileSize)
+					if err != nil {
+						log.Printf("[Upload] presigned resume re-gen error (fallback): %v", err)
+					} else {
+						resp.Presigned = info
+					}
+				}
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(resp)
 			return
