@@ -278,6 +278,10 @@ func main() {
 		return result, nil
 	})
 
+	// 启动 OSS 缓存清理 worker（仅 cacheStore 可用时启动）
+	// 每6小时扫描一次 transcoded/ 前缀，删除超过7天的转码产物（m3u8 + ts 切片）。
+	storage.StartCacheCleaner(tcs)
+
 	mux := http.NewServeMux()
 
 	// 公开路由（无需认证）
