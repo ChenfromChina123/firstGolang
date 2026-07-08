@@ -86,6 +86,8 @@
                 infoEl.hidden = false;
             }
             if (logoutBtn) logoutBtn.hidden = false;
+            // 存储当前用户角色（用于权限控制：分片大小/并发数仅 admin 可改）
+            window.currentUserRole = user.role || 'user';
             // admin 显示管理后台入口
             if (user.role === 'admin') {
                 const adminLink = document.getElementById('admin-link');
@@ -280,6 +282,8 @@
             this.dom = null;
             this._domUpdatePending = false; // requestAnimationFrame 节流标志
             this.fullHash = null; // 完整文件 SHA256（秒传检查用，null=未计算）
+            this.presigned = null; // presigned 直连信息（InitUpload 返回，null=走中转模式）
+            this.isPresigned = false; // 是否走 presigned 直连 OSS
         }
 
         /** 构造上传到后端的完整文件名（含目录前缀）
@@ -344,7 +348,7 @@
                     filename: uploadName,
                     file_size: this.file.size,
                     chunk_size: this.chunkSize,
-                    storage: 'local',
+                    storage: localStorage.getItem('filesync:storage') || 'local',
                     file_hash: fileHash,
                 }),
             });
@@ -370,6 +374,10 @@
             const data = await res.json();
             this.sessionId = data.session_id;
             this.totalChunks = data.total_chunks;
+            // 解析 presigned 直连信息（S3 存储且后端支持时返回）
+            // 非 null 时走 presigned 路径（客户端直传 OSS，数据不经应用服务器）
+            this.presigned = data.presigned || null;
+            this.isPresigned = !!this.presigned;
             return true;
         }
 
@@ -449,6 +457,96 @@
             this.updateDom();
         }
 
+        /** presigned 直连 OSS 上传（小文件单 URL / 大文件分片并发） */
+        async uploadPresigned() {
+            if (!this.presigned) throw new Error('presigned info missing');
+            const completedSet = new Set(this.presigned.completed_parts || []);
+            // 标记已完成的分片（断点续传）
+            for (const idx of completedSet) {
+                this.received.add(idx);
+            }
+            this.uploaded = Math.min(this.received.size * (this.presigned.part_size || this.chunkSize), this.file.size);
+            this.updateDom();
+
+            if (this.presigned.mode === 'single') {
+                // 小文件：单个 presigned PUT URL 直传
+                await this.uploadSinglePresigned();
+            } else if (this.presigned.mode === 'multipart') {
+                // 大文件：并发 PUT 各分片
+                await this.uploadPartsPresigned(completedSet);
+            } else {
+                throw new Error(`unknown presigned mode: ${this.presigned.mode}`);
+            }
+        }
+
+        /** 小文件 presigned 直传：单个 PUT 请求上传整个文件 */
+        async uploadSinglePresigned() {
+            const res = await fetch(this.presigned.upload_url, {
+                method: 'PUT',
+                body: this.file,
+                headers: { 'Content-Type': 'application/octet-stream' },
+            });
+            if (!res.ok) {
+                const txt = await res.text().catch(() => '');
+                throw new Error(`presigned single PUT 失败: HTTP ${res.status} ${txt}`);
+            }
+            this.uploaded = this.file.size;
+            this.updateDom();
+        }
+
+        /** 大文件分片 presigned 直传：并发 PUT 各分片到 OSS */
+        async uploadPartsPresigned(completedSet) {
+            const parts = this.presigned.parts || [];
+            const missing = parts.filter(p => !completedSet.has(p.part_number));
+            if (missing.length === 0) return;
+
+            let cursor = 0;
+            const worker = async () => {
+                while (cursor < missing.length) {
+                    const part = missing[cursor++];
+                    await this.uploadPartPresigned(part);
+                }
+            };
+            const workers = [];
+            for (let i = 0; i < this.concurrency; i++) {
+                workers.push(worker());
+            }
+            await Promise.all(workers);
+        }
+
+        /** 上传单个 presigned 分片：切片 + PUT 到 OSS */
+        async uploadPartPresigned(part) {
+            const blob = this.file.slice(part.offset, part.offset + part.size);
+            const res = await fetch(part.url, {
+                method: 'PUT',
+                body: blob,
+                headers: { 'Content-Type': 'application/octet-stream' },
+            });
+            if (!res.ok) {
+                const txt = await res.text().catch(() => '');
+                throw new Error(`presigned part ${part.part_number} PUT 失败: HTTP ${res.status} ${txt}`);
+            }
+            this.received.add(part.part_number);
+            this.uploaded = Math.min(this.received.size * (this.presigned.part_size || this.chunkSize), this.file.size);
+            this.updateDom();
+        }
+
+        /** presigned 上传完成：通知服务器合并分片（大文件）或验证对象（小文件） */
+        async completePresigned() {
+            const res = await apiFetch(API.complete, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: this.sessionId }),
+            });
+            if (!res.ok) {
+                const txt = await res.text().catch(() => '');
+                throw new Error(`presigned complete 失败: HTTP ${res.status} ${txt}`);
+            }
+            this.status = 'done';
+            this.uploaded = this.file.size;
+            this.updateDom();
+        }
+
         /** 完整上传流程 */
         async run() {
             try {
@@ -482,10 +580,17 @@
                 // === 正常上传流程 ===
                 const ok = await this.init();
                 if (!ok) return; // 跳过
-                await this.checkResumable();
-                this.updateDom();
-                await this.uploadAll();
-                await this.complete();
+                if (this.isPresigned) {
+                    // presigned 直连 OSS：客户端直接 PUT 到 OSS，不经应用服务器
+                    await this.uploadPresigned();
+                    await this.completePresigned();
+                } else {
+                    // 中转模式：分片经应用服务器中转到存储后端
+                    await this.checkResumable();
+                    this.updateDom();
+                    await this.uploadAll();
+                    await this.complete();
+                }
                 toast(`「${this.getDisplayName()}」上传完成`, 'ok');
             } catch (e) {
                 this.status = 'error';
@@ -2824,14 +2929,39 @@
         if (savedConcurrency) concurrencySelect.value = savedConcurrency;
         // 2. 后台从服务器拉取覆盖（跨浏览器同步）
         syncSettingsFromServer(chunkSizeSelect, concurrencySelect);
-        // 3. 变更时同时写 localStorage 和服务器
+        // 3. 非管理员禁用设置（仅 admin 可修改分片大小和并发数）
+        const isAdmin = window.currentUserRole === 'admin';
+        if (!isAdmin) {
+            chunkSizeSelect.disabled = true;
+            concurrencySelect.disabled = true;
+        }
+        // 4. 变更时同时写 localStorage 和服务器（非管理员变更被后端 403 拒绝）
         chunkSizeSelect.addEventListener('change', () => {
             localStorage.setItem('filesync:chunkSize', chunkSizeSelect.value);
-            syncSettingsToServer();
+            if (isAdmin) syncSettingsToServer();
         });
         concurrencySelect.addEventListener('change', () => {
             localStorage.setItem('filesync:concurrency', concurrencySelect.value);
-            syncSettingsToServer();
+            if (isAdmin) syncSettingsToServer();
+        });
+
+        // 存储位置选择（本地磁盘 / 阿里云 OSS），持久化到 localStorage，上传时随 init 请求带上
+        const storageTypeSelect = document.createElement('select');
+        storageTypeSelect.id = 'storage-type';
+        storageTypeSelect.className = 'settings-select';
+        storageTypeSelect.innerHTML = '<option value="local">本地磁盘</option><option value="s3">阿里云 OSS</option>';
+        const savedStorage = localStorage.getItem('filesync:storage');
+        if (savedStorage) storageTypeSelect.value = savedStorage;
+        const storageWrap = document.createElement('div');
+        storageWrap.className = 'settings-item';
+        const storageLabel = document.createElement('label');
+        storageLabel.textContent = '存储位置';
+        storageLabel.className = 'settings-label';
+        storageWrap.appendChild(storageLabel);
+        storageWrap.appendChild(storageTypeSelect);
+        chunkSizeSelect.parentElement.appendChild(storageWrap);
+        storageTypeSelect.addEventListener('change', () => {
+            localStorage.setItem('filesync:storage', storageTypeSelect.value);
         });
 
         // 冲突对话框按钮

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -245,4 +247,130 @@ func (s *S3Storage) CopyFile(srcPath, dstPath string) error {
 // S3 的 storage_path 是相对 bucket 的对象键，无需拼接 basePath。
 func (s *S3Storage) StoragePathFor(fileID, filename string) string {
 	return ShardPath(fileID, filename)
+}
+
+// === Presigned URL 直传/直连方法 ===
+
+// partKey 构建 presigned 分片上传的 S3 对象 key。
+// 格式：_parts/{sessionID}/part_{N}（6位补零，便于排序）
+func partKey(sessionID string, partIndex int) string {
+	return fmt.Sprintf("_parts/%s/part_%06d", sessionID, partIndex)
+}
+
+// partPrefix 返回 session 的分片对象前缀（用于 ListObjects）。
+func partPrefix(sessionID string) string {
+	return fmt.Sprintf("_parts/%s/", sessionID)
+}
+
+// GeneratePresignedPutURL 生成单个对象的 presigned PUT URL。
+// 客户端用此 URL 直接 PUT 数据到 OSS，不经过应用服务器。
+func (s *S3Storage) GeneratePresignedPutURL(ctx context.Context, objectKey string, expiry time.Duration) (string, error) {
+	u, err := s.client.PresignedPutObject(ctx, s.bucket, objectKey, expiry)
+	if err != nil {
+		return "", fmt.Errorf("presigned put %s: %w", objectKey, err)
+	}
+	return u.String(), nil
+}
+
+// GeneratePresignedGetURL 生成 presigned GET URL，可覆盖 response headers。
+// reqParams 可包含 response-content-disposition 等参数强制下载行为。
+func (s *S3Storage) GeneratePresignedGetURL(ctx context.Context, objectKey string, expiry time.Duration, reqParams url.Values) (string, error) {
+	u, err := s.client.PresignedGetObject(ctx, s.bucket, objectKey, expiry, reqParams)
+	if err != nil {
+		return "", fmt.Errorf("presigned get %s: %w", objectKey, err)
+	}
+	return u.String(), nil
+}
+
+// ComposeFile 调用 ComposeObject 将所有分片对象合并为最终文件对象。
+// 基于 S3 UploadPartCopy API，数据在 OSS 服务端复制，不经过应用服务器。
+// 每个分片必须 >= 5MB（最后一片除外），调用方需保证 partSize 计算正确。
+// 返回最终文件的对象 key（ShardPath 格式）。
+func (s *S3Storage) ComposeFile(sessionID string, fileID string, filename string, totalParts int) (string, error) {
+	ctx := context.Background()
+	objectKey := ShardPath(fileID, filename)
+	log.Printf("[S3] Composing: session=%s fileID=%s key=%s parts=%d", sessionID, fileID, objectKey, totalParts)
+
+	var srcs []minio.CopySrcOptions
+	for i := 0; i < totalParts; i++ {
+		srcs = append(srcs, minio.CopySrcOptions{
+			Bucket: s.bucket,
+			Object: partKey(sessionID, i),
+		})
+	}
+
+	dst := minio.CopyDestOptions{Bucket: s.bucket, Object: objectKey}
+	if _, err := s.client.ComposeObject(ctx, dst, srcs...); err != nil {
+		return "", fmt.Errorf("compose object %s: %w", objectKey, err)
+	}
+
+	log.Printf("[S3] Composed: session=%s key=%s parts=%d", sessionID, objectKey, totalParts)
+	return objectKey, nil
+}
+
+// ListParts 列举已上传的分片编号（断点续传用）。
+// 通过 ListObjects 枚举 _parts/{sessionID}/ 前缀下的对象。
+func (s *S3Storage) ListParts(sessionID string) ([]int, error) {
+	ctx := context.Background()
+	prefix := partPrefix(sessionID)
+
+	objectsCh := s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	})
+
+	var parts []int
+	for obj := range objectsCh {
+		if obj.Err != nil {
+			return nil, fmt.Errorf("list parts: %w", obj.Err)
+		}
+		// 从 key 中提取 part number：_parts/{sessionID}/part_000005 → 5
+		var partNum int
+		if _, err := fmt.Sscanf(obj.Key, prefix+"part_%06d", &partNum); err == nil {
+			parts = append(parts, partNum)
+		}
+	}
+	return parts, nil
+}
+
+// DeleteParts 批量删除 session 的所有分片对象。
+// 在 ComposeFile 成功后调用，清理临时分片。
+func (s *S3Storage) DeleteParts(sessionID string) error {
+	ctx := context.Background()
+	prefix := partPrefix(sessionID)
+
+	objectsCh := s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	})
+
+	removeCh := make(chan minio.ObjectInfo, 100)
+	go func() {
+		defer close(removeCh)
+		for obj := range objectsCh {
+			if obj.Err != nil {
+				log.Printf("[S3] list parts for delete error: %v", obj.Err)
+				continue
+			}
+			removeCh <- obj
+		}
+	}()
+
+	errCh := s.client.RemoveObjects(ctx, s.bucket, removeCh, minio.RemoveObjectsOptions{})
+	for err := range errCh {
+		log.Printf("[S3] delete part error for %s: %v", err.ObjectName, err.Err)
+	}
+
+	log.Printf("[S3] Parts cleaned: session=%s", sessionID)
+	return nil
+}
+
+// StatObject 获取对象元数据（大小等），用于验证 presigned 上传完成。
+func (s *S3Storage) StatObject(objectKey string) (int64, error) {
+	ctx := context.Background()
+	info, err := s.client.StatObject(ctx, s.bucket, objectKey, minio.StatObjectOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("stat object %s: %w", objectKey, err)
+	}
+	return info.Size, nil
 }

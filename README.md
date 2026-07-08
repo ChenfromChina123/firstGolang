@@ -787,6 +787,38 @@ S3_USE_SSL=true
 > 同地域 ECS 部署可改用内网 Endpoint `oss-cn-shenzhen-internal.aliyuncs.com` 免流量费。
 > 安全提示：禁止将 AccessKey 提交到 git 仓库；高安全场景可改用 STS Token 临时凭证方案。
 
+### Presigned URL 直连 OSS（带宽优化）
+
+启用 S3 存储后，系统自动走 presigned URL 直连模式：客户端直接 PUT/GET OSS，数据不经过应用服务器，节省双倍带宽消耗。
+
+**工作原理：**
+
+| 场景 | 流程 |
+|------|------|
+| 上传（小文件 <5MB） | InitUpload 返回单个 presigned PUT URL → 客户端直接 PUT 整个文件到 OSS → CompleteUpload 验证对象 |
+| 上传（大文件 ≥5MB） | InitUpload 返回多个分片 presigned PUT URL → 客户端并发 PUT 各分片 → CompleteUpload 调用 ComposeObject 服务端合并（数据在 OSS 内部复制） |
+| 下载 | DownloadFile 生成 presigned GET URL → 302 重定向到 OSS → 浏览器直接从 OSS 下载 |
+
+**断点续传：** 大文件分片上传时，InitUpload 会通过 ListParts 查询已上传分片，客户端跳过已完成分片。
+
+**CORS 配置（必须）：**
+
+阿里云 OSS Bucket 必须配置 CORS，否则浏览器 PUT 请求会被拦截。通过阿里云控制台或 API 配置：
+
+| 配置项 | 值 |
+|--------|-----|
+| AllowedOrigin | `https://aistudy.icu`, `http://localhost:8080` |
+| AllowedMethod | `PUT`, `GET`, `HEAD` |
+| AllowedHeader | `*` |
+| ExposeHeader | `ETag` |
+| MaxAgeSeconds | `3600` |
+
+> 本地开发环境 origin 为 `http://localhost:8080`，生产环境为 `https://aistudy.icu`。
+
+**降级机制：** presigned URL 生成失败时自动降级为中转模式（数据经应用服务器），保证可用性。
+
+**权限控制：** 分片大小和并发数设置仅管理员可修改，普通用户 select 禁用（仍可读取当前配置）。
+
 ## 服务器部署（systemd）
 
 ### 1. 编译 Linux 二进制（在 Windows 本地交叉编译）

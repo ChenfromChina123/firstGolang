@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,26 +70,36 @@ var chunkBufPool = sync.Pool{
 
 // UploadHandler handles chunked upload operations
 type UploadHandler struct {
-	db      *store.DB
-	storage storage.Storage
-	redis   *store.RedisCache // optional Redis cache for high concurrency
-	initSem chan struct{}     // InitUpload 并发限流信号量（容量=最大并发数，nil=不限流）
+	db       *store.DB
+	storage  storage.Storage                  // Router，用于读取（FileSize/HashFile 读取型）
+	storages map[string]storage.Storage       // 写入型链路按 storageType 选具体后端
+	redis    *store.RedisCache                // optional Redis cache for high concurrency
+	initSem  chan struct{}                    // InitUpload 并发限流信号量（容量=最大并发数，nil=不限流）
+}
+
+// backendFor 返回指定 storageType 的具体写入后端（混合存储）；未知/未配置时回退 local。
+func (h *UploadHandler) backendFor(t string) storage.Storage {
+	if b, ok := h.storages[t]; ok && b != nil {
+		return b
+	}
+	return h.storages["local"]
 }
 
 // NewUploadHandler creates a new upload handler (SQLite-only path)
-func NewUploadHandler(db *store.DB, s storage.Storage) *UploadHandler {
-	return &UploadHandler{db: db, storage: s}
+func NewUploadHandler(db *store.DB, s storage.Storage, storages map[string]storage.Storage) *UploadHandler {
+	return &UploadHandler{db: db, storage: s, storages: storages}
 }
 
 // NewUploadHandlerWithRedis creates a new upload handler with Redis caching enabled.
 // initMaxConcurrency 控制 InitUpload 最大并发数（bench 实测最优区间 500-1000，默认 1000），
 // 超过时返回 429 避免高并发下 P99 飙升。
-func NewUploadHandlerWithRedis(db *store.DB, s storage.Storage, rc *store.RedisCache) *UploadHandler {
+func NewUploadHandlerWithRedis(db *store.DB, s storage.Storage, storages map[string]storage.Storage, rc *store.RedisCache) *UploadHandler {
 	return &UploadHandler{
-		db:      db,
-		storage: s,
-		redis:   rc,
-		initSem: make(chan struct{}, 1000),
+		db:       db,
+		storage:  s,
+		storages: storages,
+		redis:    rc,
+		initSem:  make(chan struct{}, 1000),
 	}
 }
 
@@ -149,6 +161,10 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		req.ChunkSize = 512 * 1024 // default 512KB
 	}
 	if req.Storage == "" {
+		req.Storage = "local"
+	}
+	// 混合存储：若请求 OSS 但后端未配置，安全降级为本地
+	if req.Storage == "s3" && h.storages["s3"] == nil {
 		req.Storage = "local"
 	}
 
@@ -251,6 +267,33 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := generateID()
+	// 预先生成 fileID（presigned 模式下用于构造最终对象键，ComposeFile 需要）
+	fileID := generateID()
+
+	// === Presigned URL 直连模式：仅 S3 后端支持 ===
+	// 检测后端是否实现 PresignedStorage 接口，是则走 presigned 路径（数据不经应用服务器）
+	var presignedInfo *model.PresignedUploadInfo
+	uploadMode := "relay" // 默认中转模式（兼容旧客户端）
+	if req.Storage == "s3" {
+		backend := h.backendFor("s3")
+		if ps, ok := backend.(storage.PresignedStorage); ok {
+			info, err := h.buildPresignedUploadInfo(r.Context(), ps, sessionID, fileID, req.Filename, req.FileSize)
+			if err != nil {
+				log.Printf("[Upload] presigned init error (fallback to relay): %v", err)
+				uploadMode = "relay"
+			} else {
+				presignedInfo = info
+				uploadMode = "presigned"
+			}
+		}
+	}
+
+	// 最终对象键（presigned 模式下记录到 session，CompleteUpload 时复用）
+	objectKey := ""
+	if uploadMode == "presigned" {
+		objectKey = storage.ShardPath(fileID, req.Filename)
+	}
+
 	session := &model.UploadSession{
 		ID:          sessionID,
 		Filename:    req.Filename,
@@ -260,6 +303,8 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		TotalChunks: totalChunks,
 		Status:      "active",
 		StorageType: req.Storage,
+		UploadMode:  uploadMode,
+		ObjectKey:   objectKey,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
@@ -283,10 +328,84 @@ func (h *UploadHandler) InitUpload(w http.ResponseWriter, r *http.Request) {
 		ChunkSize:   req.ChunkSize,
 		TotalChunks: totalChunks,
 		StorageType: req.Storage,
+		Presigned:   presignedInfo,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// buildPresignedUploadInfo 构造 presigned 上传信息（小文件单 URL，大文件分片 URL 列表）。
+// 断点续传：复用 sessionID 查询已上传分片，只为缺失分片生成 URL。
+// 返回的 PresignedUploadInfo 中 CompletedParts 包含已上传分片编号（前端应跳过）。
+func (h *UploadHandler) buildPresignedUploadInfo(
+	ctx context.Context,
+	ps storage.PresignedStorage,
+	sessionID, fileID, filename string,
+	fileSize int64,
+) (*model.PresignedUploadInfo, error) {
+	partSize, partCount := storage.CalculatePartSize(fileSize)
+	objectKey := storage.ShardPath(fileID, filename)
+
+	// 小文件（<5MB）：生成单个 presigned PUT URL，客户端直接 PUT 整个文件
+	if partCount == 1 {
+		uploadURL, err := ps.GeneratePresignedPutURL(ctx, objectKey, storage.PresignedExpiry)
+		if err != nil {
+			return nil, fmt.Errorf("generate single presigned put url: %w", err)
+		}
+		return &model.PresignedUploadInfo{
+			Mode:       "single",
+			ObjectKey:  objectKey,
+			UploadURL:  uploadURL,
+			PartSize:   fileSize,
+			TotalParts: 1,
+		}, nil
+	}
+
+	// 大文件（≥5MB）：为每个分片生成 presigned PUT URL
+	// 断点续传：先查询已上传分片，前端跳过这些分片
+	completedParts, err := ps.ListParts(sessionID)
+	if err != nil {
+		log.Printf("[Upload] ListParts error (non-fatal, treating as fresh upload): %v", err)
+		completedParts = nil
+	}
+	completedSet := make(map[int]bool, len(completedParts))
+	for _, p := range completedParts {
+		completedSet[p] = true
+	}
+
+	parts := make([]model.PresignedPartInfo, 0, partCount)
+	for i := 0; i < partCount; i++ {
+		partKey := fmt.Sprintf("_parts/%s/part_%06d", sessionID, i)
+		uploadURL, err := ps.GeneratePresignedPutURL(ctx, partKey, storage.PresignedExpiry)
+		if err != nil {
+			return nil, fmt.Errorf("generate part %d presigned put url: %w", i, err)
+		}
+		offset := int64(i) * partSize
+		size := partSize
+		if i == partCount-1 {
+			// 最后一片可能小于 partSize
+			size = fileSize - offset
+			if size < 0 {
+				size = 0
+			}
+		}
+		parts = append(parts, model.PresignedPartInfo{
+			PartNumber: i,
+			URL:        uploadURL,
+			Offset:     offset,
+			Size:       size,
+		})
+	}
+
+	return &model.PresignedUploadInfo{
+		Mode:           "multipart",
+		ObjectKey:      objectKey,
+		Parts:          parts,
+		CompletedParts: completedParts,
+		PartSize:       partSize,
+		TotalParts:     partCount,
+	}, nil
 }
 
 // UploadChunk receives a chunk of data (高并发优化版)
@@ -313,6 +432,7 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 
 	// === Redis fast path: Lua atomic verify + mark (1 Redis call) ===
 	if h.redis != nil {
+		var session *model.UploadSession
 		// Lua script: GET session + GETBIT check + SETBIT in ONE atomic call
 		result, err := h.redis.VerifyAndMarkChunk(r.Context(), sessionID, chunkIndex)
 		if err == nil && result == -2 {
@@ -327,11 +447,12 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil || result == -1 {
 			// Session not found — fallback to SQLite
-			session, dbErr := h.db.GetUploadSession(sessionID)
+			s2, dbErr := h.db.GetUploadSession(sessionID)
 			if dbErr != nil {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
 			}
+			session = s2
 			if session.Status != "active" {
 				http.Error(w, "session is not active", http.StatusConflict)
 				return
@@ -339,6 +460,16 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 			// Re-cache + mark chunk
 			h.redis.CacheSession(r.Context(), session)
 			h.redis.MarkChunkReceived(r.Context(), sessionID, chunkIndex)
+		}
+
+		// 确保拿到 session 以确定存储后端（Redis 命中路径从缓存/DB 兜底）
+		if session == nil {
+			if s2, dbErr := h.db.GetUploadSession(sessionID); dbErr == nil {
+				session = s2
+			}
+		}
+		if session == nil {
+			session = &model.UploadSession{StorageType: "local"}
 		}
 
 		// Read chunk data from multipart form into memory
@@ -355,10 +486,11 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// === Async disk write — don't block HTTP response ===
-		if asyncSt, ok := h.storage.(storage.AsyncStorager); ok {
+		backend := h.backendFor(session.StorageType)
+		if asyncSt, ok := backend.(storage.AsyncStorager); ok {
 			asyncSt.SaveChunkAsync(sessionID, chunkIndex, chunkData)
 		} else {
-			h.storage.SaveChunk(sessionID, chunkIndex, strings.NewReader(string(chunkData)))
+			backend.SaveChunk(sessionID, chunkIndex, strings.NewReader(string(chunkData)))
 		}
 
 		// === Async SQLite chunk record ===
@@ -391,7 +523,7 @@ func (h *UploadHandler) UploadChunk(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	size, err := h.storage.SaveChunk(sessionID, chunkIndex, file)
+	size, err := h.backendFor(session.StorageType).SaveChunk(sessionID, chunkIndex, file)
 	if err != nil {
 		log.Printf("save chunk error: %v", err)
 		http.Error(w, "failed to save chunk", http.StatusInternalServerError)
@@ -560,8 +692,51 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Wait for pending async chunk writes to complete
-		if asyncSt, ok := h.storage.(storage.AsyncStorager); ok {
+		if asyncSt, ok := h.backendFor(session.StorageType).(storage.AsyncStorager); ok {
 			asyncSt.WaitAsync()
+		}
+
+		// === Presigned 直连模式：跳过 AssembleFile，调用 ComposeFile 服务端合并 ===
+		if session.UploadMode == "presigned" {
+			fileSize, hash, fileID, filePath, err := h.completePresignedUpload(r.Context(), session, username)
+			if err != nil {
+				log.Printf("[Upload] presigned complete error: %v", err)
+				http.Error(w, "failed to complete presigned upload", http.StatusInternalServerError)
+				return
+			}
+
+			fileRecord := &model.FileRecord{
+				ID:          fileID,
+				Filename:    session.Filename,
+				Size:        fileSize,
+				Hash:        hash,
+				StoragePath: filePath,
+				StorageType: session.StorageType,
+				ChunkSize:   session.ChunkSize,
+				TotalChunks: session.TotalChunks,
+				Status:      "completed",
+				Owner:       username,
+				CreatedAt:   time.Now(),
+				UpdatedAt:   time.Now(),
+			}
+
+			h.db.AsyncCreateFileAndStatus(fileRecord, req.SessionID)
+
+			if err := h.redis.MarkFileExists(r.Context(), session.Filename); err != nil {
+				log.Printf("redis mark file exists error (non-fatal): %v", err)
+			}
+
+			h.redis.DeleteSession(r.Context(), req.SessionID)
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(model.CompleteUploadResponse{
+				FileID:      fileID,
+				Filename:    session.Filename,
+				Size:        fileSize,
+				Hash:        hash,
+				StoragePath: filePath,
+			})
+			return
 		}
 
 		count, err := h.redis.CountReceivedChunks(r.Context(), req.SessionID)
@@ -576,13 +751,15 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var filePath, hash string
+		var rawPath string
 		fileID := generateID()
-		if assembler, ok := h.storage.(storage.HashAssembler); ok {
-			filePath, hash, err = assembler.AssembleFileWithHash(req.SessionID, fileID, session.Filename, session.TotalChunks)
+		backend := h.backendFor(session.StorageType)
+		if assembler, ok := backend.(storage.HashAssembler); ok {
+			rawPath, hash, err = assembler.AssembleFileWithHash(req.SessionID, fileID, session.Filename, session.TotalChunks)
 		} else {
-			filePath, err = h.storage.AssembleFile(req.SessionID, fileID, session.Filename, session.TotalChunks)
+			rawPath, err = backend.AssembleFile(req.SessionID, fileID, session.Filename, session.TotalChunks)
 			if err == nil {
-				hash, _ = h.storage.HashFile(filePath)
+				hash, _ = backend.HashFile(rawPath)
 			}
 		}
 		if err != nil {
@@ -591,7 +768,8 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		fileSize, _ := h.storage.FileSize(filePath)
+		fileSize, _ := backend.FileSize(rawPath)
+		filePath = storage.PrefixStoragePath(session.StorageType, rawPath)
 
 		fileRecord := &model.FileRecord{
 			ID:          fileID,
@@ -619,7 +797,7 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 
 		// Cleanup Redis + temp chunks
 		h.redis.DeleteSession(r.Context(), req.SessionID)
-		h.storage.DeleteTemp(req.SessionID)
+		h.backendFor(session.StorageType).DeleteTemp(req.SessionID)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(model.CompleteUploadResponse{
@@ -639,6 +817,44 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// === Presigned 直连模式（SQLite path）===
+	if session.UploadMode == "presigned" {
+		fileSize, hash, fileID, filePath, err := h.completePresignedUpload(r.Context(), session, username)
+		if err != nil {
+			log.Printf("[Upload] presigned complete error: %v", err)
+			http.Error(w, "failed to complete presigned upload", http.StatusInternalServerError)
+			return
+		}
+
+		fileRecord := &model.FileRecord{
+			ID:          fileID,
+			Filename:    session.Filename,
+			Size:        fileSize,
+			Hash:        hash,
+			StoragePath: filePath,
+			StorageType: session.StorageType,
+			ChunkSize:   session.ChunkSize,
+			TotalChunks: session.TotalChunks,
+			Status:      "completed",
+			Owner:       username,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+		}
+
+		h.db.CreateFile(fileRecord)
+		h.db.UpdateUploadSessionStatus(req.SessionID, "completed")
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(model.CompleteUploadResponse{
+			FileID:      fileID,
+			Filename:    session.Filename,
+			Size:        fileSize,
+			Hash:        hash,
+			StoragePath: filePath,
+		})
+		return
+	}
+
 	if len(session.ReceivedChunks) != session.TotalChunks {
 		http.Error(w, fmt.Sprintf("not all chunks received: %d/%d",
 			len(session.ReceivedChunks), session.TotalChunks), http.StatusBadRequest)
@@ -646,15 +862,17 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileID := generateID()
-	filePath, err := h.storage.AssembleFile(req.SessionID, fileID, session.Filename, session.TotalChunks)
+	backend := h.backendFor(session.StorageType)
+	rawPath, err := backend.AssembleFile(req.SessionID, fileID, session.Filename, session.TotalChunks)
 	if err != nil {
 		log.Printf("assemble error: %v", err)
 		http.Error(w, "failed to assemble file", http.StatusInternalServerError)
 		return
 	}
 
-	hash, _ := h.storage.HashFile(filePath)
-	fileSize, _ := h.storage.FileSize(filePath)
+	hash, _ := backend.HashFile(rawPath)
+	fileSize, _ := backend.FileSize(rawPath)
+	filePath := storage.PrefixStoragePath(session.StorageType, rawPath)
 
 	fileRecord := &model.FileRecord{
 		ID:          fileID,
@@ -673,7 +891,7 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 
 	h.db.CreateFile(fileRecord)
 	h.db.UpdateUploadSessionStatus(req.SessionID, "completed")
-	h.storage.DeleteTemp(req.SessionID)
+	h.backendFor(session.StorageType).DeleteTemp(req.SessionID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(model.CompleteUploadResponse{
@@ -683,6 +901,69 @@ func (h *UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		Hash:        hash,
 		StoragePath: filePath,
 	})
+}
+
+// completePresignedUpload 处理 presigned 直连模式的完成逻辑：
+//   - 小文件：StatObject 验证对象存在并获取大小
+//   - 大文件：ComposeFile 服务端合并分片 → StatObject 获取大小 → DeleteParts 清理
+//
+// 信任客户端提供的 file_hash（与秒传逻辑一致，presigned 模式下服务器无法独立计算哈希）。
+// 返回 (fileSize, hash, fileID, storagePath, error)。
+func (h *UploadHandler) completePresignedUpload(
+	ctx context.Context,
+	session *model.UploadSession,
+	username string,
+) (fileSize int64, hash string, fileID string, storagePath string, err error) {
+	backend := h.backendFor(session.StorageType)
+	ps, ok := backend.(storage.PresignedStorage)
+	if !ok {
+		return 0, "", "", "", fmt.Errorf("storage backend does not support presigned (storage_type=%s)", session.StorageType)
+	}
+
+	// 从 objectKey 反推 fileID（objectKey = ShardPath(fileID, filename)）
+	// 格式可能是 "ab/cd/fileID.ext" 或 "fileID.ext"（短 ID 兜底）
+	base := filepath.Base(session.ObjectKey)
+	ext := filepath.Ext(session.Filename)
+	fileID = strings.TrimSuffix(base, ext)
+	if fileID == "" {
+		fileID = generateID()
+	}
+
+	// 计算分片数（与 InitUpload 一致）
+	_, partCount := storage.CalculatePartSize(session.FileSize)
+
+	if partCount == 1 {
+		// 小文件：客户端已直接 PUT 到 objectKey，验证对象存在
+		fileSize, err = ps.StatObject(session.ObjectKey)
+		if err != nil {
+			return 0, "", "", "", fmt.Errorf("stat single object %s: %w", session.ObjectKey, err)
+		}
+	} else {
+		// 大文件：调用 ComposeFile 服务端合并分片（数据在 OSS 内部复制，不经过应用服务器）
+		composedKey, composeErr := ps.ComposeFile(session.ID, fileID, session.Filename, partCount)
+		if composeErr != nil {
+			return 0, "", "", "", fmt.Errorf("compose parts: %w", composeErr)
+		}
+		if composedKey != session.ObjectKey {
+			log.Printf("[Upload] WARN: composed key mismatch: expected=%s got=%s", session.ObjectKey, composedKey)
+		}
+
+		// 验证合并后的对象
+		fileSize, err = ps.StatObject(session.ObjectKey)
+		if err != nil {
+			return 0, "", "", "", fmt.Errorf("stat composed object %s: %w", session.ObjectKey, err)
+		}
+
+		// 清理分片对象
+		if delErr := ps.DeleteParts(session.ID); delErr != nil {
+			log.Printf("[Upload] cleanup parts error (non-fatal): %v", delErr)
+		}
+	}
+
+	// 信任客户端提供的 file_hash（与秒传逻辑一致）
+	hash = session.FileHash
+	storagePath = storage.PrefixStoragePath(session.StorageType, session.ObjectKey)
+	return fileSize, hash, fileID, storagePath, nil
 }
 
 // ServeHTTP routes upload-related requests

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,35 @@ func (h *DownloadHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	if file.Owner != username && role != "admin" {
 		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 		return
+	}
+
+	// === S3 Presigned 重定向：数据不经应用服务器 ===
+	// 仅对存储在 S3 且后端支持 PresignedStorage 的文件走 302 重定向。
+	// local 存储、Range 请求（断点续传/视频流）仍走流式中转以保持兼容。
+	// 分享下载走独立接口，不受此影响。
+	if file.StorageType == "s3" && strings.HasPrefix(file.StoragePath, storage.S3Prefix) {
+		if router, ok := h.storage.(*storage.Router); ok {
+			s3Backend := router.BackendFor("s3")
+			if ps, ok := s3Backend.(storage.PresignedStorage); ok && s3Backend != nil {
+				// 解析 S3 对象键（去掉 "s3:" 前缀）
+				objectKey := strings.TrimPrefix(file.StoragePath, storage.S3Prefix)
+
+				// 构造 response-content-disposition 参数强制浏览器下载（而非内联显示）
+				reqParams := make(url.Values)
+				reqParams.Set("response-content-disposition",
+					fmt.Sprintf(`attachment; filename="%s"`, fileBaseName(file.Filename)))
+				reqParams.Set("response-content-type", "application/octet-stream")
+
+				presignedURL, err := ps.GeneratePresignedGetURL(r.Context(), objectKey, storage.PresignedExpiry, reqParams)
+				if err != nil {
+					log.Printf("[DOWNLOAD] presigned get error (fallback to relay): id=%s err=%v", fileID, err)
+				} else {
+					log.Printf("[DOWNLOAD] presigned redirect: file=%s id=%s", file.Filename, fileID)
+					http.Redirect(w, r, presignedURL, http.StatusFound)
+					return
+				}
+			}
+		}
 	}
 
 	filePath := file.StoragePath

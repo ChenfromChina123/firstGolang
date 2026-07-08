@@ -132,6 +132,60 @@ func (q *AsyncWriteQueue) run() {
 	}
 }
 
+// executor 抽象 Exec 方法，使 *sql.DB 和 *sql.Tx 可互换，消除 flush/execSync 重复逻辑
+type executor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// executeJob 统一执行单个 writeJob 的 SQL 逻辑，供 flush（事务内）和 execSync（同步回退）复用
+func (q *AsyncWriteQueue) executeJob(exec executor, j writeJob) error {
+	var err error
+	switch j.kind {
+	case "session":
+		_, err = exec.Exec(
+			q.insertIgnorePrefix()+` INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, upload_mode, object_key, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			j.s.ID, j.s.Filename, j.s.FileSize, j.s.FileHash,
+			j.s.ChunkSize, j.s.TotalChunks, j.s.Status, j.s.StorageType,
+			j.s.UploadMode, j.s.ObjectKey,
+			j.s.CreatedAt.Format(time.RFC3339), j.s.UpdatedAt.Format(time.RFC3339),
+		)
+	case "chunk":
+		_, err = exec.Exec(
+			q.insertIgnorePrefix()+` INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
+			j.sid, j.idx, j.size, j.hash, time.Now().Format(time.RFC3339),
+		)
+	case "file":
+		_, err = exec.Exec(
+			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
+			j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
+			j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
+		)
+	case "update_status":
+		_, err = exec.Exec(
+			`UPDATE upload_sessions SET status = 'completed', updated_at = ? WHERE id = ?`,
+			time.Now().Format(time.RFC3339), j.sid,
+		)
+	case "file_and_status":
+		_, err = exec.Exec(
+			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
+			j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
+			j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
+		)
+		if err == nil {
+			_, err = exec.Exec(
+				`UPDATE upload_sessions SET status = 'completed', updated_at = ? WHERE id = ?`,
+				time.Now().Format(time.RFC3339), j.sid,
+			)
+		}
+	}
+	return err
+}
+
 func (q *AsyncWriteQueue) flush(jobs []writeJob) {
 	if len(jobs) == 0 {
 		return
@@ -147,50 +201,7 @@ func (q *AsyncWriteQueue) flush(jobs []writeJob) {
 	}
 	success := true
 	for _, j := range jobs {
-		var execErr error
-		switch j.kind {
-		case "session":
-			_, execErr = tx.Exec(
-				q.insertIgnorePrefix()+` INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				j.s.ID, j.s.Filename, j.s.FileSize, j.s.FileHash,
-				j.s.ChunkSize, j.s.TotalChunks, j.s.Status, j.s.StorageType,
-				j.s.CreatedAt.Format(time.RFC3339), j.s.UpdatedAt.Format(time.RFC3339),
-			)
-		case "chunk":
-			_, execErr = tx.Exec(
-				q.insertIgnorePrefix()+` INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
-				j.sid, j.idx, j.size, j.hash, time.Now().Format(time.RFC3339),
-			)
-		case "file":
-			_, execErr = tx.Exec(
-				q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
-				j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
-				j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
-			)
-		case "update_status":
-			_, execErr = tx.Exec(
-				`UPDATE upload_sessions SET status = 'completed', updated_at = ? WHERE id = ?`,
-				time.Now().Format(time.RFC3339), j.sid,
-			)
-		case "file_and_status":
-			_, execErr = tx.Exec(
-				q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
-				j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
-				j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
-			)
-			if execErr == nil {
-				_, execErr = tx.Exec(
-					`UPDATE upload_sessions SET status = 'completed', updated_at = ? WHERE id = ?`,
-					time.Now().Format(time.RFC3339), j.sid,
-				)
-			}
-		}
-		if execErr != nil {
+		if execErr := q.executeJob(tx, j); execErr != nil {
 			log.Printf("[AsyncSQLite] job %s error: %v (will retry sync)", j.kind, execErr)
 			tx.Rollback()
 			// Retry this failed job synchronously
@@ -214,50 +225,7 @@ func (q *AsyncWriteQueue) flush(jobs []writeJob) {
 
 // execSync executes a single writeJob synchronously (fallback after tx failure).
 func (q *AsyncWriteQueue) execSync(j writeJob) {
-	var err error
-	switch j.kind {
-	case "session":
-		_, err = q.db.Exec(
-			q.insertIgnorePrefix()+` INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			j.s.ID, j.s.Filename, j.s.FileSize, j.s.FileHash,
-			j.s.ChunkSize, j.s.TotalChunks, j.s.Status, j.s.StorageType,
-			j.s.CreatedAt.Format(time.RFC3339), j.s.UpdatedAt.Format(time.RFC3339),
-		)
-	case "chunk":
-		_, err = q.db.Exec(
-			q.insertIgnorePrefix()+` INTO chunks (session_id, chunk_index, size, hash, created_at) VALUES (?, ?, ?, ?, ?)`,
-			j.sid, j.idx, j.size, j.hash, time.Now().Format(time.RFC3339),
-		)
-	case "file":
-		_, err = q.db.Exec(
-			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
-			j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
-			j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
-		)
-	case "update_status":
-		_, err = q.db.Exec(
-			`UPDATE upload_sessions SET status = 'completed', updated_at = ? WHERE id = ?`,
-			time.Now().Format(time.RFC3339), j.sid,
-		)
-	case "file_and_status":
-		_, err = q.db.Exec(
-			q.insertIgnorePrefix()+` INTO files (id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			j.f.ID, j.f.Filename, j.f.Size, j.f.Hash, j.f.StoragePath, j.f.StorageType,
-			j.f.ChunkSize, j.f.TotalChunks, j.f.Status, j.f.Owner,
-			j.f.CreatedAt.Format(time.RFC3339), j.f.UpdatedAt.Format(time.RFC3339),
-		)
-		if err == nil {
-			_, err = q.db.Exec(
-				`UPDATE upload_sessions SET status = 'completed', updated_at = ? WHERE id = ?`,
-				time.Now().Format(time.RFC3339), j.sid,
-			)
-		}
-	}
-	if err != nil {
+	if err := q.executeJob(q.db, j); err != nil {
 		log.Printf("[AsyncSQLite] execSync error (%s): %v", j.kind, err)
 	}
 }
@@ -432,21 +400,23 @@ func (db *DB) migrate() error {
 	var statements []string
 	switch db.dialect {
 	case "mysql":
-		statements = []string{
-			`CREATE TABLE IF NOT EXISTS upload_sessions (
-				id VARCHAR(64) PRIMARY KEY,
-				filename VARCHAR(1024) NOT NULL,
-				file_size BIGINT NOT NULL,
-				file_hash VARCHAR(128) NOT NULL DEFAULT '',
-				chunk_size BIGINT NOT NULL,
-				total_chunks INT NOT NULL,
-				status VARCHAR(32) NOT NULL DEFAULT 'active',
-				storage_type VARCHAR(32) NOT NULL DEFAULT 'local',
-				created_at VARCHAR(32) NOT NULL,
-				updated_at VARCHAR(32) NOT NULL,
-				INDEX idx_sessions_hash (file_hash),
-				INDEX idx_sessions_status (status)
-			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+			statements = []string{
+				`CREATE TABLE IF NOT EXISTS upload_sessions (
+					id VARCHAR(64) PRIMARY KEY,
+					filename VARCHAR(1024) NOT NULL,
+					file_size BIGINT NOT NULL,
+					file_hash VARCHAR(128) NOT NULL DEFAULT '',
+					chunk_size BIGINT NOT NULL,
+					total_chunks INT NOT NULL,
+					status VARCHAR(32) NOT NULL DEFAULT 'active',
+					storage_type VARCHAR(32) NOT NULL DEFAULT 'local',
+					upload_mode VARCHAR(16) NOT NULL DEFAULT '',
+					object_key VARCHAR(1024) NOT NULL DEFAULT '',
+					created_at VARCHAR(32) NOT NULL,
+					updated_at VARCHAR(32) NOT NULL,
+					INDEX idx_sessions_hash (file_hash),
+					INDEX idx_sessions_status (status)
+				) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 			`CREATE TABLE IF NOT EXISTS chunks (
 				id BIGINT AUTO_INCREMENT PRIMARY KEY,
 				session_id VARCHAR(64) NOT NULL,
@@ -542,19 +512,21 @@ func (db *DB) migrate() error {
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		}
 	default: // sqlite 支持多语句
-		statements = []string{
-			`CREATE TABLE IF NOT EXISTS upload_sessions (
-				id TEXT PRIMARY KEY,
-				filename TEXT NOT NULL,
-				file_size INTEGER NOT NULL,
-				file_hash TEXT DEFAULT '',
-				chunk_size INTEGER NOT NULL,
-				total_chunks INTEGER NOT NULL,
-				status TEXT NOT NULL DEFAULT 'active',
-				storage_type TEXT NOT NULL DEFAULT 'local',
-				created_at TEXT NOT NULL,
-				updated_at TEXT NOT NULL
-			);
+			statements = []string{
+				`CREATE TABLE IF NOT EXISTS upload_sessions (
+					id TEXT PRIMARY KEY,
+					filename TEXT NOT NULL,
+					file_size INTEGER NOT NULL,
+					file_hash TEXT DEFAULT '',
+					chunk_size INTEGER NOT NULL,
+					total_chunks INTEGER NOT NULL,
+					status TEXT NOT NULL DEFAULT 'active',
+					storage_type TEXT NOT NULL DEFAULT 'local',
+					upload_mode TEXT NOT NULL DEFAULT '',
+					object_key TEXT NOT NULL DEFAULT '',
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL
+				);
 
 			CREATE TABLE IF NOT EXISTS chunks (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -685,6 +657,11 @@ func (db *DB) migrate() error {
 	// 增量迁移：为 shares 表追加 password_hash 列（分享密码保护）
 	if err := db.migrateSharesAddPassword(); err != nil {
 		return fmt.Errorf("migrate shares password_hash: %w", err)
+	}
+
+	// 增量迁移：为 upload_sessions 表追加 upload_mode/object_key 列（presigned 直连）
+	if err := db.migrateUploadSessionsAddPresignedCols(); err != nil {
+		return fmt.Errorf("migrate upload_sessions presigned cols: %w", err)
 	}
 
 	return nil
@@ -1033,13 +1010,95 @@ func (db *DB) migrateSharesAddPassword() error {
 	return nil
 }
 
+// migrateUploadSessionsAddPresignedCols 检测 upload_sessions 表是否缺少
+// upload_mode/object_key 列，缺少则 ALTER TABLE ADD COLUMN。
+// 用于 presigned URL 直连 OSS 功能（记录上传模式和最终对象键）。
+// 兼容 SQLite 和 MySQL 旧库升级。
+func (db *DB) migrateUploadSessionsAddPresignedCols() error {
+	var columns []string
+	switch db.dialect {
+	case "mysql":
+		rows, err := db.conn.Query(
+			`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+			 WHERE TABLE_NAME = 'upload_sessions' AND TABLE_SCHEMA = DATABASE()`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(c))
+		}
+		rows.Close()
+	default:
+		rows, err := db.conn.Query(`PRAGMA table_info(upload_sessions)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt interface{}
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(name))
+		}
+		rows.Close()
+	}
+
+	hasUploadMode := false
+	hasObjectKey := false
+	for _, c := range columns {
+		if c == "upload_mode" {
+			hasUploadMode = true
+		}
+		if c == "object_key" {
+			hasObjectKey = true
+		}
+	}
+
+	if !hasUploadMode {
+		var stmt string
+		if db.dialect == "mysql" {
+			stmt = `ALTER TABLE upload_sessions ADD COLUMN upload_mode VARCHAR(16) NOT NULL DEFAULT ''`
+		} else {
+			stmt = `ALTER TABLE upload_sessions ADD COLUMN upload_mode TEXT NOT NULL DEFAULT ''`
+		}
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("add upload_mode column: %w", err)
+		}
+		log.Printf("[DB] upload_sessions table: added 'upload_mode' column (presigned upload feature)")
+	}
+	if !hasObjectKey {
+		var stmt string
+		if db.dialect == "mysql" {
+			stmt = `ALTER TABLE upload_sessions ADD COLUMN object_key VARCHAR(1024) NOT NULL DEFAULT ''`
+		} else {
+			stmt = `ALTER TABLE upload_sessions ADD COLUMN object_key TEXT NOT NULL DEFAULT ''`
+		}
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("add object_key column: %w", err)
+		}
+		log.Printf("[DB] upload_sessions table: added 'object_key' column (presigned upload feature)")
+	}
+
+	return nil
+}
+
 // CreateUploadSession inserts a new upload session
 func (db *DB) CreateUploadSession(session *model.UploadSession) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO upload_sessions (id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, upload_mode, object_key, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.Filename, session.FileSize, session.FileHash,
 		session.ChunkSize, session.TotalChunks, session.Status, session.StorageType,
+		session.UploadMode, session.ObjectKey,
 		session.CreatedAt.Format(time.RFC3339), session.UpdatedAt.Format(time.RFC3339),
 	)
 	return err
@@ -1048,13 +1107,14 @@ func (db *DB) CreateUploadSession(session *model.UploadSession) error {
 // GetUploadSession retrieves a session by ID
 func (db *DB) GetUploadSession(id string) (*model.UploadSession, error) {
 	row := db.conn.QueryRow(
-		`SELECT id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at
+		`SELECT id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, upload_mode, object_key, created_at, updated_at
 		 FROM upload_sessions WHERE id = ?`, id,
 	)
 	s := &model.UploadSession{}
 	var createdAt, updatedAt string
 	err := row.Scan(&s.ID, &s.Filename, &s.FileSize, &s.FileHash,
-		&s.ChunkSize, &s.TotalChunks, &s.Status, &s.StorageType, &createdAt, &updatedAt)
+		&s.ChunkSize, &s.TotalChunks, &s.Status, &s.StorageType,
+		&s.UploadMode, &s.ObjectKey, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1079,7 +1139,7 @@ func (db *DB) FindActiveSessionByHash(fileHash, filename string) (*model.UploadS
 		return nil, nil
 	}
 	row := db.conn.QueryRow(
-		`SELECT id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, created_at, updated_at
+		`SELECT id, filename, file_size, file_hash, chunk_size, total_chunks, status, storage_type, upload_mode, object_key, created_at, updated_at
 		 FROM upload_sessions
 		 WHERE file_hash = ? AND filename = ? AND status = 'active'
 		 ORDER BY created_at DESC LIMIT 1`, fileHash, filename,
@@ -1087,7 +1147,8 @@ func (db *DB) FindActiveSessionByHash(fileHash, filename string) (*model.UploadS
 	s := &model.UploadSession{}
 	var createdAt, updatedAt string
 	err := row.Scan(&s.ID, &s.Filename, &s.FileSize, &s.FileHash,
-		&s.ChunkSize, &s.TotalChunks, &s.Status, &s.StorageType, &createdAt, &updatedAt)
+		&s.ChunkSize, &s.TotalChunks, &s.Status, &s.StorageType,
+		&s.UploadMode, &s.ObjectKey, &createdAt, &updatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil

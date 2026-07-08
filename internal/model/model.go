@@ -18,6 +18,8 @@ type UploadSession struct {
 	ReceivedChunks []int     `json:"received_chunks"`
 	Status         string    `json:"status"` // active, completed, cancelled
 	StorageType    string    `json:"storage_type"` // local, s3
+	UploadMode     string    `json:"upload_mode,omitempty"` // "presigned" | "relay"（空=relay，兼容旧客户端）
+	ObjectKey      string    `json:"object_key,omitempty"` // presigned 模式下的最终对象键（合并后的目标）
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
@@ -58,13 +60,37 @@ type InitUploadRequest struct {
 	Storage    string `json:"storage"` // local, s3
 }
 
+// PresignedPartInfo 描述一个分片的 presigned 上传信息（断点续传时客户端按此切片）。
+type PresignedPartInfo struct {
+	PartNumber int    `json:"part_number"` // 分片序号（0-based）
+	URL       string `json:"url"`         // presigned PUT URL
+	Offset    int64  `json:"offset"`      // 文件偏移量（字节）
+	Size      int64  `json:"size"`        // 本片大小（字节，最后一片可能 < partSize）
+}
+
+// PresignedUploadInfo 是 InitUpload 返回的 presigned 上传信息。
+// 客户端据此决定上传模式：
+//   - Mode="single": 用 UploadURL 直接 PUT 单个对象（小文件 < 5MB）
+//   - Mode="multipart": 按 Parts 切片并行上传，全部完成后调 /api/upload/complete 触发合并
+// CompletedParts 用于断点续传，客户端应跳过已完成的分片。
+type PresignedUploadInfo struct {
+	Mode           string              `json:"mode"`            // "single" | "multipart"
+	ObjectKey      string              `json:"object_key"`      // 最终对象键（合并后的目标）
+	UploadURL      string              `json:"upload_url,omitempty"`         // Mode=single 时使用
+	Parts          []PresignedPartInfo `json:"parts,omitempty"`               // Mode=multipart 时使用
+	CompletedParts []int               `json:"completed_parts,omitempty"`     // 断点续传：已上传的分片编号
+	PartSize       int64               `json:"part_size,omitempty"`           // 每片大小（字节）
+	TotalParts     int                 `json:"total_parts,omitempty"`        // 总片数
+}
+
 // InitUploadResponse is the response for upload initialization
 type InitUploadResponse struct {
-	SessionID    string `json:"session_id"`
-	Filename     string `json:"filename"`
-	ChunkSize    int64  `json:"chunk_size"`
-	TotalChunks  int    `json:"total_chunks"`
-	StorageType  string `json:"storage_type"`
+	SessionID    string                 `json:"session_id"`
+	Filename     string                 `json:"filename"`
+	ChunkSize    int64                  `json:"chunk_size"`
+	TotalChunks  int                    `json:"total_chunks"`
+	StorageType  string                 `json:"storage_type"`
+	Presigned    *PresignedUploadInfo   `json:"presigned,omitempty"` // 非 nil 时客户端应走 presigned 直连
 }
 
 // UploadChunkRequest carries chunk upload data (multipart)

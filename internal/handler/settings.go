@@ -57,6 +57,12 @@ func (h *SettingsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		h.getSettings(w, r, username)
 	case http.MethodPost:
+		// 仅管理员可修改分片大小和并发数（普通用户只读）
+		role := auth.RoleFromContext(r.Context())
+		if role != "admin" {
+			http.Error(w, `{"error":"forbidden","message":"only admin can change upload settings"}`, http.StatusForbidden)
+			return
+		}
 		h.saveSettings(w, r, username)
 	default:
 		http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
