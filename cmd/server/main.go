@@ -239,8 +239,25 @@ func main() {
 	forgotLimiter := auth.NewLoginRateLimiter(0.0083, 5)
 
 	authHandler := handler.NewAuthHandler(db, jwtManager, mailer, appBaseURL)
-	// 预览 handler：图片缩略图/PDF/文本/音频预览（第一阶段）
-	previewHandler := handler.NewPreviewHandler(db, router, appBaseURL)
+
+	// 类型断言注入 OSS 转码缓存能力（S3Storage 实现 TranscodeCacheStore 接口）
+	var tcs storage.TranscodeCacheStore
+	if s3St != nil {
+		if v, ok := s3St.(storage.TranscodeCacheStore); ok {
+			tcs = v
+			log.Printf("[Transcode] OSS cache store enabled: HLS transcode + presigned URL")
+		}
+	}
+	if tcs == nil {
+		log.Printf("[Transcode] OSS cache store disabled: video transcode falls back to local MP4")
+	}
+
+	// 预览 handler：注入 cacheStore 以支持 HLS 转码 + OSS 缓存
+	previewHandler := handler.NewPreviewHandler(db, router, appBaseURL, tcs)
+
+	// 启动转码优先级队列调度器（单 worker，替换原 transcodeGlobalSem 信号量）
+	// 必须在入队前启动，否则任务永远不执行
+	storage.StartTranscodeScheduler()
 
 	mux := http.NewServeMux()
 

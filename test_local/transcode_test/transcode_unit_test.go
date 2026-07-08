@@ -94,6 +94,9 @@ func TestStartTranscodeJob_ConcurrentSameKey(t *testing.T) {
 	os.RemoveAll(basePath)
 	t.Cleanup(func() { os.RemoveAll(basePath) })
 
+	// 启动优先级队列调度器（单 worker），否则入队任务不会执行
+	storage.StartTranscodeScheduler()
+
 	var wg sync.WaitGroup
 	const goroutines = 10
 	statuses := make([]string, goroutines)
@@ -103,7 +106,7 @@ func TestStartTranscodeJob_ConcurrentSameKey(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			statuses[idx] = storage.StartTranscodeJob(basePath, srcPath, fileID, quality)
+			statuses[idx] = storage.StartTranscodeJob(basePath, srcPath, fileID, quality, nil)
 		}(i)
 	}
 	wg.Wait()
@@ -169,7 +172,7 @@ func TestStartTranscodeJob_CacheHit(t *testing.T) {
 	}
 
 	// 调用 StartTranscodeJob，应立即返回 done（缓存命中）
-	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality)
+	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality, nil)
 	if status != "done" {
 		t.Fatalf("expected status=done for cache hit, got %s", status)
 	}

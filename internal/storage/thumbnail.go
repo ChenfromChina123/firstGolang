@@ -364,14 +364,18 @@ var transcodeJobs sync.Map
 //
 // 流程（修正 TOCTOU 竞态）：
 //  1. LoadOrStore 占位 job（status=pending）—— 并发请求必然命中此占位
-//  2. 占位后检查 TranscodeExists，命中则原子改 status=done，不启动 goroutine
-//  3. 若 job 已存在且 status=failed 且 RetryCount<3，CAS 重置为 pending 重新启动
+//  2. 占位后检查缓存完整性，命中则原子改 status=done，不入队
+//  3. 若 job 已存在且 status=failed 且 RetryCount<3，CAS 重置为 pending 重新入队
 //  4. 若 job 已存在且 status=running/pending，直接返回当前状态
-//  5. 启动 goroutine：获取全局信号量 → 调 GenerateTranscode → 更新 status
-//  6. goroutine 结束时注册 time.AfterFunc：done 5min / failed 30min 后清理
+//  5. 入队到优先级队列（priorityHigh），由单 worker 调度执行
+//  6. worker 执行完毕后注册 time.AfterFunc：done 5min / failed 30min 后清理
+//
+// cacheStore 参数决定转码路径：
+//   - nil：走 MP4 fallback（GenerateTranscode，本地缓存）
+//   - 非 nil：走 HLS（GenerateHLSTranscode，边转边播 + OSS 缓存）
 //
 // 返回值：当前任务状态字符串（pending/running/done/failed）
-func StartTranscodeJob(basePath, srcPath, fileID, quality string) string {
+func StartTranscodeJob(basePath, srcPath, fileID, quality string, cacheStore TranscodeCacheStore) string {
 	key := fileID + ":" + quality
 
 	// 占位 job：LoadOrStore 保证并发请求只有一个创建成功
@@ -392,48 +396,54 @@ func StartTranscodeJob(basePath, srcPath, fileID, quality string) string {
 			// 任务进行中，直接返回状态（前端轮询即可）
 			return string(status)
 		case TranscodeStatusDone:
-			// 二次检查磁盘缓存（可能被外部清理）
-			if TranscodeExists(basePath, fileID, quality) {
+			// 二次检查缓存（可能被外部清理）
+			if transcodeCacheComplete(basePath, fileID, quality, cacheStore) {
 				return string(TranscodeStatusDone)
 			}
 			// 缓存丢失，删除旧 job 重新启动（落到下面的占位逻辑）
 			transcodeJobs.Delete(key)
-			return StartTranscodeJob(basePath, srcPath, fileID, quality)
+			return StartTranscodeJob(basePath, srcPath, fileID, quality, cacheStore)
 		case TranscodeStatusFailed:
-			// 失败重试：RetryCount < 上限时重置为 pending 重新启动
+			// 失败重试：RetryCount < 上限时重置为 pending 重新入队
 			if job.RetryCount >= transcodeJobMaxRetry {
 				return string(TranscodeStatusFailed)
 			}
 			job.RetryCount++
 			job.setStatusAndError(TranscodeStatusPending, "")
-			// 落到下面的 goroutine 启动逻辑
+			// 落到下面的入队逻辑
 		}
 	}
 
-	// 持有占位 job（新创建或失败重试），检查磁盘缓存
-	if TranscodeExists(basePath, fileID, quality) {
+	// 持有占位 job（新创建或失败重试），检查缓存完整性
+	if transcodeCacheComplete(basePath, fileID, quality, cacheStore) {
 		job.setStatus(TranscodeStatusDone)
 		scheduleJobCleanup(key, TranscodeStatusDone)
 		return string(TranscodeStatusDone)
 	}
 
-	// 启动后台 goroutine 执行 ffmpeg 转码
-	go func() {
-		job.setStatus(TranscodeStatusRunning)
-
-		// GenerateTranscode 内部已有单飞锁 + 全局信号量 + 失败清理，
-		// 这里不重复获取信号量（会导致死锁：信号量缓冲大小=1）
-		_, err := GenerateTranscode(basePath, srcPath, fileID, quality)
-		if err != nil {
-			job.setStatusAndError(TranscodeStatusFailed, err.Error())
-			scheduleJobCleanup(key, TranscodeStatusFailed)
-			return
-		}
-		job.setStatus(TranscodeStatusDone)
-		scheduleJobCleanup(key, TranscodeStatusDone)
-	}()
+	// 入队到优先级队列（用户请求为 high 优先级），由单 worker 调度执行
+	// worker 内部调用 GenerateHLSTranscode 或 GenerateTranscode，自带单飞锁和信号量
+	EnqueueTranscode(transcodeRequest{
+		FileID:      fileID,
+		Quality:     quality,
+		SrcPath:     srcPath,
+		BasePath:    basePath,
+		Priority:    priorityHigh,
+		EnqueueTime: time.Now(),
+		CacheStore:  cacheStore,
+	})
 
 	return string(TranscodeStatusPending)
+}
+
+// transcodeCacheComplete 检查转码缓存是否已完整可用。
+// cacheStore != nil 时检查 OSS + 本地 HLS 产物；否则检查本地 MP4 产物。
+func transcodeCacheComplete(basePath, fileID, quality string, cacheStore TranscodeCacheStore) bool {
+	if cacheStore != nil {
+		complete, _ := HLSTranscodeComplete(basePath, fileID, quality, cacheStore)
+		return complete
+	}
+	return TranscodeExists(basePath, fileID, quality)
 }
 
 // GetTranscodeJob 查询转码任务状态（只读）。

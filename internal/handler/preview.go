@@ -20,15 +20,16 @@ import (
 // PreviewHandler 处理文件预览请求：元数据查询、缩略图生成、原始内容流式返回。
 // 第一阶段支持图片/PDF/文本/音频；视频海报与转码在后续阶段实现。
 type PreviewHandler struct {
-	db      *store.DB
-	storage storage.Storage
-	baseURL string // 应用基础 URL（用于构造完整 URL，预留）
+	db         *store.DB
+	storage    storage.Storage
+	baseURL    string                     // 应用基础 URL（用于构造完整 URL，预留）
+	cacheStore storage.TranscodeCacheStore // OSS 转码缓存后端（nil 时走本地 MP4 fallback）
 }
 
 // NewPreviewHandler 创建预览 handler。
-// basePath 由 storage.BasePath() 提供，用于缩略图缓存目录。
-func NewPreviewHandler(db *store.DB, s storage.Storage, baseURL string) *PreviewHandler {
-	return &PreviewHandler{db: db, storage: s, baseURL: baseURL}
+// cacheStore 为 OSS 转码缓存后端，nil 时视频转码走本地 MP4 fallback。
+func NewPreviewHandler(db *store.DB, s storage.Storage, baseURL string, cacheStore storage.TranscodeCacheStore) *PreviewHandler {
+	return &PreviewHandler{db: db, storage: s, baseURL: baseURL, cacheStore: cacheStore}
 }
 
 // previewMeta 是 /api/preview/{fileID} 返回的元数据结构。
@@ -147,6 +148,33 @@ func (h *PreviewHandler) serveMeta(w http.ResponseWriter, r *http.Request, fileI
 }
 
 // serveThumb 返回图片缩略图。
+// resolveLocalSource 返回可用于 imaging/ffmpeg 的本地文件路径。
+//   - local 文件：去掉 "local:" 前缀得到绝对路径
+//   - s3 文件：先从 OSS 下载到本地临时文件，返回临时路径；调用方需 defer cleanup 清理
+func (h *PreviewHandler) resolveLocalSource(file *model.FileRecord) (string, func(), error) {
+	if file.StorageType != "s3" {
+		p := strings.TrimPrefix(file.StoragePath, storage.LocalPrefix)
+		return p, func() {}, nil
+	}
+	// s3：下载到本地临时文件
+	rc, err := h.storage.ReadFile(file.StoragePath, 0)
+	if err != nil {
+		return "", nil, err
+	}
+	defer rc.Close()
+	tmp, err := os.CreateTemp("", "filesync-preview-*")
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := io.Copy(tmp, rc); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", nil, err
+	}
+	tmp.Close()
+	return tmp.Name(), func() { os.Remove(tmp.Name()) }, nil
+}
+
 // 首次请求时调用 imaging 库生成并落盘缓存，后续直接流式返回。
 // 查询参数 size: small(320x240) | medium(800x600) | large(1600x1200)
 func (h *PreviewHandler) serveThumb(w http.ResponseWriter, r *http.Request, fileID string) {
@@ -177,13 +205,20 @@ func (h *PreviewHandler) serveThumb(w http.ResponseWriter, r *http.Request, file
 
 	// 缓存未命中 → 生成
 	if !storage.ThumbnailExists(basePath, fileID, size) {
-		// file.StoragePath 在 LocalStorage 实现中已是绝对路径（basePath + ShardPath）
-		srcPath := file.StoragePath
-		if _, err := h.storage.FileSize(srcPath); err != nil {
-			log.Printf("[PREVIEW] thumb: source not found id=%s path=%s err=%v", fileID, srcPath, err)
+		// 校验源文件存在（按 storage_path 前缀路由到对应后端）
+		if _, err := h.storage.FileSize(file.StoragePath); err != nil {
+			log.Printf("[PREVIEW] thumb: source not found id=%s path=%s err=%v", fileID, file.StoragePath, err)
 			http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
 			return
 		}
+		// 解析本地可读路径：local 去前缀；s3 下载到临时文件
+		srcPath, cleanup, err := h.resolveLocalSource(file)
+		if err != nil {
+			log.Printf("[PREVIEW] thumb: resolve source failed id=%s err=%v", fileID, err)
+			http.Error(w, `{"error":"source file unavailable"}`, http.StatusInternalServerError)
+			return
+		}
+		defer cleanup()
 		if _, err := storage.GenerateThumbnail(basePath, srcPath, fileID, size); err != nil {
 			log.Printf("[PREVIEW] thumb: generate failed id=%s size=%s err=%v", fileID, size, err)
 			http.Error(w, `{"error":"thumbnail generation failed"}`, http.StatusInternalServerError)
@@ -236,12 +271,20 @@ func (h *PreviewHandler) servePoster(w http.ResponseWriter, r *http.Request, fil
 
 	// 缓存未命中 → 调用 ffmpeg 生成
 	if !storage.PosterExists(basePath, fileID) {
-		srcPath := file.StoragePath
-		if _, err := h.storage.FileSize(srcPath); err != nil {
-			log.Printf("[PREVIEW] poster: source not found id=%s path=%s err=%v", fileID, srcPath, err)
+		// 校验源文件存在（按 storage_path 前缀路由到对应后端）
+		if _, err := h.storage.FileSize(file.StoragePath); err != nil {
+			log.Printf("[PREVIEW] poster: source not found id=%s path=%s err=%v", fileID, file.StoragePath, err)
 			http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
 			return
 		}
+		// 解析本地可读路径：local 去前缀；s3 下载到临时文件
+		srcPath, cleanup, err := h.resolveLocalSource(file)
+		if err != nil {
+			log.Printf("[PREVIEW] poster: resolve source failed id=%s err=%v", fileID, err)
+			http.Error(w, `{"error":"source file unavailable"}`, http.StatusInternalServerError)
+			return
+		}
+		defer cleanup()
 		if _, err := storage.GeneratePoster(basePath, srcPath, fileID); err != nil {
 			log.Printf("[PREVIEW] poster: generate failed id=%s err=%v", fileID, err)
 			http.Error(w, `{"error":"poster generation failed: ffmpeg not available or video invalid"}`, http.StatusInternalServerError)
@@ -306,6 +349,12 @@ func (h *PreviewHandler) serveTranscode(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// s3 视频不支持服务端转码（需先下载大文件且异步清理复杂），直接返回 OSS 原文件流
+	if file.StorageType == "s3" {
+		h.serveContent(w, r, fileID)
+		return
+	}
+
 	basePath := h.storage.BasePath()
 
 	// 缓存命中 → 流式返回转码文件（支持 Range 206）
@@ -315,14 +364,15 @@ func (h *PreviewHandler) serveTranscode(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// 缓存未命中 → 启动异步转码任务，返回 202 + status_url（前端轮询）
-	srcPath := file.StoragePath
+	// local 文件的 StoragePath 带 "local:" 前缀，需去掉后交给 ffmpeg
+	srcPath := strings.TrimPrefix(file.StoragePath, storage.LocalPrefix)
 	if _, err := h.storage.FileSize(srcPath); err != nil {
 		log.Printf("[PREVIEW] transcode: source not found id=%s path=%s err=%v", fileID, srcPath, err)
 		http.Error(w, `{"error":"source file not found"}`, http.StatusNotFound)
 		return
 	}
 
-	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality)
+	status := storage.StartTranscodeJob(basePath, srcPath, fileID, quality, h.cacheStore)
 	log.Printf("[PREVIEW] transcode: job started id=%s quality=%s status=%s", fileID, quality, status)
 
 	w.Header().Set("Content-Type", "application/json")
