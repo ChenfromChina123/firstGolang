@@ -418,7 +418,9 @@
             this.updateDom();
         }
 
-        /** 并发上传所有缺失分片 */
+        /** 并发上传所有缺失分片
+         *  单个 chunk 失败不立即中断整个任务，收集失败 chunks 后重试（最多 2 次）。
+         *  重试后仍失败的才抛出异常，避免"前端显示失败但实际还在上传"的状态不一致 bug。 */
         async uploadAll(onProgress) {
             const missing = [];
             for (let i = 0; i < this.totalChunks; i++) {
@@ -427,18 +429,46 @@
             if (missing.length === 0) return;
 
             // 并发控制：限制同时进行的分片上传数
+            // 单个 chunk 失败时记录索引但不中断，其他 worker 继续上传
             let cursor = 0;
+            const failed = [];
             const workers = [];
             const worker = async () => {
                 while (cursor < missing.length) {
                     const idx = missing[cursor++];
-                    await this.uploadChunk(idx);
+                    try {
+                        await this.uploadChunk(idx);
+                    } catch (e) {
+                        failed.push(idx);
+                        console.warn(`[Upload] chunk ${idx} failed (will retry): ${e.message}`);
+                    }
                 }
             };
             for (let i = 0; i < this.concurrency; i++) {
                 workers.push(worker());
             }
             await Promise.all(workers);
+
+            // 重试失败的 chunks（最多 2 次，串行重试避免并发压力）
+            for (let retry = 0; retry < 2 && failed.length > 0; retry++) {
+                const stillFailed = [];
+                for (const idx of failed) {
+                    if (this.received.has(idx)) continue; // 可能被其他 worker 重试成功了
+                    try {
+                        await this.uploadChunk(idx);
+                    } catch (e) {
+                        stillFailed.push(idx);
+                        console.warn(`[Upload] chunk ${idx} retry ${retry + 1} failed: ${e.message}`);
+                    }
+                }
+                failed.length = 0;
+                failed.push(...stillFailed);
+            }
+
+            // 仍有失败的 chunks，抛出异常
+            if (failed.length > 0) {
+                throw new Error(`${failed.length} chunks 上传失败: ${failed.slice(0, 5).join(',')}${failed.length > 5 ? '...' : ''}`);
+            }
         }
 
         /** 完成上传，合并分片 */
@@ -494,17 +524,24 @@
             this.updateDom();
         }
 
-        /** 大文件分片 presigned 直传：并发 PUT 各分片到 OSS */
+        /** 大文件分片 presigned 直传：并发 PUT 各分片到 OSS
+         *  单个 part 失败不立即中断，收集失败后重试（最多 2 次），避免状态不一致。 */
         async uploadPartsPresigned(completedSet) {
             const parts = this.presigned.parts || [];
             const missing = parts.filter(p => !completedSet.has(p.part_number));
             if (missing.length === 0) return;
 
             let cursor = 0;
+            const failed = [];
             const worker = async () => {
                 while (cursor < missing.length) {
                     const part = missing[cursor++];
-                    await this.uploadPartPresigned(part);
+                    try {
+                        await this.uploadPartPresigned(part);
+                    } catch (e) {
+                        failed.push(part);
+                        console.warn(`[Upload] presigned part ${part.part_number} failed (will retry): ${e.message}`);
+                    }
                 }
             };
             const workers = [];
@@ -512,6 +549,26 @@
                 workers.push(worker());
             }
             await Promise.all(workers);
+
+            // 重试失败的 parts（最多 2 次）
+            for (let retry = 0; retry < 2 && failed.length > 0; retry++) {
+                const stillFailed = [];
+                for (const part of failed) {
+                    if (this.received.has(part.part_number)) continue;
+                    try {
+                        await this.uploadPartPresigned(part);
+                    } catch (e) {
+                        stillFailed.push(part);
+                        console.warn(`[Upload] presigned part ${part.part_number} retry ${retry + 1} failed: ${e.message}`);
+                    }
+                }
+                failed.length = 0;
+                failed.push(...stillFailed);
+            }
+
+            if (failed.length > 0) {
+                throw new Error(`${failed.length} presigned parts 上传失败: ${failed.slice(0, 5).map(p => p.part_number).join(',')}${failed.length > 5 ? '...' : ''}`);
+            }
         }
 
         /** 上传单个 presigned 分片：切片 + PUT 到 OSS */
