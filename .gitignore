@@ -49,3 +49,14 @@ tools/minify/package-lock.json
 
 # 前端压缩输出（部署前用 node tools/minify/minify.js 生成）
 web/dist/
+
+# 本地开发环境变量（含 OSS AccessKey 等敏感信息，禁止入库）
+.env
+.env.local
+.env.*.local
+
+# Playwright MCP 临时产物
+.playwright-mcp/
+ram_*_snapshot.md
+创建用户结果*.csv
+

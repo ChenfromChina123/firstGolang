@@ -757,6 +757,36 @@ curl "http://localhost:8080/api/preview/<fileID>/archive?path=docs/img/logo.png&
 
 > Redis 为可选项，未配置时自动降级为纯 SQLite 模式。配置 Sentinel 后优先使用 Sentinel 分布式模式。
 
+### 阿里云 OSS 对象存储配置
+
+本项目已接入阿里云 OSS（S3 兼容协议），启用后新文件写入 OSS，旧文件保留本地（混合存储模式）。完整说明见 [doc/OSS对象存储配置.md](doc/OSS对象存储配置.md)。
+
+**已配置的 Bucket：**
+
+| 属性 | 值 |
+|------|-----|
+| Bucket 名称 | `aistudy-filesync` |
+| 地域 | 华南1（深圳） / `oss-cn-shenzhen` |
+| Endpoint | `oss-cn-shenzhen.aliyuncs.com` |
+| 存储类型 | 标准存储 / 本地冗余 |
+| 读写权限 | 私有（阻止公共访问已开启） |
+| RAM 用户 | `aistudy-filesync`（仅授予 `AliyunOSSFullAccess`） |
+
+**启用方式：**
+
+```bash
+# 本地开发：在 filesync/.env 中配置（已加入 .gitignore，不入库）
+S3_ENDPOINT=oss-cn-shenzhen.aliyuncs.com
+S3_REGION=oss-cn-shenzhen
+S3_BUCKET=aistudy-filesync
+S3_ACCESS_KEY=<your-access-key-id>
+S3_SECRET_KEY=<your-access-key-secret>
+S3_USE_SSL=true
+```
+
+> 同地域 ECS 部署可改用内网 Endpoint `oss-cn-shenzhen-internal.aliyuncs.com` 免流量费。
+> 安全提示：禁止将 AccessKey 提交到 git 仓库；高安全场景可改用 STS Token 临时凭证方案。
+
 ## 服务器部署（systemd）
 
 ### 1. 编译 Linux 二进制（在 Windows 本地交叉编译）
