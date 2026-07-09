@@ -23,6 +23,7 @@
 - **存储用量显示**：顶部导航栏实时显示当前用户已用云空间（`GET /api/storage-usage`），admin 可通过 `?username=xxx` 查看指定用户或 `?username=` 查看全局用量。统计含正常文件和回收站文件两部分。
 - **管理员后台**：独立的管理后台页面（`/web/admin.html`），4 个 Tab 模块：①系统总览（用户/文件/存储/分享/回收站统计卡片）；②用户管理（列表/禁用启用/重置密码，防止管理员禁用自己或修改其他 admin）；③文件管理（所有用户文件列表，含 owner 列）；④分享管理（所有分享列表/删除分享/查看分享页）。权限守卫：非 admin 访问自动重定向到首页。
 - **品牌视觉系统**：统一 SVG 图标库（`/web/img/`）：①`favicon.svg` 浏览器标签页图标（圆角方形 + 文件图标 + 双向同步箭头，青绿渐变）；②`logo.svg` 顶部导航栏与登录页品牌 logo（与 favicon 同源，56px 登录页带光晕 hover 动画）；③`banner.svg` 首页顶部品牌横幅（网格背景 + 同步光效 + 标语 "分片上传 · 断点续传 · 秒传"）。所有 8 个 HTML 页面添加 favicon link，7 个页面 brand 区域统一引用 logo.svg，首页在 topbar 下方添加 banner 装饰条。SVG 矢量格式无损缩放，符合 CSP `img-src 'self'` 策略。
+- **在线文件编辑（CodeMirror 6）**：支持在线新建和编辑文本文件（txt/md/js/ts/py/json/html/css/go/sql/yml/xml 等 40+ 扩展名）。后端新增 3 个 API（`POST /api/files/create` 创建、`GET /api/files/{id}/content` 读取、`PUT /api/files/{id}/content` 更新），Storage 接口扩展 `WriteFile` 方法（Local/S3/Router 三实现）。前端使用 CodeMirror 6 编辑器（esbuild 本地打包为 642KB IIFE bundle，避免 CDN 依赖，符合 CSP `script-src 'self'`），支持语法高亮、行号、括号匹配、代码折叠、缩进、Ctrl+S 快捷键保存。右键文件 → "编辑" 打开编辑器加载原内容，修改后保存即更新。暗色主题适配终端美学深色配色。
 
 
 ## 项目结构
