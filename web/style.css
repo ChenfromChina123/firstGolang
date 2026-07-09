@@ -1696,17 +1696,20 @@ body::after {
 .modal-result-error { background: var(--err-dim); color: var(--err); }
 
 /* === CodeMirror 6 在线编辑器样式（暗色主题适配）=== */
+/* 注意：CodeMirror 6 默认主题通过 <style> 注入 .cm-gutters{background:#f5f5f5} 等
+   浅色样式，优先级高于普通类选择器。使用 .cm-editor .cm-gutters 后代选择器
+   + !important 确保暗色主题生效，修复编辑器左侧白条竖线问题。 */
 .cm-editor { height: 100%; background: #0d1117; color: #c9d1d9; font-size: 13px; }
 .cm-editor.cm-focused { outline: none; }
 .cm-scroller { font-family: 'JetBrains Mono', 'Consolas', monospace; line-height: 1.6; overflow: auto; }
-.cm-gutters { background: #0d1117; border-right: 1px solid rgba(255,255,255,.08); color: #6e7681; }
-.cm-activeLine { background: rgba(255,255,255,.04); }
-.cm-activeLineGutter { background: rgba(255,255,255,.04); color: #c9d1d9; }
-.cm-selectionBackground { background: rgba(88,166,255,.3); }
+.cm-editor .cm-gutters { background: #0d1117 !important; border-right: 1px solid rgba(255,255,255,.08); color: #6e7681; }
+.cm-editor .cm-activeLine { background: rgba(255,255,255,.04); }
+.cm-editor .cm-activeLineGutter { background: rgba(255,255,255,.04); color: #c9d1d9; }
+.cm-editor .cm-selectionBackground { background: rgba(88,166,255,.3); }
 .cm-editor.cm-focused .cm-selectionBackground { background: rgba(88,166,255,.4); }
-.cm-cursor { border-left-color: #58a6ff; border-left-width: 2px; }
-.cm-matchingBracket { background: rgba(255,255,255,.1); outline: 1px solid rgba(255,255,255,.2); }
-.cm-foldPlaceholder { background: rgba(255,255,255,.1); border: none; color: #8b949e; font-size: 11px; }
+.cm-editor .cm-cursor { border-left-color: #58a6ff; border-left-width: 2px; }
+.cm-editor .cm-matchingBracket { background: rgba(255,255,255,.1); outline: 1px solid rgba(255,255,255,.2); }
+.cm-editor .cm-foldPlaceholder { background: rgba(255,255,255,.1); border: none; color: #8b949e; font-size: 11px; }
 
 /* === 响应式 === */
 @media (max-width: 720px) {
