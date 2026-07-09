@@ -1401,28 +1401,28 @@ func (db *DB) ListDir(prefix, owner string) (dirs []model.DirEntry, files []mode
 	if prefix == "" {
 		// 根目录：LIKE '%/%'
 		if owner == "" {
-			dirRows, err = db.conn.Query(`SELECT SUBSTR(filename, 1, INSTR(filename, '/') - 1) AS dir_name, COUNT(*) AS cnt
+			dirRows, err = db.conn.Query(`SELECT SUBSTR(filename, 1, INSTR(filename, '/') - 1) AS dir_name, COUNT(CASE WHEN filename NOT LIKE '%/.keep' THEN 1 END) AS cnt
 				FROM files WHERE status = 'completed' AND deleted_at IS NULL
-				AND filename LIKE '%/%' AND filename NOT LIKE '%/.keep'
+				AND filename LIKE '%/%'
 				GROUP BY dir_name ORDER BY dir_name`)
 		} else {
-			dirRows, err = db.conn.Query(`SELECT SUBSTR(filename, 1, INSTR(filename, '/') - 1) AS dir_name, COUNT(*) AS cnt
+			dirRows, err = db.conn.Query(`SELECT SUBSTR(filename, 1, INSTR(filename, '/') - 1) AS dir_name, COUNT(CASE WHEN filename NOT LIKE '%/.keep' THEN 1 END) AS cnt
 				FROM files WHERE status = 'completed' AND deleted_at IS NULL
-				AND filename LIKE '%/%' AND filename NOT LIKE '%/.keep' AND owner = ?
+				AND filename LIKE '%/%' AND owner = ?
 				GROUP BY dir_name ORDER BY dir_name`, owner)
 		}
 	} else {
 		// 子目录：LIKE 'prefix%/%'
 		likePattern := escapedPrefix + "%/%"
 		if owner == "" {
-			dirRows, err = db.conn.Query(`SELECT SUBSTR(SUBSTR(filename, ?), 1, INSTR(SUBSTR(filename, ?), '/') - 1) AS dir_name, COUNT(*) AS cnt
+			dirRows, err = db.conn.Query(`SELECT SUBSTR(SUBSTR(filename, ?), 1, INSTR(SUBSTR(filename, ?), '/') - 1) AS dir_name, COUNT(CASE WHEN filename NOT LIKE '%/.keep' THEN 1 END) AS cnt
 				FROM files WHERE status = 'completed' AND deleted_at IS NULL
-				AND filename LIKE ? ESCAPE '|' AND filename NOT LIKE '%/.keep'
+				AND filename LIKE ? ESCAPE '|'
 				GROUP BY dir_name ORDER BY dir_name`, startPos, startPos, likePattern)
 		} else {
-			dirRows, err = db.conn.Query(`SELECT SUBSTR(SUBSTR(filename, ?), 1, INSTR(SUBSTR(filename, ?), '/') - 1) AS dir_name, COUNT(*) AS cnt
+			dirRows, err = db.conn.Query(`SELECT SUBSTR(SUBSTR(filename, ?), 1, INSTR(SUBSTR(filename, ?), '/') - 1) AS dir_name, COUNT(CASE WHEN filename NOT LIKE '%/.keep' THEN 1 END) AS cnt
 				FROM files WHERE status = 'completed' AND deleted_at IS NULL
-				AND filename LIKE ? ESCAPE '|' AND filename NOT LIKE '%/.keep' AND owner = ?
+				AND filename LIKE ? ESCAPE '|' AND owner = ?
 				GROUP BY dir_name ORDER BY dir_name`, startPos, startPos, likePattern, owner)
 		}
 	}
