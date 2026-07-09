@@ -934,7 +934,15 @@
         if (cached) {
             renderTree(cached.dirs, cached.files);
         } else {
-            tree.innerHTML = '<div class="tree-empty">加载中…</div>';
+            // 骨架屏：shimmer 动画替代纯文字「加载中」，视觉连续性更好
+            tree.innerHTML = Array.from({ length: 6 }, (_, i) =>
+                `<div class="tree-skeleton" style="animation-delay:${i * 0.08}s">
+                    <div class="skel-icon"></div>
+                    <div class="skel-name"></div>
+                    <div class="skel-meta"></div>
+                    <div class="skel-meta"></div>
+                </div>`
+            ).join('');
         }
 
         // 缓存仍新鲜：不再后台刷新
@@ -953,7 +961,11 @@
             if (!data || (!data.dirs && !data.files)) {
                 dirCache.set(reqPath, { dirs: new Map(), files: [], ts: Date.now() });
                 if (currentPath === reqPath) {
-                    tree.innerHTML = '<div class="tree-empty">暂无文件，请上传</div>';
+                    tree.innerHTML = `<div class="tree-empty">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+                        <div class="tree-empty-text">${currentPath ? '此目录为空' : '暂无文件'}</div>
+                        <div class="tree-empty-hint">点击上方「+ 上传」按钮添加文件</div>
+                    </div>`;
                 }
                 return;
             }

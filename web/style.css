@@ -226,6 +226,7 @@ body::after {
     color: var(--accent);
 }
 .sidebar-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.sidebar-btn:active { transform: scale(0.97); }
 
 /* === 面板通用 === */
 .panel {
@@ -234,6 +235,7 @@ body::after {
     border-radius: var(--radius);
     overflow: hidden;
     backdrop-filter: blur(8px);
+    animation: panel-fade-in 0.3s ease-out;
 }
 
 .panel-head {
@@ -551,18 +553,60 @@ body::after {
     from { opacity: 0; transform: translateY(2px); }
     to   { opacity: 1; transform: translateY(0); }
 }
+/* 骨架屏 shimmer 动画 */
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+/* 面板入场动画 */
+@keyframes panel-fade-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+/* 尊重 reduced-motion 偏好 */
+@media (prefers-reduced-motion: reduce) {
+    .tree-skeleton, .skel-icon, .skel-name, .skel-meta { animation: none; }
+    .panel, .tree-row { animation: none; }
+}
 /* 文件列表滚动条样式（与队列滚动条一致） */
 .file-tree::-webkit-scrollbar { width: 6px; }
 .file-tree::-webkit-scrollbar-track { background: var(--bg-3); border-radius: 3px; }
 .file-tree::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .file-tree::-webkit-scrollbar-thumb:hover { background: var(--fg-3); }
 .tree-empty {
-    padding: 32px 16px;
+    padding: 48px 16px;
     text-align: center;
     color: var(--fg-3);
     font-family: var(--mono);
     font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
 }
+.tree-empty svg { color: var(--fg-3); opacity: 0.5; }
+.tree-empty-text { color: var(--fg-2); font-size: 14px; font-family: var(--sans); }
+.tree-empty-hint { color: var(--fg-3); font-size: 11px; }
+
+/* 骨架屏：shimmer 加载动画 */
+.tree-skeleton {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.skel-icon, .skel-name, .skel-meta {
+    background: linear-gradient(90deg, var(--bg-3) 25%, var(--border) 50%, var(--bg-3) 75%);
+    background-size: 200% 100%;
+    border-radius: var(--radius-sm);
+    animation: shimmer 1.4s ease-in-out infinite;
+}
+.skel-icon { width: 18px; height: 18px; border-radius: 3px; }
+.skel-name { height: 12px; width: var(--w, 45%); min-width: 60px; }
+.skel-meta { height: 10px; width: 50px; }
+.skel-meta:nth-of-type(3) { width: 72px; }
 
 /* 树形行（目录 / 文件）：grid 列 = 图标 + 名称 + 大小 + 日期 + 存储 + checkbox */
 .tree-row {
@@ -573,8 +617,9 @@ body::after {
     padding: 10px 14px;
     border-bottom: 1px solid var(--border-soft);
     font-size: 13px;
-    transition: background 0.15s;
+    transition: background 0.15s, transform 0.08s;
     animation: tree-fade-in 0.18s ease-out;
+    position: relative;
 }
 .tree-row:last-child { border-bottom: none; }
 .tree-row.dir {
@@ -582,9 +627,11 @@ body::after {
     color: var(--fg-0);
 }
 .tree-row.dir:hover { background: rgba(0, 217, 255, 0.05); }
+.tree-row.dir:active { transform: scale(0.995); }
 .tree-row.dir:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .tree-row.file { color: var(--fg-1); }
 .tree-row.file:hover { background: rgba(0, 217, 255, 0.04); }
+.tree-row.file:active { transform: scale(0.995); }
 
 /* 选中状态：左边框高亮 + 背景着色 */
 .tree-row.selected {
