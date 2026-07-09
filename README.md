@@ -290,7 +290,7 @@ curl -H "Range: bytes=1024-" -o output.file \
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/files` | 列出所有已完成文件（支持 `?prefix=docs/` 按虚拟目录递归过滤） |
+| `GET` | `/api/files` | 列出已完成文件（支持 `?prefix=docs/` 递归过滤，`?shallow=1` 分层返回当前目录直接子项） |
 | `GET` | `/api/files/{fileID}` | 查询文件详情 |
 | `POST` | `/api/files/mkdir` | 新建目录（创建 `.keep` 占位文件） |
 | `POST` | `/api/files/rename` | 重命名/移动文件 |
@@ -300,7 +300,7 @@ curl -H "Range: bytes=1024-" -o output.file \
 
 **按虚拟目录列出文件（路径枚举）：**
 ```bash
-# 列出根目录所有文件
+# 列出根目录所有文件（递归，含子目录）
 curl http://localhost:8080/api/files
 
 # 列出 docs/ 目录下所有文件（递归，含子目录）
@@ -309,6 +309,19 @@ curl "http://localhost:8080/api/files?prefix=docs/"
 # 文件名约定：docs/report.pdf 表示 docs 目录下的 report.pdf
 # 后端 LIKE 'docs/%' ESCAPE '\' 匹配，前端按 / 构建树形展示
 ```
+
+**分层返回当前目录直接子项（shallow 模式，推荐用于大目录）：**
+```bash
+# 返回根目录的子目录列表 + 直接文件（不递归子目录）
+curl "http://localhost:8080/api/files?shallow=1"
+# 响应格式：{"dirs":[{"name":"docs","count":4}],"files":[{...}]}
+
+# 返回 docs/ 目录的子目录列表 + 直接文件
+curl "http://localhost:8080/api/files?prefix=docs/&shallow=1"
+```
+shallow 模式只返回当前目录的直接子项（子目录名+递归文件数 + 直接文件列表），
+不递归加载子目录文件。适用于大目录场景，避免一次性返回过多数据。
+默认模式（不传 shallow）仍然递归返回所有文件，向后兼容 CLI 客户端。
 
 **新建目录（创建 .keep 占位文件）：**
 ```bash
@@ -1337,6 +1350,7 @@ CREATE INDEX idx_files_owner ON files(owner);
 | 内存控制 | 分片上传逐片读取 512KB 缓冲区，大文件不会撑爆内存 |
 | 单二进制部署 | 服务端和客户端均编译为独立 exe，无需运行时依赖 |
 | 分片合并 | AssembleFile 逐片 `io.Copy` 拼接，利用系统文件缓存 |
+| 目录分层加载 | `?shallow=1` 仅返回当前目录直接子项（子目录名+递归文件数+直接文件），SQL `GROUP BY` 一次性提取子目录。生产实测：根目录 484KB→8.8KB（-98.2%），24s→49ms（-99.8%） |
 
 ## 技术栈
 
