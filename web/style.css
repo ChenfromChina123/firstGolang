@@ -2108,6 +2108,72 @@ body::after {
     margin: 10px auto 0;
     display: inline-flex;
 }
+/* === 视频自定义进度条（buffer 范围 + played 位置 + 可拖动 seek） === */
+/* 显示在 video 下方，与原生 controls 互补：突出展示 buffer 范围，支持精准拖动 */
+.share-preview-media-progress {
+    margin-top: 8px;
+    padding: 6px 4px;
+    width: 100%;
+    user-select: none;
+}
+.share-preview-media-progress .progress-track {
+    position: relative;
+    height: 5px;
+    background: var(--bg-3);
+    border-radius: 3px;
+    cursor: pointer;
+}
+/* buffer 范围：灰色半透明，通过 progress 事件更新 width */
+.share-preview-media-progress .progress-buffered {
+    position: absolute;
+    top: 0; left: 0;
+    height: 100%;
+    background: rgba(139, 148, 158, 0.45);
+    border-radius: 3px;
+    width: 0;
+    transition: width 0.2s ease;
+    pointer-events: none;
+}
+/* played 进度：accent 渐变，通过 timeupdate 事件更新 width */
+.share-preview-media-progress .progress-played {
+    position: absolute;
+    top: 0; left: 0;
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--ok));
+    border-radius: 3px;
+    width: 0;
+    pointer-events: none;
+}
+/* 拖动滑块：默认隐藏，hover/拖动时显示 */
+.share-preview-media-progress .progress-thumb {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    transform: translate(-50%, -50%);
+    width: 12px;
+    height: 12px;
+    background: var(--fg-0);
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 6px var(--accent-glow);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.share-preview-media-progress:hover .progress-thumb,
+.share-preview-media-progress .progress-track:active .progress-thumb {
+    opacity: 1;
+}
+/* 时间显示：当前 / 总时长 */
+.share-preview-media-progress .progress-time {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-2);
+}
+.share-preview-media-progress .time-duration { color: var(--fg-3); }
 /* 文本预览：等宽字体，深色背景，可滚动 */
 .share-preview-text {
     width: 100%;

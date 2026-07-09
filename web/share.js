@@ -411,6 +411,17 @@
                     + '<video class="share-preview-video" src="' + escapeHtml(url) + '" controls preload="metadata" playsinline></video>'
                     + '<div class="share-preview-loading-overlay" hidden><span class="share-preview-spinner"></span><span class="share-preview-loading-text">加载中…</span></div>'
                     + '<div class="share-preview-error-overlay" hidden>视频加载失败</div>'
+                    + '<div class="share-preview-media-progress" hidden>'
+                    +   '<div class="progress-track">'
+                    +     '<div class="progress-buffered"></div>'
+                    +     '<div class="progress-played"></div>'
+                    +     '<div class="progress-thumb"></div>'
+                    +   '</div>'
+                    +   '<div class="progress-time">'
+                    +     '<span class="time-current">00:00</span>'
+                    +     '<span class="time-duration">00:00</span>'
+                    +   '</div>'
+                    + '</div>'
                     + '</div>';
                 bindMediaEvents(bodyEl.querySelector('video'));
                 break;
@@ -423,10 +434,12 @@
     }
 
     /**
-     * 绑定媒体元素（video/audio）事件，驱动 loading/error 覆盖层
+     * 绑定媒体元素（video/audio）事件，驱动 loading/error 覆盖层与自定义进度条
      * - loadstart/waiting/seeking/stalled → 显示 loading（提示用户加载状态）
      * - canplay/playing/seeked → 隐藏 loading（可播放）
      * - error → 显示错误码对应文案
+     * - progress/timeupdate → 更新自定义进度条（buffered 范围 + played 位置 + 时间）
+     * - 鼠标/触摸拖动进度条 → 实时更新 UI，松手时 seek（避免频繁 Range 请求）
      * 设计目标：在不引入 MSE/HLS 的前提下，通过原生事件反馈提升 seek/缓冲体验
      * @param {HTMLMediaElement} media video 或 audio 元素
      */
@@ -437,6 +450,15 @@
         var loadingOverlay = wrap.querySelector('.share-preview-loading-overlay');
         var errorOverlay = wrap.querySelector('.share-preview-error-overlay');
         var loadingText = loadingOverlay ? loadingOverlay.querySelector('.share-preview-loading-text') : null;
+
+        // === 自定义进度条元素（仅 video 模板包含，audio 无） ===
+        var progressBar = wrap.querySelector('.share-preview-media-progress');
+        var trackEl = progressBar ? progressBar.querySelector('.progress-track') : null;
+        var bufferedEl = progressBar ? progressBar.querySelector('.progress-buffered') : null;
+        var playedEl = progressBar ? progressBar.querySelector('.progress-played') : null;
+        var thumbEl = progressBar ? progressBar.querySelector('.progress-thumb') : null;
+        var curTimeEl = progressBar ? progressBar.querySelector('.time-current') : null;
+        var durEl = progressBar ? progressBar.querySelector('.time-duration') : null;
 
         function showLoading(msg) {
             if (loadingText) loadingText.textContent = msg || '加载中…';
@@ -454,6 +476,7 @@
             if (loadingOverlay) loadingOverlay.hidden = true;
         }
 
+        // === 原生 loading/error 事件 ===
         media.addEventListener('loadstart', function () { showLoading('加载中…'); });
         media.addEventListener('waiting', function () { showLoading('缓冲中…'); });
         media.addEventListener('seeking', function () { showLoading('跳转中…'); });
@@ -473,6 +496,133 @@
             }
             showError(msg);
         });
+
+        // === 自定义进度条逻辑（仅当模板包含 progressBar 时生效，audio 跳过） ===
+        if (progressBar && trackEl) {
+            // 时间格式化 mm:ss
+            function fmtTime(sec) {
+                if (!isFinite(sec) || sec < 0) return '00:00';
+                var m = Math.floor(sec / 60);
+                var s = Math.floor(sec % 60);
+                return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+            }
+
+            // 根据 currentTime + buffered TimeRanges 更新进度条 UI
+            function updateProgress() {
+                var dur = media.duration;
+                if (!dur || !isFinite(dur)) return;
+                var cur = media.currentTime;
+                var playedPct = (cur / dur) * 100;
+                if (playedEl) playedEl.style.width = playedPct + '%';
+                if (thumbEl) thumbEl.style.left = playedPct + '%';
+                if (curTimeEl) curTimeEl.textContent = fmtTime(cur);
+                // 更新 buffer 范围：优先取包含当前时间的范围，否则取最后一个范围的 end
+                if (bufferedEl) {
+                    var bufEnd = 0;
+                    try {
+                        var ranges = media.buffered;
+                        for (var i = 0; i < ranges.length; i++) {
+                            if (ranges.start(i) <= cur && ranges.end(i) >= cur) {
+                                bufEnd = ranges.end(i);
+                                break;
+                            }
+                        }
+                        if (bufEnd === 0 && ranges.length > 0) {
+                            bufEnd = ranges.end(ranges.length - 1);
+                        }
+                    } catch (e) { /* 忽略 ranges 异常 */ }
+                    bufferedEl.style.width = (bufEnd / dur) * 100 + '%';
+                }
+            }
+
+            // 元数据就绪后显示进度条 + 写入总时长
+            media.addEventListener('loadedmetadata', function () {
+                progressBar.hidden = false;
+                if (durEl) durEl.textContent = fmtTime(media.duration);
+                updateProgress();
+            });
+            media.addEventListener('durationchange', function () {
+                if (durEl) durEl.textContent = fmtTime(media.duration);
+                updateProgress();
+            });
+            media.addEventListener('timeupdate', updateProgress);
+            media.addEventListener('progress', updateProgress);
+
+            // === 拖动 seek 支持（鼠标 + 触摸） ===
+            var dragging = false;
+            var dragRatio = 0;
+            var wasPlaying = false;
+
+            // 从客户端 X 坐标计算进度条比例（0-1）
+            function ratioFromClientX(clientX) {
+                if (!trackEl) return 0;
+                var rect = trackEl.getBoundingClientRect();
+                var ratio = (clientX - rect.left) / rect.width;
+                if (ratio < 0) ratio = 0;
+                if (ratio > 1) ratio = 1;
+                return ratio;
+            }
+
+            // 仅更新进度条 UI（不真正 seek），拖动过程中使用以避免频繁 Range 请求
+            function updateUItoRatio(ratio) {
+                if (playedEl) playedEl.style.width = (ratio * 100) + '%';
+                if (thumbEl) thumbEl.style.left = (ratio * 100) + '%';
+                if (curTimeEl && isFinite(media.duration)) {
+                    curTimeEl.textContent = fmtTime(ratio * media.duration);
+                }
+            }
+
+            // 执行真正的 seek
+            function seekToRatio(ratio) {
+                if (!media.duration || !isFinite(media.duration)) return;
+                if (ratio < 0) ratio = 0;
+                if (ratio > 1) ratio = 1;
+                media.currentTime = ratio * media.duration;
+            }
+
+            // 鼠标交互：mousedown 暂停并定位 UI，mousemove 实时更新 UI，mouseup 真正 seek
+            trackEl.addEventListener('mousedown', function (e) {
+                if (e.button !== 0) return; // 仅左键
+                dragging = true;
+                wasPlaying = !media.paused;
+                media.pause();
+                dragRatio = ratioFromClientX(e.clientX);
+                updateUItoRatio(dragRatio);
+                e.preventDefault();
+            });
+            document.addEventListener('mousemove', function (e) {
+                if (!dragging) return;
+                dragRatio = ratioFromClientX(e.clientX);
+                updateUItoRatio(dragRatio);
+            });
+            document.addEventListener('mouseup', function () {
+                if (!dragging) return;
+                dragging = false;
+                seekToRatio(dragRatio);
+                if (wasPlaying) media.play();
+            });
+
+            // 触摸交互：与鼠标同逻辑，touchend 时 seek
+            trackEl.addEventListener('touchstart', function (e) {
+                if (e.touches.length === 0) return;
+                dragging = true;
+                wasPlaying = !media.paused;
+                media.pause();
+                dragRatio = ratioFromClientX(e.touches[0].clientX);
+                updateUItoRatio(dragRatio);
+            }, { passive: true });
+            trackEl.addEventListener('touchmove', function (e) {
+                if (!dragging || e.touches.length === 0) return;
+                dragRatio = ratioFromClientX(e.touches[0].clientX);
+                updateUItoRatio(dragRatio);
+            }, { passive: true });
+            trackEl.addEventListener('touchend', function () {
+                if (!dragging) return;
+                dragging = false;
+                seekToRatio(dragRatio);
+                if (wasPlaying) media.play();
+            });
+        }
     }
 
     /**
