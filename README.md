@@ -325,6 +325,8 @@ shallow 模式只返回当前目录的直接子项（子目录名+递归文件�
 不递归加载子目录文件。适用于大目录场景，避免一次性返回过多数据。
 默认模式（不传 shallow）仍然递归返回所有文件，向后兼容 CLI 客户端。
 
+> 空目录（仅含 `.keep` 占位文件）也会在 `dirs` 中显示（`count=0`），新建文件夹后立即可见。`.keep` 占位文件不会出现在 `files` 列表中，`count` 统计也排除 `.keep`。
+
 **新建目录（创建 .keep 占位文件）：**
 ```bash
 curl -X POST http://localhost:8080/api/files/mkdir \
