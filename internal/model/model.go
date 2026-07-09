@@ -135,6 +135,18 @@ type FileInfoResponse struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+// DirEntry 子目录项（分层列表用）
+type DirEntry struct {
+	Name  string `json:"name"`  // 目录名（不含路径前缀，如 "docs"）
+	Count int    `json:"count"` // 该目录下所有文件数（递归，排除 .keep 占位文件）
+}
+
+// DirListingResponse 分层目录列表响应（shallow 模式）
+type DirListingResponse struct {
+	Dirs  []DirEntry         `json:"dirs"`
+	Files []FileInfoResponse `json:"files"`
+}
+
 // ConflictInfo describes a file conflict
 type ConflictInfo struct {
 	HasConflict   bool              `json:"has_conflict"`

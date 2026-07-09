@@ -942,21 +942,24 @@
 
         // 后台刷新（stale-while-revalidate：即使有旧缓存也拉取最新数据）
         try {
+            // shallow=1：后端分层返回当前目录直接子项（dirs+files），不递归子目录
             const url = reqPath
-                ? `${API.files}?prefix=${encodeURIComponent(reqPath)}`
-                : API.files;
+                ? `${API.files}?prefix=${encodeURIComponent(reqPath)}&shallow=1`
+                : `${API.files}?shallow=1`;
             const res = await apiFetch(url);
             if (!res.ok) throw new Error('HTTP ' + res.status);
-            const files = await res.json();
-            // 用户可能已切换目录：仅更新缓存，不渲染（避免覆盖当前界面）
-            if (!files || files.length === 0) {
+            const data = await res.json();
+            // shallow 响应格式：{dirs:[{name,count}], files:[...]}
+            if (!data || (!data.dirs && !data.files)) {
                 dirCache.set(reqPath, { dirs: new Map(), files: [], ts: Date.now() });
                 if (currentPath === reqPath) {
                     tree.innerHTML = '<div class="tree-empty">暂无文件，请上传</div>';
                 }
                 return;
             }
-            const { dirs, files: fileList } = buildChildren(files, reqPath);
+            // dirs 数组转为 Map<name,count> 以兼容 renderTree
+            const dirs = new Map((data.dirs || []).map(d => [d.name, d.count]));
+            const fileList = data.files || [];
             dirCache.set(reqPath, { dirs, files: fileList, ts: Date.now() });
             // 仅当用户仍在同一目录时才更新渲染
             if (currentPath === reqPath) {

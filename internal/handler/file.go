@@ -32,16 +32,46 @@ func NewFileHandler(db *store.DB, s storage.Storage, storages map[string]storage
 // GET /api/files
 // ListFiles 列出已完成文件。支持 prefix 查询参数按虚拟目录过滤（路径枚举）。
 // 例：GET /api/files?prefix=docs/ 返回 docs/ 目录下所有文件（递归）。
+// shallow=1 时按目录分层返回（只返回当前目录直接子项，不递归），响应格式为 {dirs:[],files:[]}。
 // 注：必须用 fastQueryParam 解码（encodeURIComponent 编码 / 为 %2F）。
 func (h *FileHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 	username := auth.UsernameFromContext(r.Context())
 	role := auth.RoleFromContext(r.Context())
 	prefix := fastQueryParam(r.URL.RawQuery, "prefix")
+	shallow := fastQueryParam(r.URL.RawQuery, "shallow") == "1"
 	// admin 可见所有文件；普通用户仅可见自己的文件
 	owner := username
 	if role == "admin" {
 		owner = ""
 	}
+
+	// shallow 模式：分层返回当前目录直接子项（dirs + files），不递归
+	if shallow {
+		dirs, files, err := h.db.ListDir(prefix, owner)
+		if err != nil {
+			http.Error(w, "failed to list dir", http.StatusInternalServerError)
+			return
+		}
+		fileResp := make([]model.FileInfoResponse, 0, len(files))
+		for _, f := range files {
+			fileResp = append(fileResp, model.FileInfoResponse{
+				ID:          f.ID,
+				Filename:    f.Filename,
+				Size:        f.Size,
+				Hash:        f.Hash,
+				StoragePath: f.StoragePath,
+				StorageType: f.StorageType,
+				Owner:       f.Owner,
+				Status:      f.Status,
+				CreatedAt:   f.CreatedAt.Format(time.RFC3339),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(model.DirListingResponse{Dirs: dirs, Files: fileResp})
+		return
+	}
+
+	// 默认模式：递归返回所有匹配文件（兼容 CLI 客户端）
 	files, err := h.db.ListFiles(prefix, owner)
 	if err != nil {
 		http.Error(w, "failed to list files", http.StatusInternalServerError)

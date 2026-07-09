@@ -1340,6 +1340,112 @@ func (db *DB) ListFiles(prefix, owner string) ([]model.FileRecord, error) {
 	return files, rows.Err()
 }
 
+// ListDir 按目录分层返回当前目录的直接子项（子目录 + 直接文件），不递归子目录。
+// prefix 为空时返回根目录子项。owner 非空时按归属用户过滤（用户隔离）。
+// dirs 为子目录列表（含递归文件数，排除 .keep），files 为当前目录的直接文件列表。
+// 相比 ListFiles 的递归返回所有文件，分层返回显著减少数据量（根目录从 1319 文件降到几十项）。
+func (db *DB) ListDir(prefix, owner string) (dirs []model.DirEntry, files []model.FileRecord, err error) {
+	const cols = `SELECT id, filename, size, hash, storage_path, storage_type, chunk_size, total_chunks, status, owner, created_at, updated_at
+		     FROM files WHERE status = 'completed' AND deleted_at IS NULL`
+	escapedPrefix := escapeLikePrefix(prefix)
+	prefixLen := len(prefix)
+
+	// 1. 查询直接文件（filename 不含更多 /，即去掉 prefix 后没有 /）
+	var fileRows *sql.Rows
+	if prefix == "" {
+		// 根目录：filename 不含 /
+		keepName := ".keep"
+		if owner == "" {
+			fileRows, err = db.conn.Query(cols + ` AND filename NOT LIKE '%/%' AND filename != ? ORDER BY created_at DESC`, keepName)
+		} else {
+			fileRows, err = db.conn.Query(cols+` AND filename NOT LIKE '%/%' AND filename != ? AND owner = ? ORDER BY created_at DESC`, keepName, owner)
+		}
+	} else {
+		// 子目录：filename LIKE 'prefix%' AND filename NOT LIKE 'prefix%/%'
+		likePattern := escapedPrefix + "%"
+		notLikePattern := escapedPrefix + "%/%"
+		keepName := prefix + ".keep"
+		if owner == "" {
+			fileRows, err = db.conn.Query(cols+` AND filename LIKE ? ESCAPE '|' AND filename NOT LIKE ? ESCAPE '|' AND filename != ? ORDER BY created_at DESC`,
+				likePattern, notLikePattern, keepName)
+		} else {
+			fileRows, err = db.conn.Query(cols+` AND filename LIKE ? ESCAPE '|' AND filename NOT LIKE ? ESCAPE '|' AND filename != ? AND owner = ? ORDER BY created_at DESC`,
+				likePattern, notLikePattern, keepName, owner)
+		}
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	defer fileRows.Close()
+
+	for fileRows.Next() {
+		var f model.FileRecord
+		var createdAt, updatedAt string
+		if e := fileRows.Scan(&f.ID, &f.Filename, &f.Size, &f.Hash, &f.StoragePath,
+			&f.StorageType, &f.ChunkSize, &f.TotalChunks, &f.Status, &f.Owner, &createdAt, &updatedAt); e != nil {
+			return nil, nil, e
+		}
+		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		files = append(files, f)
+	}
+	if e := fileRows.Err(); e != nil {
+		return nil, nil, e
+	}
+
+	// 2. 查询子目录名和递归文件数（GROUP BY 提取第一级目录名）
+	// startPos = prefixLen + 1（SQL SUBSTR 是 1-based）
+	// SUBSTR(filename, startPos) 去掉 prefix 前缀，INSTR 找剩余部分的第一个 /，SUBSTR 提取目录名
+	startPos := prefixLen + 1
+	var dirRows *sql.Rows
+	if prefix == "" {
+		// 根目录：LIKE '%/%'
+		if owner == "" {
+			dirRows, err = db.conn.Query(`SELECT SUBSTR(filename, 1, INSTR(filename, '/') - 1) AS dir_name, COUNT(*) AS cnt
+				FROM files WHERE status = 'completed' AND deleted_at IS NULL
+				AND filename LIKE '%/%' AND filename NOT LIKE '%/.keep'
+				GROUP BY dir_name ORDER BY dir_name`)
+		} else {
+			dirRows, err = db.conn.Query(`SELECT SUBSTR(filename, 1, INSTR(filename, '/') - 1) AS dir_name, COUNT(*) AS cnt
+				FROM files WHERE status = 'completed' AND deleted_at IS NULL
+				AND filename LIKE '%/%' AND filename NOT LIKE '%/.keep' AND owner = ?
+				GROUP BY dir_name ORDER BY dir_name`, owner)
+		}
+	} else {
+		// 子目录：LIKE 'prefix%/%'
+		likePattern := escapedPrefix + "%/%"
+		if owner == "" {
+			dirRows, err = db.conn.Query(`SELECT SUBSTR(SUBSTR(filename, ?), 1, INSTR(SUBSTR(filename, ?), '/') - 1) AS dir_name, COUNT(*) AS cnt
+				FROM files WHERE status = 'completed' AND deleted_at IS NULL
+				AND filename LIKE ? ESCAPE '|' AND filename NOT LIKE '%/.keep'
+				GROUP BY dir_name ORDER BY dir_name`, startPos, startPos, likePattern)
+		} else {
+			dirRows, err = db.conn.Query(`SELECT SUBSTR(SUBSTR(filename, ?), 1, INSTR(SUBSTR(filename, ?), '/') - 1) AS dir_name, COUNT(*) AS cnt
+				FROM files WHERE status = 'completed' AND deleted_at IS NULL
+				AND filename LIKE ? ESCAPE '|' AND filename NOT LIKE '%/.keep' AND owner = ?
+				GROUP BY dir_name ORDER BY dir_name`, startPos, startPos, likePattern, owner)
+		}
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	defer dirRows.Close()
+
+	dirs = []model.DirEntry{}
+	for dirRows.Next() {
+		var d model.DirEntry
+		if e := dirRows.Scan(&d.Name, &d.Count); e != nil {
+			return nil, nil, e
+		}
+		dirs = append(dirs, d)
+	}
+	if e := dirRows.Err(); e != nil {
+		return nil, nil, e
+	}
+
+	return dirs, files, nil
+}
+
 // ListRecentVideoFiles 列出近 N 天的视频文件（按文件名后缀过滤，仅 local 存储）。
 // 用于预转码 worker 扫描待转码视频。days<=0 时默认30天。
 // 视频后缀集合与 handler.getFileType 保持一致：mp4/webm/mkv/avi/mov。
