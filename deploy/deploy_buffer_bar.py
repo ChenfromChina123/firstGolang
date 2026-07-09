@@ -1,4 +1,4 @@
-"""部署视频预览 buffer 进度条到生产服务器.
+"""部署视频预览 buffer 进度条 + 移除原生 controls 到生产服务器.
 
 上传 web/style.css、web/share.html、web/share.js 到 /opt/filesync/web/，
 并通过 HTTPS 验证文件可访问（200）且版本号正确。
@@ -11,7 +11,10 @@
   - loadedmetadata 事件 → 显示进度条 + 写入总时长
   - 鼠标 mousedown/mousemove/mouseup 拖动 → 实时更新 UI，松手 seek（避免频繁 Range）
   - 触摸 touchstart/touchmove/touchend 拖动 → 同逻辑
-- 版本号升级到 v=20260720 防缓存
+- 移除 video 原生 controls（避免与自定义进度条重复），新增 play/pause overlay：
+  - 点击 video 或 play overlay 切换播放/暂停
+  - 播放时隐藏 overlay，暂停/结束时显示
+- 版本号升级到 v=20260721 防缓存
 """
 import sys
 import os
@@ -94,8 +97,8 @@ def main():
     # 通过 HTTPS 验证生产可访问且版本号正确
     print('=== HTTPS 验证 ===')
     verify_cmd = (
-        'curl -sI "https://aistudy.icu/web/style.css?v=20260720" | head -1; '
-        'curl -sI "https://aistudy.icu/web/share.js?v=20260720" | head -1; '
+        'curl -sI "https://aistudy.icu/web/style.css?v=20260721" | head -1; '
+        'curl -sI "https://aistudy.icu/web/share.js?v=20260721" | head -1; '
         'curl -sI "https://aistudy.icu/web/share.html" | head -1; '
         'curl -s "https://aistudy.icu/web/share.html" | grep -E "style\\.css\\?v=|share\\.js\\?v=" | head -5'
     )
