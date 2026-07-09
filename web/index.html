@@ -50,6 +50,30 @@
     </section>
 
     <main class="layout">
+        <!-- 左侧功能栏 -->
+        <aside class="sidebar">
+            <nav class="sidebar-nav">
+                <div class="sidebar-group">
+                    <div class="sidebar-group-label">文件</div>
+                    <button class="sidebar-btn" id="refresh-files">刷新</button>
+                    <button class="sidebar-btn" id="mkdir-btn">新建目录</button>
+                    <button class="sidebar-btn" id="new-file-btn">新建文件</button>
+                    <button class="sidebar-btn" id="select-mode-btn">多选</button>
+                </div>
+                <div class="sidebar-group">
+                    <div class="sidebar-group-label">工具</div>
+                    <button class="sidebar-btn" id="share-manage-btn">分享管理</button>
+                    <button class="sidebar-btn" id="trash-btn">回收站</button>
+                </div>
+                <div class="sidebar-group">
+                    <div class="sidebar-group-label">系统</div>
+                    <button class="sidebar-btn" id="settings-btn">设置</button>
+                </div>
+            </nav>
+        </aside>
+
+        <!-- 主内容区 -->
+        <div class="main-content">
         <!-- 上传区域 -->
         <section class="panel upload-panel">
             <div class="panel-head">
@@ -59,24 +83,7 @@
                         上传到
                         <span id="target-dir" class="target-dir-display">根目录</span>
                     </label>
-                    <label class="chunk-size">
-                        分片大小
-                        <select id="chunk-size">
-                            <option value="262144">256 KB</option>
-                            <option value="524288" selected>512 KB</option>
-                            <option value="1048576">1 MB</option>
-                            <option value="4194304">4 MB</option>
-                        </select>
-                    </label>
-                    <label class="concurrency">
-                        并发数
-                        <select id="concurrency">
-                            <option value="3">3</option>
-                            <option value="5" selected>5</option>
-                            <option value="8">8</option>
-                            <option value="12">12</option>
-                        </select>
-                    </label>
+                    <button class="config-summary" id="config-summary" title="点击修改上传配置">512KB · 5并发 · 本地</button>
                     <div class="upload-dropdown" id="upload-dropdown">
                         <label class="pick-btn upload-trigger" title="上传文件或文件夹">+ 上传 ▾</label>
                         <div class="upload-menu">
@@ -110,15 +117,6 @@
             <div class="panel-head">
                 <h2><span class="idx">02</span> 文件库</h2>
                 <div class="files-head-ops">
-                    <!-- 默认操作（选中 0 项时显示） -->
-                    <div class="default-ops" id="default-ops">
-                        <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
-                        <button class="ghost-btn" id="new-file-btn">+ 新建文件</button>
-                        <button class="ghost-btn" id="select-mode-btn">多选</button>
-                        <button class="ghost-btn" id="share-manage-btn">分享管理</button>
-                        <button class="ghost-btn" id="trash-btn">回收站</button>
-                        <button class="ghost-btn" id="refresh-files">刷新</button>
-                    </div>
                     <!-- 选择操作（选中 ≥1 项时显示，按钮按选中类型动态显示/隐藏） -->
                     <div class="selection-ops" id="selection-ops" hidden>
                         <span class="selection-count" id="selection-count">已选 0 项</span>
@@ -142,6 +140,7 @@
                 </div>
             </div>
         </section>
+        </div><!-- /.main-content -->
     </main>
 
     <!-- 冲突处理对话框 -->
@@ -371,6 +370,43 @@
                 </div>
             </div>
             <div class="preview-body" id="preview-body"></div>
+        </div>
+    </div>
+
+    <!-- 上传设置对话框：分片大小 / 并发数 / 存储位置（modal 隐藏时 select.value 仍可读写） -->
+    <div class="modal" id="settings-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head"><h3>上传设置</h3></div>
+            <p class="modal-desc">配置分片上传参数。管理员修改后会同步到服务器，跨浏览器生效；普通用户只读。</p>
+            <div class="settings-row">
+                <label class="settings-label" for="chunk-size">分片大小</label>
+                <select id="chunk-size">
+                    <option value="262144">256 KB</option>
+                    <option value="524288" selected>512 KB</option>
+                    <option value="1048576">1 MB</option>
+                    <option value="4194304">4 MB</option>
+                </select>
+            </div>
+            <div class="settings-row">
+                <label class="settings-label" for="concurrency">并发数</label>
+                <select id="concurrency">
+                    <option value="3">3</option>
+                    <option value="5" selected>5</option>
+                    <option value="8">8</option>
+                    <option value="12">12</option>
+                </select>
+            </div>
+            <div class="settings-row">
+                <label class="settings-label" for="storage-type">存储位置</label>
+                <select id="storage-type">
+                    <option value="local">本地磁盘</option>
+                    <option value="s3">阿里云 OSS</option>
+                </select>
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="settings-close-btn">关闭</button>
+            </div>
         </div>
     </div>
 

@@ -164,7 +164,7 @@ body::after {
     100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
 }
 
-/* === 主布局 === */
+/* === 主布局（两列：侧栏 + 主内容区）=== */
 .layout {
     position: relative;
     z-index: 1;
@@ -172,9 +172,60 @@ body::after {
     margin: 0 auto;
     padding: 24px;
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: 220px 1fr;
     gap: 20px;
+    align-items: start;
 }
+
+/* === 左侧功能栏 === */
+.sidebar {
+    position: sticky;
+    top: 24px;
+    align-self: start;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+}
+.sidebar-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    background: rgba(22, 27, 34, 0.7);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 12px;
+    backdrop-filter: blur(8px);
+}
+.sidebar-group { display: flex; flex-direction: column; gap: 4px; }
+.sidebar-group-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--fg-3);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 4px 8px;
+}
+.sidebar-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: 1px solid transparent;
+    color: var(--fg-1);
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    font-family: var(--sans);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.sidebar-btn:hover {
+    background: var(--bg-3);
+    border-color: var(--border);
+    color: var(--accent);
+}
+.sidebar-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 /* === 面板通用 === */
 .panel {
@@ -251,6 +302,22 @@ body::after {
     outline: none;
     border-color: var(--accent);
 }
+
+/* 配置摘要标签：显示当前分片/并发/存储，点击打开设置 modal */
+.config-summary {
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    color: var(--fg-2);
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+.config-summary:hover { border-color: var(--accent); color: var(--accent); }
+.config-summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 
 /* === 选择文件按钮（普通按钮，不突出） === */
 .pick-btn {
@@ -741,6 +808,30 @@ body::after {
 .modal-foot { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .apply-all { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2); cursor: pointer; }
 .modal-foot-right { display: flex; justify-content: flex-end; gap: 8px; border-top: none; padding-top: 0; margin-top: 20px; }
+
+/* 设置对话框行：label + select 横向排列 */
+.settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-soft);
+}
+.settings-row:last-of-type { border-bottom: none; }
+.settings-label { font-size: 13px; color: var(--fg-1); }
+.settings-row select {
+    background: var(--bg-3);
+    color: var(--fg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+}
+.settings-row select:focus { outline: none; border-color: var(--accent); }
+.settings-row select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* 对话框输入框 */
 .modal-input-wrap { margin: 8px 0 4px; }
@@ -1714,10 +1805,28 @@ body::after {
 /* === 响应式 === */
 @media (max-width: 720px) {
     .topbar { padding: 0 16px; }
-    .layout { padding: 16px; }
+    .layout {
+        grid-template-columns: 1fr;
+        padding: 16px;
+    }
     .upload-controls { flex-wrap: wrap; gap: 8px; }
     .panel-head { flex-wrap: wrap; gap: 8px; }
     .target-dir-display { min-width: 100px; max-width: 160px; }
+    /* 窄屏下侧栏转顶部横栏 */
+    .sidebar {
+        position: static;
+        max-height: none;
+        overflow-y: visible;
+    }
+    .sidebar-nav {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 10px;
+    }
+    .sidebar-group { flex-direction: row; align-items: center; gap: 4px; }
+    .sidebar-group-label { display: none; }
+    .sidebar-btn { width: auto; padding: 6px 10px; font-size: 12px; }
     /* 窄屏下隐藏树形行中的"上传时间"和"存储"列，避免拥挤 */
     .tree-row { grid-template-columns: 24px minmax(0, 1fr) auto 22px; gap: 8px; padding: 8px 10px; }
     .tree-row .tree-meta:nth-of-type(2),
@@ -1734,7 +1843,7 @@ body::after {
         font-size: 16px;
     }
     /* 触摸目标提升到 ≥44px（iOS HIG 最低标准） */
-    .primary-btn, .ghost-btn, .pick-btn, .dl-btn, .link-btn,
+    .primary-btn, .ghost-btn, .pick-btn, .dl-btn, .link-btn, .sidebar-btn,
     .qi-actions button, .tree-download-btn, .share-download-btn {
         min-height: 44px;
         padding-top: 8px;

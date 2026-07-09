@@ -3215,6 +3215,7 @@
                 concurrencySelect.value = s.concurrency;
                 localStorage.setItem('filesync:concurrency', s.concurrency);
             }
+            updateConfigSummary();
         } catch (e) {
             // 静默失败：网络错误不影响用户体验
         }
@@ -3234,6 +3235,20 @@
         } catch (e) {
             // 静默失败：网络错误不影响用户体验
         }
+    }
+
+    /** 更新上传区域的配置摘要标签文本（显示当前分片/并发/存储位置） */
+    function updateConfigSummary() {
+        const el = document.getElementById('config-summary');
+        if (!el) return;
+        const cs = document.getElementById('chunk-size');
+        const cc = document.getElementById('concurrency');
+        const st = document.getElementById('storage-type');
+        if (!cs || !cc || !st) return;
+        const sizeText = (cs.options[cs.selectedIndex] && cs.options[cs.selectedIndex].text) || '';
+        const concText = cc.value;
+        const storeText = st.value === 's3' ? 'OSS' : '本地';
+        el.textContent = `${sizeText} · ${concText}并发 · ${storeText}`;
     }
 
     /** 绑定选择文件、拖拽上传、持久化配置等事件。
@@ -3316,30 +3331,24 @@
         chunkSizeSelect.addEventListener('change', () => {
             localStorage.setItem('filesync:chunkSize', chunkSizeSelect.value);
             if (isAdmin) syncSettingsToServer();
+            updateConfigSummary();
         });
         concurrencySelect.addEventListener('change', () => {
             localStorage.setItem('filesync:concurrency', concurrencySelect.value);
             if (isAdmin) syncSettingsToServer();
+            updateConfigSummary();
         });
 
-        // 存储位置选择（本地磁盘 / 阿里云 OSS），持久化到 localStorage，上传时随 init 请求带上
-        const storageTypeSelect = document.createElement('select');
-        storageTypeSelect.id = 'storage-type';
-        storageTypeSelect.className = 'settings-select';
-        storageTypeSelect.innerHTML = '<option value="local">本地磁盘</option><option value="s3">阿里云 OSS</option>';
-        const savedStorage = localStorage.getItem('filesync:storage');
-        if (savedStorage) storageTypeSelect.value = savedStorage;
-        const storageWrap = document.createElement('div');
-        storageWrap.className = 'settings-item';
-        const storageLabel = document.createElement('label');
-        storageLabel.textContent = '存储位置';
-        storageLabel.className = 'settings-label';
-        storageWrap.appendChild(storageLabel);
-        storageWrap.appendChild(storageTypeSelect);
-        chunkSizeSelect.parentElement.appendChild(storageWrap);
-        storageTypeSelect.addEventListener('change', () => {
-            localStorage.setItem('filesync:storage', storageTypeSelect.value);
-        });
+        // 存储位置选择（静态 HTML 在 settings modal 中），持久化到 localStorage，上传时随 init 请求带上
+        const storageTypeSelect = document.getElementById('storage-type');
+        if (storageTypeSelect) {
+            const savedStorage = localStorage.getItem('filesync:storage');
+            if (savedStorage) storageTypeSelect.value = savedStorage;
+            storageTypeSelect.addEventListener('change', () => {
+                localStorage.setItem('filesync:storage', storageTypeSelect.value);
+                updateConfigSummary();
+            });
+        }
 
         // 冲突对话框按钮
         document.querySelectorAll('.opt-btn').forEach(btn => {
@@ -3419,6 +3428,12 @@
                     closePreview();
                     return;
                 }
+                // 设置 modal 打开时关闭设置
+                const settingsModal = document.getElementById('settings-modal');
+                if (settingsModal && !settingsModal.hidden) {
+                    settingsModal.hidden = true;
+                    return;
+                }
                 // ESC 也清空选择（便于快速退出多选模式）
                 if (selectedItems.size > 0) clearSelection();
             }
@@ -3460,6 +3475,27 @@
         const trashEmptyBtn = document.getElementById('trash-empty-btn');
         if (trashEmptyBtn) {
             trashEmptyBtn.addEventListener('click', emptyTrash);
+        }
+
+        // 上传设置对话框：点击侧栏「设置」打开，点击「关闭」或 backdrop 关闭
+        const settingsBtn = document.getElementById('settings-btn');
+        if (settingsBtn) {
+            settingsBtn.addEventListener('click', () => {
+                document.getElementById('settings-modal').hidden = false;
+            });
+        }
+        const settingsCloseBtn = document.getElementById('settings-close-btn');
+        if (settingsCloseBtn) {
+            settingsCloseBtn.addEventListener('click', () => {
+                document.getElementById('settings-modal').hidden = true;
+            });
+        }
+        // 点击配置摘要标签快速打开设置
+        const configSummaryBtn = document.getElementById('config-summary');
+        if (configSummaryBtn) {
+            configSummaryBtn.addEventListener('click', () => {
+                document.getElementById('settings-modal').hidden = false;
+            });
         }
 
         // 清除已完成（包括 done、error、cancelled 状态的项）
@@ -3568,6 +3604,7 @@
         const ok = await checkAuth();
         if (!ok) return; // 已跳转登录页
         bindEvents();
+        updateConfigSummary();
         checkHealth();
         setInterval(checkHealth, 10000); // 每 10 秒检查一次健康
         loadFiles();
