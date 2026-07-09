@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/web/style.css?v=20260707i">
+    <link rel="stylesheet" href="/web/style.css?v=20260717">
 </head>
 <body>
     <!-- 顶部品牌栏（简化版：无健康状态、无用户信息、无登出按钮） -->
@@ -82,6 +82,7 @@
                     </div>
                 </div>
                 <div class="share-actions">
+                    <button class="ghost-btn share-preview-btn" id="share-preview-btn" type="button" hidden>预览</button>
                     <button class="primary-btn share-download-btn" id="share-download-btn" type="button">下载</button>
                 </div>
                 <p class="share-hint">同一访客重复下载不会增加下载次数。</p>
@@ -106,6 +107,20 @@
         </section>
     </main>
 
+    <!-- 预览对话框 -->
+    <div class="modal share-preview-modal" id="preview-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card share-preview-card">
+            <div class="modal-head share-preview-head">
+                <h3 id="preview-title">预览</h3>
+                <button class="modal-close" id="preview-close" type="button" aria-label="关闭预览">×</button>
+            </div>
+            <div class="share-preview-body" id="preview-body">
+                <!-- 预览内容（图片/PDF/文本/音频/视频）动态注入 -->
+            </div>
+        </div>
+    </div>
+
     <!-- 转存对话框 -->
     <div class="modal" id="save-modal" hidden>
         <div class="modal-backdrop"></div>
@@ -124,6 +139,6 @@
         </div>
     </div>
 
-    <script src="/web/share.js?v=20260707i"></script>
+    <script src="/web/share.js?v=20260717"></script>
 </body>
 </html>

@@ -68,9 +68,45 @@
     /** 拼接相对路径（避免 // 重复） */
     function joinPath(base, sub) {
         if (!base) return sub || '';
-        if (!sub) return base;
+        if (!sub) return sub || base;
         if (base.endsWith('/')) return base + sub;
         return base + '/' + sub;
+    }
+
+    // === 文件类型判断（用于预览按钮显隐和渲染器选择） ===
+
+    /** 从文件名提取小写扩展名（不含点） */
+    function getFileExt(name) {
+        if (!name) return '';
+        var idx = name.lastIndexOf('.');
+        if (idx < 0 || idx === name.length - 1) return '';
+        return name.slice(idx + 1).toLowerCase();
+    }
+
+    /** 根据扩展名判断预览类型，返回 image|pdf|text|audio|video|unsupported */
+    function getPreviewType(name) {
+        var ext = getFileExt(name);
+        var imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico', 'avif'];
+        var pdfExts = ['pdf'];
+        var textExts = ['txt', 'md', 'markdown', 'log', 'csv', 'tsv',
+            'js', 'ts', 'jsx', 'tsx', 'mjs', 'cjs',
+            'json', 'json5', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
+            'html', 'htm', 'css', 'scss', 'sass', 'less',
+            'py', 'java', 'c', 'h', 'cpp', 'hpp', 'cc', 'cxx', 'go', 'rs', 'rb',
+            'php', 'pl', 'sh', 'bash', 'zsh', 'bat', 'ps1',
+            'sql', 'graphql', 'gql',
+            'xml', 'svg', 'vue', 'svelte',
+            'kt', 'kts', 'swift', 'dart', 'scala', 'clj', 'lisp', 'el',
+            'lua', 'r', 'jl', 'ex', 'exs', 'erl', 'hs', 'ml', 'fs',
+            'dockerfile', 'makefile', 'gitignore', 'env'];
+        var audioExts = ['mp3', 'wav', 'ogg', 'oga', 'm4a', 'aac', 'flac', 'opus', 'weba'];
+        var videoExts = ['mp4', 'webm', 'ogv', 'mov', 'm4v', 'mkv'];
+        if (imageExts.indexOf(ext) >= 0) return 'image';
+        if (pdfExts.indexOf(ext) >= 0) return 'pdf';
+        if (textExts.indexOf(ext) >= 0) return 'text';
+        if (audioExts.indexOf(ext) >= 0) return 'audio';
+        if (videoExts.indexOf(ext) >= 0) return 'video';
+        return 'unsupported';
     }
 
     // === 状态切换函数 ===
@@ -132,6 +168,22 @@
 
         document.getElementById('share-downloads').textContent = info.download_count || 0;
         document.getElementById('share-expiry').textContent = fmtDate(info.expires_at);
+
+        // 单文件分享：根据文件类型决定是否显示预览按钮
+        var previewBtn = document.getElementById('share-preview-btn');
+        if (info.share_type === 'file') {
+            var ptype = getPreviewType(info.name);
+            if (ptype !== 'unsupported') {
+                previewBtn.hidden = false;
+                previewBtn.dataset.name = info.name || '';
+                previewBtn.dataset.path = ''; // 单文件分享无需 path 参数
+            } else {
+                previewBtn.hidden = true;
+            }
+        } else {
+            // 目录分享不在顶部显示预览按钮（预览入口在文件行）
+            previewBtn.hidden = true;
+        }
 
         // 目录分享：显示目录浏览区域
         var browser = document.getElementById('share-browser');
@@ -232,11 +284,18 @@
         for (var j = 0; j < files.length; j++) {
             var f = files[j];
             var filePath = joinPath(currentPath, f.name);
+            // 仅对可预览的文件类型显示预览按钮（图片/PDF/文本/音频/视频）
+            var fPreviewType = getPreviewType(f.name);
+            var previewBtnHtml = '';
+            if (fPreviewType !== 'unsupported') {
+                previewBtnHtml = '<button class="tree-preview-btn" type="button" data-path="' + escapeHtml(filePath) + '" data-name="' + escapeHtml(f.name) + '" data-preview-type="' + fPreviewType + '">预览</button>';
+            }
             html += '<div class="tree-row tree-file" data-file-path="' + escapeHtml(filePath) + '" data-file-id="' + escapeHtml(f.id) + '">'
                 + '<input type="checkbox" class="tree-cb" data-path="' + escapeHtml(filePath) + '" data-id="' + escapeHtml(f.id) + '">'
                 + '<span class="tree-icon" aria-hidden="true">📄</span>'
                 + '<span class="tree-name">' + escapeHtml(f.name) + '</span>'
                 + '<span class="tree-meta">' + fmtSize(f.size) + '</span>'
+                + previewBtnHtml
                 + '<button class="tree-download-btn" type="button" data-path="' + escapeHtml(filePath) + '">下载</button>'
                 + '</div>';
         }
@@ -289,6 +348,112 @@
         } catch (e) {
             alert('批量下载失败: ' + e.message);
         }
+    }
+
+    // === 预览处理 ===
+
+    /**
+     * 构造分享预览 URL
+     * @param {string} path 子路径（单文件分享传空字符串）
+     * @returns {string} 完整预览 URL
+     */
+    function buildPreviewUrl(path) {
+        var url = API_BASE + shareId + '/preview?token=' + encodeURIComponent(downloadToken);
+        if (path) url += '&path=' + encodeURIComponent(path);
+        return url;
+    }
+
+    /**
+     * 打开预览 Modal 并渲染对应类型
+     * @param {string} path 子路径（单文件分享传空字符串）
+     * @param {string} name 文件名（用于标题和类型判断）
+     */
+    function previewFile(path, name) {
+        var type = getPreviewType(name);
+        if (type === 'unsupported') {
+            alert('此文件类型不支持预览，请下载后查看');
+            return;
+        }
+        var modal = document.getElementById('preview-modal');
+        var titleEl = document.getElementById('preview-title');
+        var bodyEl = document.getElementById('preview-body');
+        titleEl.textContent = name || '预览';
+        bodyEl.innerHTML = '<div class="share-preview-loading">加载中…</div>';
+        modal.hidden = false;
+        renderPreview(type, buildPreviewUrl(path), name);
+    }
+
+    /**
+     * 根据类型渲染预览内容
+     * @param {string} type image|pdf|text|audio|video
+     * @param {string} url 预览 URL
+     * @param {string} name 文件名
+     */
+    function renderPreview(type, url, name) {
+        var bodyEl = document.getElementById('preview-body');
+        switch (type) {
+            case 'image':
+                bodyEl.innerHTML = '<img class="share-preview-img" src="' + escapeHtml(url) + '" alt="' + escapeHtml(name) + '" />';
+                break;
+            case 'pdf':
+                bodyEl.innerHTML = '<iframe class="share-preview-pdf" src="' + escapeHtml(url) + '" title="' + escapeHtml(name) + '"></iframe>';
+                break;
+            case 'audio':
+                bodyEl.innerHTML = '<audio class="share-preview-audio" src="' + escapeHtml(url) + '" controls preload="metadata"></audio>';
+                break;
+            case 'video':
+                bodyEl.innerHTML = '<video class="share-preview-video" src="' + escapeHtml(url) + '" controls preload="metadata"></video>';
+                break;
+            case 'text':
+                renderTextPreview(url, bodyEl);
+                break;
+            default:
+                bodyEl.innerHTML = '<div class="share-preview-error">不支持的预览类型</div>';
+        }
+    }
+
+    /**
+     * 渲染文本预览（fetch 文本内容后以 <pre> 展示，避免直接 iframe 显示乱码）
+     * @param {string} url 预览 URL
+     * @param {HTMLElement} bodyEl 预览容器
+     */
+    async function renderTextPreview(url, bodyEl) {
+        try {
+            var res = await fetch(url);
+            if (!res.ok) {
+                bodyEl.innerHTML = '<div class="share-preview-error">加载失败 (HTTP ' + res.status + ')</div>';
+                return;
+            }
+            var text = await res.text();
+            // 限制最大显示长度（避免超长文本卡死浏览器）
+            var MAX_LEN = 512 * 1024; // 512KB
+            var truncated = false;
+            if (text.length > MAX_LEN) {
+                text = text.slice(0, MAX_LEN);
+                truncated = true;
+            }
+            var html = '<pre class="share-preview-text"><code>' + escapeHtml(text) + '</code></pre>';
+            if (truncated) {
+                html += '<div class="share-preview-truncated">文件过大，仅显示前 512KB 内容，完整内容请下载查看</div>';
+            }
+            bodyEl.innerHTML = html;
+        } catch (e) {
+            bodyEl.innerHTML = '<div class="share-preview-error">网络错误: ' + escapeHtml(e.message) + '</div>';
+        }
+    }
+
+    /** 关闭预览 Modal 并释放媒体资源 */
+    function closePreview() {
+        var modal = document.getElementById('preview-modal');
+        var bodyEl = document.getElementById('preview-body');
+        // 释放音视频资源（暂停播放 + 清空 src）
+        var media = bodyEl.querySelector('video, audio');
+        if (media) {
+            media.pause();
+            media.src = '';
+        }
+        bodyEl.innerHTML = '';
+        modal.hidden = true;
     }
 
     // === 转存到我的文件 ===
@@ -364,6 +529,12 @@
         // 整体下载按钮
         document.getElementById('share-download-btn').addEventListener('click', startDownload);
 
+        // 顶部预览按钮（单文件分享）
+        document.getElementById('share-preview-btn').addEventListener('click', function (e) {
+            var btn = e.currentTarget;
+            previewFile(btn.dataset.path || '', btn.dataset.name || '');
+        });
+
         // 批量下载
         document.getElementById('batch-download-btn').addEventListener('click', batchDownload);
 
@@ -381,12 +552,17 @@
             updateBatchButton();
         });
 
-        // 文件列表事件委托（目录点击、文件下载、复选框）
+        // 文件列表事件委托（目录点击、文件预览、文件下载、复选框）
         document.getElementById('share-filelist').addEventListener('click', function (e) {
             // 目录点击
             var dirRow = e.target.closest('.tree-dir');
             if (dirRow) {
                 loadDir(dirRow.dataset.dirPath);
+                return;
+            }
+            // 文件预览按钮
+            if (e.target.classList.contains('tree-preview-btn')) {
+                previewFile(e.target.dataset.path, e.target.dataset.name);
                 return;
             }
             // 文件下载按钮
@@ -421,6 +597,15 @@
             document.getElementById('save-modal').hidden = true;
         });
         document.getElementById('save-confirm-btn').addEventListener('click', confirmSave);
+
+        // 预览 Modal 关闭：关闭按钮、backdrop 点击、ESC 键
+        document.getElementById('preview-close').addEventListener('click', closePreview);
+        document.querySelector('#preview-modal .modal-backdrop').addEventListener('click', closePreview);
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && !document.getElementById('preview-modal').hidden) {
+                closePreview();
+            }
+        });
     }
 
     // === 密码验证 ===

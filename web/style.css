@@ -1804,6 +1804,19 @@ body::after {
 }
 .tree-download-btn:hover { border-color: var(--accent); color: var(--accent); }
 
+/* 文件行预览按钮（参考 tree-download-btn，accent 色调突出预览入口） */
+.tree-preview-btn {
+    border: 1px solid var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.tree-preview-btn:hover { background: var(--accent); color: #fff; }
+
 /* 浏览状态提示 */
 .share-browser-loading,
 .share-browser-error,
@@ -1956,6 +1969,136 @@ body::after {
     .qi-progress-fill::after { display: none; }
     /* 关闭健康指示器脉冲 */
     .health .dot { animation: none; }
+}
+
+/* === 分享预览 Modal（大尺寸，支持图片/PDF/文本/音频/视频） === */
+.share-preview-card {
+    width: 900px;
+    max-width: 95vw;
+    max-height: 90vh;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.share-preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+.share-preview-head h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg-0);
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: calc(100% - 40px);
+}
+.modal-close {
+    background: transparent;
+    border: none;
+    color: var(--fg-2);
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 8px;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+.modal-close:hover { color: var(--err); background: var(--err-dim); }
+.share-preview-body {
+    flex: 1;
+    overflow: auto;
+    overscroll-behavior: contain;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    min-height: 300px;
+}
+/* 图片预览：自适应容器，保持比例 */
+.share-preview-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 4px;
+}
+/* PDF 预览：iframe 占满容器 */
+.share-preview-pdf {
+    width: 100%;
+    height: 75vh;
+    border: none;
+    border-radius: 4px;
+    background: #fff;
+}
+/* 音频预览：居中显示播放器 */
+.share-preview-audio {
+    width: 100%;
+    max-width: 600px;
+}
+/* 视频预览：最大化显示，保持比例 */
+.share-preview-video {
+    max-width: 100%;
+    max-height: 80vh;
+    border-radius: 4px;
+    background: #000;
+}
+/* 文本预览：等宽字体，深色背景，可滚动 */
+.share-preview-text {
+    width: 100%;
+    margin: 0;
+    padding: 16px;
+    background: var(--bg-1);
+    color: var(--fg-0);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow: auto;
+    border-radius: 4px;
+    text-align: left;
+    align-self: stretch;
+}
+.share-preview-text code { font-family: inherit; background: none; }
+/* 截断提示 */
+.share-preview-truncated {
+    width: 100%;
+    padding: 10px 16px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-size: 12px;
+    text-align: center;
+    border-radius: 4px;
+    margin-top: 8px;
+}
+/* 加载中 / 错误状态 */
+.share-preview-loading,
+.share-preview-error {
+    color: var(--fg-2);
+    font-size: 14px;
+    padding: 40px;
+    text-align: center;
+}
+.share-preview-error { color: var(--err); }
+
+/* 手机断点：预览 Modal 接近全屏 */
+@media (max-width: 480px) {
+    .share-preview-card {
+        width: 100vw;
+        max-width: 100vw;
+        max-height: 100vh;
+        height: 100vh;
+        border-radius: 0;
+    }
+    .share-preview-pdf { height: 85vh; }
+    .share-preview-body { padding: 8px; }
 }
 
 /* === 底部安全区域（fixed 定位元素需手动留位） === */

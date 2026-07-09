@@ -269,6 +269,13 @@ func (h *ShareHandler) handlePublic(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.downloadShare(w, r, id)
+	case "preview":
+		// 公开预览：inline 模式 + Range 206，复用 token + 频率 + 密码校验，不计入下载次数
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		h.previewShare(w, r, id)
 	case "list":
 		if r.Method != http.MethodGet {
 			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
@@ -750,6 +757,144 @@ func (h *ShareHandler) serveSharedFile(w http.ResponseWriter, r *http.Request, s
 	defer reader.Close()
 	written, err := io.Copy(w, reader)
 	log.Printf("[Share] file downloaded: id=%s name=%s written=%d err=%v", s.ID, f.Filename, written, err)
+}
+
+// previewShare 公开预览分享文件（inline 模式 + Range 206，支持图片/PDF/文本/音频/视频 MP4）
+// GET /api/s/{id}/preview            - 预览单文件分享
+// GET /api/s/{id}/preview?path=子路径 - 预览目录分享中的单个文件
+// 流程：token 校验 → 频率限制 → 检查有效性 → 密码校验 → 定位文件 → inline 流式返回
+// 与 downloadShare 的差异：不计入下载次数，Content-Disposition: inline，支持 Range 206
+func (h *ShareHandler) previewShare(w http.ResponseWriter, r *http.Request, id string) {
+	// 防盗链：复用下载 token 校验（token 从 /api/s/{id} 获取，30 分钟有效）
+	token := r.URL.Query().Get("token")
+	if !validateShareToken(token, id, h.secret) {
+		log.Printf("[Share] preview blocked: invalid token, id=%s", id)
+		http.Error(w, `{"error":"forbidden","message":"invalid or missing preview token"}`, http.StatusForbidden)
+		return
+	}
+
+	// 频率限制：复用下载限流（每 IP 每分钟 10 次），避免预览绕过限流
+	if !h.downloadLimiter.Allow(r) {
+		http.Error(w, `{"error":"rate_limited","message":"too many requests, try again later"}`, http.StatusTooManyRequests)
+		return
+	}
+
+	s, err := h.db.GetShare(id)
+	if err != nil {
+		http.Error(w, `{"error":"share_not_found"}`, http.StatusNotFound)
+		return
+	}
+	if !s.IsActive {
+		http.Error(w, `{"error":"share_disabled"}`, http.StatusForbidden)
+		return
+	}
+	if s.ExpiresAt != nil && time.Now().After(*s.ExpiresAt) {
+		http.Error(w, `{"error":"share_expired"}`, http.StatusForbidden)
+		return
+	}
+	// 密码校验：与下载一致，有密码且未认证则返回 401
+	if !h.requireShareAuth(w, r, s) {
+		return
+	}
+
+	// 定位文件：file 类型直接取，dir 类型按 ?path= 查找
+	var f *model.FileRecord
+	if s.ShareType == "file" {
+		f, err = h.db.GetFile(s.FileID)
+		if err != nil {
+			http.Error(w, `{"error":"file_deleted","message":"文件已被删除"}`, http.StatusNotFound)
+			return
+		}
+	} else {
+		subPath := fastQueryParam(r.URL.RawQuery, "path")
+		if subPath == "" {
+			http.Error(w, `{"error":"path_required","message":"目录分享预览必须指定 path 参数"}`, http.StatusBadRequest)
+			return
+		}
+		fullPath, err := resolveSharePath(s.DirPrefix, subPath)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"invalid_path","message":"%s"}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		f, err = h.db.FindFileByName(fullPath, s.CreatedBy)
+		if err != nil || f == nil {
+			http.Error(w, `{"error":"file_not_found","message":"文件不存在"}`, http.StatusNotFound)
+			return
+		}
+	}
+	if strings.HasSuffix(f.Filename, ".keep") {
+		http.Error(w, `{"error":"not_a_file","message":"不能预览目录占位文件"}`, http.StatusBadRequest)
+		return
+	}
+
+	h.serveSharedFileInline(w, r, s, f)
+}
+
+// serveSharedFileInline 流式返回文件内容用于浏览器内联预览（inline + Range 206）。
+// 参考 preview.go 的 serveContent 实现：设置正确 Content-Type、Content-Disposition: inline、
+// 支持 HTTP Range 请求（视频/音频拖动进度条需要）。与 serveSharedFile 的差异：
+//   - Content-Disposition: inline（浏览器内联显示，不触发下载）
+//   - Content-Type: 按 contentTypeFor 设置正确 MIME（图片/PDF/文本/音频/视频）
+//   - 支持 Range 206 Partial Content
+func (h *ShareHandler) serveSharedFileInline(w http.ResponseWriter, r *http.Request, s *model.Share, f *model.FileRecord) {
+	fileSize, err := h.storage.FileSize(f.StoragePath)
+	if err != nil {
+		log.Printf("[Share] preview file size error: id=%s path=%s err=%v", s.ID, f.StoragePath, err)
+		http.Error(w, `{"error":"file_not_found"}`, http.StatusNotFound)
+		return
+	}
+
+	// 设置正确的 Content-Type 和 inline disposition
+	w.Header().Set("Content-Type", contentTypeFor(f.Filename))
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, fileBaseName(f.Filename)))
+
+	rangeHeader := r.Header.Get("Range")
+
+	// 无 Range：完整文件返回 200
+	if rangeHeader == "" {
+		w.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
+		w.WriteHeader(http.StatusOK)
+		reader, err := h.storage.ReadFile(f.StoragePath, 0)
+		if err != nil {
+			log.Printf("[Share] preview read error: id=%s err=%v", s.ID, err)
+			return
+		}
+		defer reader.Close()
+		written, err := io.Copy(w, reader)
+		log.Printf("[Share] file previewed: id=%s name=%s written=%d err=%v", s.ID, f.Filename, written, err)
+		return
+	}
+
+	// 解析 Range: bytes=start-end 或 bytes=start-
+	var start, end int64
+	if n, _ := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end); n != 2 {
+		n2, err2 := fmt.Sscanf(rangeHeader, "bytes=%d-", &start)
+		if err2 != nil || n2 != 1 || start < 0 {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
+			http.Error(w, `{"error":"invalid range"}`, http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		end = fileSize - 1
+	}
+	if start >= fileSize || end >= fileSize || start > end {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", fileSize))
+		http.Error(w, `{"error":"range not satisfiable"}`, http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+
+	chunkSize := end - start + 1
+	w.Header().Set("Content-Length", strconv.FormatInt(chunkSize, 10))
+	w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+	w.WriteHeader(http.StatusPartialContent)
+
+	reader, err := h.storage.ReadFile(f.StoragePath, start)
+	if err != nil {
+		log.Printf("[Share] preview range read error: id=%s err=%v", s.ID, err)
+		return
+	}
+	defer reader.Close()
+	io.CopyN(w, reader, chunkSize)
 }
 
 // downloadSharedFile 下载单文件分享（复用 serveSharedFile 流式下载逻辑）。
