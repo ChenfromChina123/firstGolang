@@ -1683,10 +1683,12 @@ body::after {
     font-weight: 500;
 }
 
-/* 下载操作区 */
+/* 下载操作区：预览按钮在上、下载按钮在下，垂直堆叠并保留间距 */
 .share-actions {
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
     padding-top: 8px;
 }
 .share-download-btn {
