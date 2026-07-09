@@ -2108,36 +2108,6 @@ body::after {
     margin: 10px auto 0;
     display: inline-flex;
 }
-/* 视频 play/pause 覆盖层：无原生 controls 时提供播放按钮 + 点击提示 */
-.share-preview-play-overlay {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 64px;
-    height: 64px;
-    background: rgba(0, 0, 0, 0.6);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    z-index: 3;
-    transition: background 0.2s;
-}
-.share-preview-play-overlay:hover {
-    background: rgba(0, 0, 0, 0.75);
-}
-.share-preview-play-overlay .play-icon {
-    color: #fff;
-    font-size: 28px;
-    margin-left: 4px; /* 三角形视觉居中修正 */
-    line-height: 1;
-}
-/* 无 controls 的 video 可点击提示 */
-.share-preview-video {
-    cursor: pointer;
-}
 /* === 视频自定义进度条（buffer 范围 + played 位置 + 可拖动 seek） === */
 /* 显示在 video 下方：突出展示 buffer 范围，支持鼠标/触摸精准拖动 seek */
 .share-preview-media-progress {

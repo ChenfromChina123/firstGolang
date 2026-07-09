@@ -408,8 +408,7 @@
                 break;
             case 'video':
                 bodyEl.innerHTML = '<div class="share-preview-media-wrap">'
-                    + '<video class="share-preview-video" src="' + escapeHtml(url) + '" preload="metadata" playsinline></video>'
-                    + '<div class="share-preview-play-overlay" aria-hidden="true"><span class="play-icon">\u25B6</span></div>'
+                    + '<video class="share-preview-video" src="' + escapeHtml(url) + '" controls preload="metadata" playsinline></video>'
                     + '<div class="share-preview-loading-overlay" hidden><span class="share-preview-spinner"></span><span class="share-preview-loading-text">加载中…</span></div>'
                     + '<div class="share-preview-error-overlay" hidden>视频加载失败</div>'
                     + '<div class="share-preview-media-progress" hidden>'
@@ -497,25 +496,6 @@
             }
             showError(msg);
         });
-
-        // === 点击播放/暂停（仅 video 无原生 controls 时需要，audio 保留原生 controls） ===
-        var playOverlay = wrap.querySelector('.share-preview-play-overlay');
-        if (playOverlay) {
-            // 点击 video 或 play overlay 切换播放/暂停
-            function togglePlay() {
-                if (media.paused) {
-                    media.play();
-                } else {
-                    media.pause();
-                }
-            }
-            media.addEventListener('click', togglePlay);
-            playOverlay.addEventListener('click', togglePlay);
-            // 播放时隐藏 overlay，暂停/结束时显示
-            media.addEventListener('play', function () { playOverlay.hidden = true; });
-            media.addEventListener('pause', function () { playOverlay.hidden = false; });
-            media.addEventListener('ended', function () { playOverlay.hidden = false; });
-        }
 
         // === 自定义进度条逻辑（仅当模板包含 progressBar 时生效，audio 跳过） ===
         if (progressBar && trackEl) {

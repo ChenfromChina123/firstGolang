@@ -1,20 +1,14 @@
-"""部署视频预览 buffer 进度条 + 移除原生 controls 到生产服务器.
+"""部署视频预览控件到生产服务器（原生 controls + 自定义 buffer 进度条）.
 
 上传 web/style.css、web/share.html、web/share.js 到 /opt/filesync/web/，
 并通过 HTTPS 验证文件可访问（200）且版本号正确。
 
-本次改动：
-- 前端在 video 下方新增自定义进度条 DOM（progress-track + buffered + played + thumb + time）
-- style.css 新增 .share-preview-media-progress 及子元素样式
-- share.js bindMediaEvents 新增进度条逻辑：
-  - progress/timeupdate 事件 → 更新 buffered 范围 + played 位置 + 时间显示
-  - loadedmetadata 事件 → 显示进度条 + 写入总时长
-  - 鼠标 mousedown/mousemove/mouseup 拖动 → 实时更新 UI，松手 seek（避免频繁 Range）
-  - 触摸 touchstart/touchmove/touchend 拖动 → 同逻辑
-- 移除 video 原生 controls（避免与自定义进度条重复），新增 play/pause overlay：
-  - 点击 video 或 play overlay 切换播放/暂停
-  - 播放时隐藏 overlay，暂停/结束时显示
-- 版本号升级到 v=20260721 防缓存
+最终方案（经多轮用户确认）：
+- video 保留原生 controls（全屏/音量/播放/原生进度条）
+- video 下方新增自定义 buffer 进度条作为补充（buffer 范围可视化 + played 位置 + 时间 + 鼠标/触摸拖动 seek）
+- 保留 loading/error 覆盖层（seek 缓冲时提示）
+- audio 保留原生 controls 不变
+- 版本号升级到 v=20260722 防缓存
 """
 import sys
 import os
@@ -97,8 +91,8 @@ def main():
     # 通过 HTTPS 验证生产可访问且版本号正确
     print('=== HTTPS 验证 ===')
     verify_cmd = (
-        'curl -sI "https://aistudy.icu/web/style.css?v=20260721" | head -1; '
-        'curl -sI "https://aistudy.icu/web/share.js?v=20260721" | head -1; '
+        'curl -sI "https://aistudy.icu/web/style.css?v=20260722" | head -1; '
+        'curl -sI "https://aistudy.icu/web/share.js?v=20260722" | head -1; '
         'curl -sI "https://aistudy.icu/web/share.html" | head -1; '
         'curl -s "https://aistudy.icu/web/share.html" | grep -E "style\\.css\\?v=|share\\.js\\?v=" | head -5'
     )
