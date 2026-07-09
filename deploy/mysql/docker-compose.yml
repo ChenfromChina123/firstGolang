@@ -1,0 +1,38 @@
+version: '3.8'
+
+# FileSync 专用 MySQL 8.0 实例
+# - 端口 13306（避开宿主机 MariaDB 3306）
+# - 数据库 filesync，用户 filesync
+# - 配置最小内存（innodb_buffer_pool_size=64M）适配 1.8GB 服务器
+# - 与 Redis Sentinel 集群互不影响
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: filesync-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ***REMOVED_DB_PASSWORD***
+      MYSQL_DATABASE: filesync
+      MYSQL_USER: filesync
+      MYSQL_PASSWORD: ***REMOVED_DB_PASSWORD***
+      TZ: Asia/Shanghai
+    ports:
+      - "13306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./my.cnf:/etc/mysql/conf.d/my.cnf:ro
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p***REMOVED_DB_PASSWORD***"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  mysql_data:
+    driver: local
