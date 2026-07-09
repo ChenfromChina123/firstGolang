@@ -2051,6 +2051,63 @@ body::after {
     border-radius: 4px;
     background: #000;
 }
+/* 媒体容器：包裹 video/audio + loading/error 覆盖层 */
+.share-preview-media-wrap {
+    position: relative;
+    display: inline-block;
+    max-width: 100%;
+    max-height: 80vh;
+}
+/* 音频容器：覆盖层不叠在控件上，放在下方 */
+.share-preview-media-wrap-audio {
+    display: block;
+    width: 100%;
+    max-width: 600px;
+}
+/* loading/error 覆盖层：绝对定位居中叠在视频上 */
+.share-preview-loading-overlay,
+.share-preview-error-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.72);
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 6px;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 2;
+    pointer-events: none;
+    max-width: 90%;
+}
+.share-preview-error-overlay {
+    background: rgba(220, 50, 50, 0.88);
+}
+/* spinner 旋转动画 */
+.share-preview-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: share-preview-spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+@keyframes share-preview-spin {
+    to { transform: rotate(360deg); }
+}
+/* 音频覆盖层：放在控件下方，不遮挡控件 */
+.share-preview-media-wrap-audio .share-preview-loading-overlay,
+.share-preview-media-wrap-audio .share-preview-error-overlay {
+    position: static;
+    transform: none;
+    margin: 10px auto 0;
+    display: inline-flex;
+}
 /* 文本预览：等宽字体，深色背景，可滚动 */
 .share-preview-text {
     width: 100%;

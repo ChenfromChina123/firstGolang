@@ -399,10 +399,20 @@
                 bodyEl.innerHTML = '<iframe class="share-preview-pdf" src="' + escapeHtml(url) + '" title="' + escapeHtml(name) + '"></iframe>';
                 break;
             case 'audio':
-                bodyEl.innerHTML = '<audio class="share-preview-audio" src="' + escapeHtml(url) + '" controls preload="metadata"></audio>';
+                bodyEl.innerHTML = '<div class="share-preview-media-wrap share-preview-media-wrap-audio">'
+                    + '<audio class="share-preview-audio" src="' + escapeHtml(url) + '" controls preload="metadata" playsinline></audio>'
+                    + '<div class="share-preview-loading-overlay" hidden><span class="share-preview-spinner"></span><span class="share-preview-loading-text">加载中…</span></div>'
+                    + '<div class="share-preview-error-overlay" hidden>音频加载失败</div>'
+                    + '</div>';
+                bindMediaEvents(bodyEl.querySelector('audio'));
                 break;
             case 'video':
-                bodyEl.innerHTML = '<video class="share-preview-video" src="' + escapeHtml(url) + '" controls preload="metadata"></video>';
+                bodyEl.innerHTML = '<div class="share-preview-media-wrap">'
+                    + '<video class="share-preview-video" src="' + escapeHtml(url) + '" controls preload="metadata" playsinline></video>'
+                    + '<div class="share-preview-loading-overlay" hidden><span class="share-preview-spinner"></span><span class="share-preview-loading-text">加载中…</span></div>'
+                    + '<div class="share-preview-error-overlay" hidden>视频加载失败</div>'
+                    + '</div>';
+                bindMediaEvents(bodyEl.querySelector('video'));
                 break;
             case 'text':
                 renderTextPreview(url, bodyEl);
@@ -410,6 +420,59 @@
             default:
                 bodyEl.innerHTML = '<div class="share-preview-error">不支持的预览类型</div>';
         }
+    }
+
+    /**
+     * 绑定媒体元素（video/audio）事件，驱动 loading/error 覆盖层
+     * - loadstart/waiting/seeking/stalled → 显示 loading（提示用户加载状态）
+     * - canplay/playing/seeked → 隐藏 loading（可播放）
+     * - error → 显示错误码对应文案
+     * 设计目标：在不引入 MSE/HLS 的前提下，通过原生事件反馈提升 seek/缓冲体验
+     * @param {HTMLMediaElement} media video 或 audio 元素
+     */
+    function bindMediaEvents(media) {
+        if (!media) return;
+        var wrap = media.parentElement;
+        if (!wrap) return;
+        var loadingOverlay = wrap.querySelector('.share-preview-loading-overlay');
+        var errorOverlay = wrap.querySelector('.share-preview-error-overlay');
+        var loadingText = loadingOverlay ? loadingOverlay.querySelector('.share-preview-loading-text') : null;
+
+        function showLoading(msg) {
+            if (loadingText) loadingText.textContent = msg || '加载中…';
+            if (loadingOverlay) loadingOverlay.hidden = false;
+            if (errorOverlay) errorOverlay.hidden = true;
+        }
+        function hideLoading() {
+            if (loadingOverlay) loadingOverlay.hidden = true;
+        }
+        function showError(msg) {
+            if (errorOverlay) {
+                errorOverlay.textContent = msg || '媒体加载失败';
+                errorOverlay.hidden = false;
+            }
+            if (loadingOverlay) loadingOverlay.hidden = true;
+        }
+
+        media.addEventListener('loadstart', function () { showLoading('加载中…'); });
+        media.addEventListener('waiting', function () { showLoading('缓冲中…'); });
+        media.addEventListener('seeking', function () { showLoading('跳转中…'); });
+        media.addEventListener('canplay', hideLoading);
+        media.addEventListener('playing', hideLoading);
+        media.addEventListener('seeked', hideLoading);
+        media.addEventListener('stalled', function () { showLoading('加载停滞，重试中…'); });
+        media.addEventListener('error', function () {
+            var msg = '媒体加载失败';
+            if (media.error) {
+                switch (media.error.code) {
+                    case 1: msg = '加载已中止'; break;
+                    case 2: msg = '网络错误，请检查链接'; break;
+                    case 3: msg = '解码失败（格式不支持预览）'; break;
+                    case 4: msg = '源不支持播放'; break;
+                }
+            }
+            showError(msg);
+        });
     }
 
     /**
