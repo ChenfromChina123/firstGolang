@@ -18,6 +18,8 @@
 - **文件所有权隔离**：files 表记录 owner 字段，用户只能下载/删除/重命名/移动/分享自己的文件；admin 可操作所有文件；历史文件 owner 为空时仅 admin 可访问；分享链接公开访问按创建者过滤防止越权下载
 - **深度防盗链**：4 层防护保障资源不被盗链：①安全响应头（X-Frame-Options/CSP 防 iframe 嵌入）；②Referer 校验（只允许空 Referer 或白名单域名）；③签名 Token（分享下载需携带 HMAC-SHA256 token，30 分钟有效，绑定 share_id）；④频率限制（分享下载每 IP 每分钟 10 次）
 - **安全加固**：基于 aistudy.icu 安全评估报告（评分 7.3/10 → 9.0/10）实施多阶段加固：①8 个安全响应头（HSTS/CSP/Permissions-Policy/X-Frame-Options/X-Content-Type-Options/Referrer-Policy/X-Permitted-Cross-Domain-Policies/X-XSS-Protection）；②HTTP 方法限制中间件（拒绝 TRACE/CONNECT，返回 405）；③路径净化中间件（拒绝 `/../` 和 `/./` 序列，返回 400，纵深防御）；④分享端点速率限制（30 次/分钟/IP，防分享 ID 暴力枚举）；⑤登录限流（rps=0.05, burst=2，2 次错误后 429）；⑥security.txt 安全联系信息文件；⑦SSH 加固参考脚本（deploy/security/harden_ssh.sh，禁用密码登录+fail2ban）；⑧CSP 精细化修复（评分 9.0→9.5）：Google Fonts 白名单（style-src 添加 fonts.googleapis.com，font-src 添加 fonts.gstatic.com）、所有 HTML 内联脚本提取为外部 `/web/js/*.js` 满足 `script-src 'self'` 不依赖 unsafe-inline、表单统一 `method="POST"` 防 CSP 阻断内联脚本时密码明文泄露到 URL、Cache-Control 分路径策略（`/api/` no-store 防敏感数据缓存，`/web/` public max-age=3600 加速静态资源）、admin.html 内联 onclick 全部改为事件委托（data-action + addEventListener）。中间件链：SecurityHeaders -> MethodGuard -> PathGuard -> RefererCheck -> JWT -> mux
+- **安全加固（第二轮）**：基于深度安全评估修复 2 个高风险 + 4 个中风险：①JWT 签名由 HS256 对称改为 RS256 非对称（私钥签发+公钥验证，密钥独立持久化于 `data/jwt_rsa_private.pem`，与密码加密 RSA 密钥分离）；②RSA 密码传输移除明文回退（前后端解密/加密失败即拒绝请求，旧客户端无法登录）；③`.env` 文件权限检查（Linux 启动时 `mode&0o077 != 0` 拒绝启动，要求 `chmod 600`）；④X-Forwarded-For 可信代理机制（仅 `TRUSTED_PROXIES` 配置的 IP 的 XFF 被采信，防伪造绕过登录限流）；⑤登录限流 cleanup 改为 LRU 淘汰（删除超过 10 分钟未访问的条目，而非清空全部，避免误杀正常用户）；⑥随机数生成失败移除弱兜底（`GenerateActivationToken`/`GenerateResetCode` 返回 error 而非回退时间戳/固定值）
+- **RSA 密码字段加密传输**：前端使用 RSA-2048 公钥加密所有 password 类字段（登录 password、注册 password/confirm_password、重置密码 new_password/confirm_password、管理员重置用户密码 new_password），防止 DevTools Network 面板中明文泄露。后端 `GET /api/pubkey` 返回 PKIX PEM 格式公钥（`Cache-Control: public, max-age=3600`，1 小时缓存），私钥持久化于 `data/rsa_private.pem`（0600 权限，重启后公钥不变前端缓存不失效）。前端 `web/js/crypto.js` 封装 `encryptPassword()` 函数（jsencrypt 3.3.2 本地打包符合 CSP `script-src 'self'`），公钥缓存在内存避免重复请求。后端 `DecryptPassword` 解密失败时原样返回字段值（向后兼容部署过渡期，不降低 HTTPS 已有传输安全）。加密范围：Login.password、Register.password/confirm_password、ResetPassword.new_password/confirm_password、AdminResetPassword.new_password
 - **秒传功能（全局存储）**：上传前通过 Web Worker 在后台线程计算完整文件 SHA256，调用 `/api/upload/check` 接口检查哈希是否已存在。命中时后端直接共享源文件 storage_path（不复制物理文件）并创建新记录，整个上传流程被跳过，实现"秒级"上传。**跨用户秒传**：任意用户上传相同 hash+size 文件均可命中，多个 DB 记录共享同一物理文件，永久删除时通过引用计数（CountByStoragePath）判断是否删除物理文件。hash+size 双重校验避免误判，秒传检查失败自动降级为正常上传（非致命）。
 - **回收站功能**：文件删除采用软删除机制（deleted_at 字段），移入回收站保留 30 天可恢复。支持列出回收站、恢复文件（含文件名冲突检测）、永久删除单个文件、清空回收站。服务启动时自动清理过期回收站文件（物理删除数据库记录 + 删除存储文件）。admin 可通过 `?all=true` 查看和管理所有用户的回收站。
 - **压缩包在线解压**：支持 zip / tar / tar.gz / tar.bz2 四种格式在线预览，单击压缩包即列出包内文件树（目录可折叠），文件可在线预览或下载，无需将整个压缩包下载到本地。安全防护：Zip Slip 路径穿越拒绝、压缩炸弹限制（包 ≤2GB / 条目 ≤10000 / 单文件 ≤500MB）、加密压缩包拒绝。tar.gz/tar.bz2 真流式解析，zip 采用临时文件方案（标准库要求 ReaderAt）。
@@ -423,7 +425,8 @@ curl -X DELETE http://localhost:8080/api/trash
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/login` | 登录（支持用户名或邮箱，速率限制 40次/分钟/IP） |
+| `POST` | `/api/login` | 登录（支持用户名或邮箱，速率限制 40次/分钟/IP，password 字段 RSA 公钥加密传输） |
+| `GET` | `/api/pubkey` | 获取 RSA 公钥（PEM 格式，前端加密 password 用，公开，Cache-Control 1 小时） |
 | `POST` | `/api/logout` | 登出 |
 | `GET` | `/api/me` | 当前用户信息（需认证） |
 | `POST` | `/api/register` | 注册（邮箱+密码+确认密码，速率限制 3次/小时） |
@@ -774,6 +777,8 @@ curl "http://localhost:8080/api/preview/<fileID>/archive?path=docs/img/logo.png&
 | `SMTP_PASS` | SMTP 授权码 | - |
 | `SMTP_FROM` | 发件人显示名 | `FileSync <SMTP_USER>` |
 | `APP_BASE_URL` | 应用根地址（用于拼接激活链接） | 根据 DOMAIN 推导为 `https://<DOMAIN>` |
+| `JWT_SECRET` | 分享下载 token 的 HMAC-SHA256 密钥（登录 JWT 已改用 RS256 非对称签名，密钥自动生成于 `data/jwt_rsa_private.pem`） | 随机生成（重启失效） |
+| `TRUSTED_PROXIES` | 可信代理 IP 列表（逗号分隔，仅这些 IP 的 X-Forwarded-For 被采信，防 XFF 伪造绕过限流） | - |
 
 > Redis 为可选项，未配置时自动降级为纯 SQLite 模式。配置 Sentinel 后优先使用 Sentinel 分布式模式。
 

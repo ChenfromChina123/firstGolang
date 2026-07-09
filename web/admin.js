@@ -320,10 +320,11 @@
             return;
         }
         try {
+            const encryptedNew = await encryptPassword(newPwd);
             const res = await apiFetch(`${API.users}/${resetPwdTarget.id}/reset-password`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ new_password: newPwd })
+                body: JSON.stringify({ new_password: encryptedNew })
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {

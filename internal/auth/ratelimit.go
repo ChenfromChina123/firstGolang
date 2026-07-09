@@ -10,11 +10,34 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// visitorEntry 单个 IP 的限流条目（含最后访问时间，用于 LRU 淘汰）
+type visitorEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// trustedProxies 可信反向代理 IP 集合。
+// 仅当请求直连来自这些 IP 时，才采信 X-Forwarded-For / X-Real-IP 头，
+// 防止客户端伪造 XFF 绕过 IP 限流。未配置时直接用 RemoteAddr（最安全）。
+var trustedProxies map[string]bool
+
+// SetTrustedProxies 设置可信代理 IP 列表（启动时调用一次）。
+// proxies 为空则不信任任何 XFF（所有请求按直连 IP 限流）。
+func SetTrustedProxies(proxies []string) {
+	trustedProxies = make(map[string]bool, len(proxies))
+	for _, p := range proxies {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			trustedProxies[p] = true
+		}
+	}
+}
+
 // LoginRateLimiter 登录接口速率限制器
 // 按 IP 限流，每个 IP 每分钟最多 5 次登录请求
 type LoginRateLimiter struct {
 	mu       sync.Mutex
-	visitors map[string]*rate.Limiter
+	visitors map[string]*visitorEntry
 	rps      rate.Limit
 	burst    int
 }
@@ -24,31 +47,39 @@ type LoginRateLimiter struct {
 // burst: 突发上限
 func NewLoginRateLimiter(rps float64, burst int) *LoginRateLimiter {
 	return &LoginRateLimiter{
-		visitors: make(map[string]*rate.Limiter),
+		visitors: make(map[string]*visitorEntry),
 		rps:      rate.Limit(rps),
 		burst:    burst,
 	}
 }
 
-// getLimiter 获取或创建 IP 对应的限流器
+// getLimiter 获取或创建 IP 对应的限流器，并更新最后访问时间（LRU 用）
 func (l *LoginRateLimiter) getLimiter(ip string) *rate.Limiter {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	limiter, exists := l.visitors[ip]
+	entry, exists := l.visitors[ip]
 	if !exists {
-		limiter = rate.NewLimiter(l.rps, l.burst)
-		l.visitors[ip] = limiter
+		entry = &visitorEntry{
+			limiter:  rate.NewLimiter(l.rps, l.burst),
+			lastSeen: time.Now(),
+		}
+		l.visitors[ip] = entry
+	} else {
+		entry.lastSeen = time.Now()
 	}
-	return limiter
+	return entry.limiter
 }
 
-// cleanup 清理过期的限流器（避免内存泄漏）
+// cleanup 清理超过 10 分钟未访问的限流条目（LRU 策略，避免内存泄漏）
+// 不再清空整个 map，防止攻击者通过 IP 轮换触发清空后重新爆破
 func (l *LoginRateLimiter) cleanup() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// 简单策略：超过 1000 个 IP 时清空（实际生产可用 LRU）
-	if len(l.visitors) > 1000 {
-		l.visitors = make(map[string]*rate.Limiter)
+	cutoff := time.Now().Add(-10 * time.Minute)
+	for ip, entry := range l.visitors {
+		if entry.lastSeen.Before(cutoff) {
+			delete(l.visitors, ip)
+		}
 	}
 }
 
@@ -94,21 +125,26 @@ func (l *LoginRateLimiter) Allow(r *http.Request) bool {
 	return l.getLimiter(ip).Allow()
 }
 
-// clientIP 从请求中提取客户端 IP
+// clientIP 从请求中提取客户端 IP。
+// 仅当请求直连来自可信代理（trustedProxies）时才采信 X-Forwarded-For / X-Real-IP，
+// 防止客户端伪造 XFF 头绕过 IP 限流。未配置可信代理时直接用 RemoteAddr（最安全）。
 func clientIP(r *http.Request) string {
-	// 优先从 X-Forwarded-For 取（反代场景）
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.Index(xff, ","); idx > 0 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	// 先解析直连 IP（RemoteAddr）
+	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		remoteIP = r.RemoteAddr
 	}
-	return ip
+	// 仅信任来自可信代理的 XFF / X-Real-IP
+	if trustedProxies[remoteIP] {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if idx := strings.Index(xff, ","); idx > 0 {
+				return strings.TrimSpace(xff[:idx])
+			}
+			return strings.TrimSpace(xff)
+		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			return strings.TrimSpace(xri)
+		}
+	}
+	return remoteIP
 }

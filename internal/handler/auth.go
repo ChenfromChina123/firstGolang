@@ -23,13 +23,15 @@ type AuthHandler struct {
 	jwt     *auth.JWTManager
 	mailer  *email.SMTPMailer // 可为 nil（未配置 SMTP 时禁用注册功能）
 	baseURL string            // 应用根地址，用于生成激活链接，如 https://aistudy.icu
+	rsa     *auth.RSAKeys     // RSA 密钥对，用于解密前端加密的 password 字段
 }
 
 // NewAuthHandler 创建认证 handler
 // mailer 可为 nil（未配置 SMTP 时注册/忘记密码接口返回 503）
 // baseURL 用于拼接激活链接，如 https://aistudy.icu
-func NewAuthHandler(db *store.DB, jwt *auth.JWTManager, mailer *email.SMTPMailer, baseURL string) *AuthHandler {
-	return &AuthHandler{db: db, jwt: jwt, mailer: mailer, baseURL: baseURL}
+// rsaKeys 用于解密前端用公钥加密的 password 字段
+func NewAuthHandler(db *store.DB, jwt *auth.JWTManager, mailer *email.SMTPMailer, baseURL string, rsaKeys *auth.RSAKeys) *AuthHandler {
+	return &AuthHandler{db: db, jwt: jwt, mailer: mailer, baseURL: baseURL, rsa: rsaKeys}
 }
 
 // loginRequest 登录请求体
@@ -56,6 +58,16 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid_request","message":"invalid JSON body"}`, http.StatusBadRequest)
 		return
+	}
+
+	// 解密前端用 RSA 公钥加密的 password 字段（不接受明文回退）
+	if h.rsa != nil {
+		decrypted, err := h.rsa.DecryptPassword(req.Password)
+		if err != nil {
+			http.Error(w, `{"error":"password_encryption_required","message":"密码必须经 RSA 加密传输"}`, http.StatusBadRequest)
+			return
+		}
+		req.Password = decrypted
 	}
 
 	// 基本校验
@@ -253,6 +265,19 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 解密前端用 RSA 公钥加密的 password / confirm_password 字段（不接受明文回退）
+	if h.rsa != nil {
+		var decErr error
+		if req.Password, decErr = h.rsa.DecryptPassword(req.Password); decErr != nil {
+			http.Error(w, `{"error":"password_encryption_required","message":"密码必须经 RSA 加密传输"}`, http.StatusBadRequest)
+			return
+		}
+		if req.ConfirmPassword, decErr = h.rsa.DecryptPassword(req.ConfirmPassword); decErr != nil {
+			http.Error(w, `{"error":"password_encryption_required","message":"密码必须经 RSA 加密传输"}`, http.StatusBadRequest)
+			return
+		}
+	}
+
 	email := auth.NormalizeEmail(req.Email)
 	if err := auth.ValidateEmail(email); err != nil {
 		http.Error(w, `{"error":"invalid_email","message":"`+err.Error()+`"}`, http.StatusBadRequest)
@@ -361,7 +386,11 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 // sendActivationEmail 生成激活 token 存库 + 异步发送激活邮件
 // 抽出为独立方法，避免 Register 和 ResendActivation 重复代码
 func (h *AuthHandler) sendActivationEmail(userID, email string) {
-	token := auth.GenerateActivationToken()
+	token, err := auth.GenerateActivationToken()
+	if err != nil {
+		log.Printf("[Auth] generate activation token error: %v", err)
+		return
+	}
 	expiresAt := time.Now().Add(activationTokenExpiry)
 	if err := h.db.CreateActivationToken(userID, token, expiresAt); err != nil {
 		log.Printf("[Auth] create activation token error: %v", err)
@@ -506,7 +535,12 @@ func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 生成验证码并存库
-	code := auth.GenerateResetCode()
+	code, err := auth.GenerateResetCode()
+	if err != nil {
+		log.Printf("[Auth] forgot password: generate reset code error: %v", err)
+		http.Error(w, `{"error":"internal_error","message":"生成验证码失败"}`, http.StatusInternalServerError)
+		return
+	}
 	expiresAt := time.Now().Add(resetCodeExpiry)
 	if err := h.db.CreateResetCode(user.ID, email, code, expiresAt); err != nil {
 		log.Printf("[Auth] forgot password: create reset code error: %v", err)
@@ -533,6 +567,19 @@ func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid_request","message":"invalid JSON body"}`, http.StatusBadRequest)
 		return
+	}
+
+	// 解密前端用 RSA 公钥加密的 new_password / confirm_password 字段（不接受明文回退）
+	if h.rsa != nil {
+		var decErr error
+		if req.NewPassword, decErr = h.rsa.DecryptPassword(req.NewPassword); decErr != nil {
+			http.Error(w, `{"error":"password_encryption_required","message":"密码必须经 RSA 加密传输"}`, http.StatusBadRequest)
+			return
+		}
+		if req.ConfirmPassword, decErr = h.rsa.DecryptPassword(req.ConfirmPassword); decErr != nil {
+			http.Error(w, `{"error":"password_encryption_required","message":"密码必须经 RSA 加密传输"}`, http.StatusBadRequest)
+			return
+		}
 	}
 
 	email := auth.NormalizeEmail(req.Email)

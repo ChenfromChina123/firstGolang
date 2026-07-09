@@ -41,10 +41,12 @@
         }
 
         try {
+            const encryptedPassword = await encryptPassword(password);
+            const encryptedConfirm = await encryptPassword(confirmPassword);
             const resp = await fetch('/api/register', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password, confirm_password: confirmPassword }),
+                body: JSON.stringify({ email, password: encryptedPassword, confirm_password: encryptedConfirm }),
                 credentials: 'same-origin'
             });
             const data = await resp.json().catch(() => ({}));

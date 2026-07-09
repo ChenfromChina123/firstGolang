@@ -40,6 +40,17 @@ func main() {
 		log.Fatalf("create data dir: %v", err)
 	}
 
+	// 安全检查：.env 文件权限（仅 Linux，防止 group/other 读取敏感密钥）
+	// 权限位 group/other 有任何权限（mode&0o077 != 0）则拒绝启动
+	if runtime.GOOS == "linux" {
+		if info, statErr := os.Stat(".env"); statErr == nil {
+			mode := info.Mode().Perm()
+			if mode&0o077 != 0 {
+				log.Fatalf("[Security] .env permission too open: %o, must be 0600 or stricter (chmod 600 .env)", mode)
+			}
+		}
+	}
+
 	// Initialize database
 	// 优先级：MYSQL_DSN > SQLite（默认）
 	// 双驱动共存：MYSQL_DSN 环境变量存在则用 MySQL，否则用 SQLite
@@ -142,24 +153,41 @@ func main() {
 	fileHandler := handler.NewFileHandler(db, router, storages, rc)
 	trashHandler := handler.NewTrashHandler(db, router, rc)
 	settingsHandler := handler.NewSettingsHandler(db)
-	adminHandler := handler.NewAdminHandler(db)
+
+	// 加载或生成 RSA 密钥对（用于前端加密 password 字段传输，私钥持久化到 data/rsa_private.pem）
+	rsaKeyPath := filepath.Join(absDataDir, "rsa_private.pem")
+	rsaKeys, err := auth.LoadOrGenerateKeys(rsaKeyPath)
+	if err != nil {
+		log.Fatalf("Load RSA keys: %v", err)
+	}
+	log.Printf("[Auth] RSA keys loaded from %s", rsaKeyPath)
+
+	adminHandler := handler.NewAdminHandler(db, rsaKeys)
 
 	// === 认证系统初始化 ===
-	// JWT 密钥：优先从环境变量读取，否则随机生成（每次重启失效）
-	jwtSecret := getEnv("JWT_SECRET", "")
-	if jwtSecret == "" {
-		jwtSecret = auth.GenerateSecret()
-		log.Printf("[Auth] WARNING: JWT_SECRET not set, generated random secret (tokens invalidated on restart)")
+	// JWT 使用 RS256 非对称签名：加载或生成独立的 RSA 私钥（持久化到 data/jwt_rsa_private.pem）
+	// 与密码加密 RSA 密钥分离，避免单密钥泄露同时影响密码传输和 token 签名
+	jwtRSAPath := filepath.Join(absDataDir, "jwt_rsa_private.pem")
+	jwtKeys, err := auth.LoadOrGenerateKeys(jwtRSAPath)
+	if err != nil {
+		log.Fatalf("[Auth] load JWT RSA keys: %v", err)
 	}
+	log.Printf("[Auth] JWT RSA keys loaded from %s (RS256 signing)", jwtRSAPath)
 
 	// 域名：用于 Cookie Domain 和 autocert
 	domain := getEnv("DOMAIN", "")
 	// HTTPS 模式：DOMAIN 设置时启用
 	enableHTTPS := domain != ""
 
-	jwtManager := auth.NewJWTManager(jwtSecret, domain, enableHTTPS)
+	jwtManager := auth.NewJWTManager(jwtKeys.PrivateKey(), domain, enableHTTPS)
 
-	// 分享 handler 创建：传入 JWT secret 用于签名下载 token（防盗链）
+	// 分享下载 token 仍用 HMAC（对称场景：签名和验证同一方，无需非对称）
+	// JWT_SECRET 环境变量用于此 HMAC；未设置则随机生成（重启后失效）
+	jwtSecret := getEnv("JWT_SECRET", "")
+	if jwtSecret == "" {
+		jwtSecret = auth.GenerateSecret()
+		log.Printf("[Auth] WARNING: JWT_SECRET not set, generated random secret for share token HMAC (invalidated on restart)")
+	}
 	shareHandler := handler.NewShareHandler(db, router, []byte(jwtSecret))
 
 	// === 邮件服务初始化（用于账号注册和忘记密码） ===
@@ -227,6 +255,15 @@ func main() {
 		log.Printf("[Trash] cleanup expired error: %v", err)
 	}
 
+	// 可信代理：仅这些 IP 的 X-Forwarded-For 才被采信（防 XFF 伪造绕过限流）
+	// 生产环境应配置为反向代理的内网 IP（如 127.0.0.1,10.0.0.2）
+	if trustedProxyStr := getEnv("TRUSTED_PROXIES", ""); trustedProxyStr != "" {
+		auth.SetTrustedProxies(strings.Split(trustedProxyStr, ","))
+		log.Printf("[Auth] trusted proxies configured: %s", trustedProxyStr)
+	} else {
+		log.Printf("[Auth] WARNING: TRUSTED_PROXIES not set, X-Forwarded-For ignored (rate limiting uses RemoteAddr)")
+	}
+
 	// 登录速率限制器：rps=0.5（每 2 秒恢复 1 个 token），burst=10
 	// 平衡正常用户并发登录需求与暴力破解防护：
 	// - 1 分钟可恢复 30 个 token + 10 突发 ≈ 40 次/分钟/IP
@@ -238,7 +275,7 @@ func main() {
 	registerLimiter := auth.NewLoginRateLimiter(0.0083, 5)
 	forgotLimiter := auth.NewLoginRateLimiter(0.0083, 5)
 
-	authHandler := handler.NewAuthHandler(db, jwtManager, mailer, appBaseURL)
+	authHandler := handler.NewAuthHandler(db, jwtManager, mailer, appBaseURL, rsaKeys)
 
 	// 类型断言注入 OSS 转码缓存能力（S3Storage 实现 TranscodeCacheStore 接口）
 	var tcs storage.TranscodeCacheStore
@@ -285,6 +322,12 @@ func main() {
 	mux := http.NewServeMux()
 
 	// 公开路由（无需认证）
+	// /api/pubkey 返回 RSA 公钥，前端用于加密 password 字段
+	mux.HandleFunc("/api/pubkey", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		json.NewEncoder(w).Encode(map[string]string{"public_key": rsaKeys.PublicKeyPEM()})
+	})
 	// /api/login 单独应用速率限制（5次/分钟/IP）
 	loginHandler := loginLimiter.Middleware(http.HandlerFunc(authHandler.Login))
 	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
@@ -368,6 +411,7 @@ func main() {
 		"/api/resend-activation",
 		"/api/forgot-password",
 		"/api/reset-password",
+		"/api/pubkey", // RSA 公钥（前端加密 password 用，公开）
 		"/api/health",
 		"/api/s/", // 分享公开访问（获取分享信息、下载）
 		"/web/",

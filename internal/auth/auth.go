@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -33,22 +34,24 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// JWTManager 管理 JWT 签发与验证
+// JWTManager 管理 JWT 签发与验证（RS256 非对称签名：私钥签发，公钥验证）
 type JWTManager struct {
-	secret []byte
-	domain string
-	secure bool
+	privateKey *rsa.PrivateKey
+	publicKey  *rsa.PublicKey
+	domain     string
+	secure     bool
 }
 
-// NewJWTManager 创建 JWT 管理器
-// secret: JWT 签名密钥（至少 32 字节）
+// NewJWTManager 创建 JWT 管理器（RS256 非对称签名）
+// privateKey: RSA 私钥（用于签发 token，绝不外泄）
 // domain: Cookie 的 Domain（如 aistudy.icu）
 // secure: Cookie 是否启用 Secure 标记（HTTPS 时为 true）
-func NewJWTManager(secret, domain string, secure bool) *JWTManager {
+func NewJWTManager(privateKey *rsa.PrivateKey, domain string, secure bool) *JWTManager {
 	return &JWTManager{
-		secret: []byte(secret),
-		domain: domain,
-		secure: secure,
+		privateKey: privateKey,
+		publicKey:  &privateKey.PublicKey,
+		domain:     domain,
+		secure:     secure,
 	}
 }
 
@@ -78,17 +81,17 @@ func (m *JWTManager) GenerateToken(userID, username, role string) (string, error
 			Subject:   userID,
 		},
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(m.secret)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return token.SignedString(m.privateKey)
 }
 
 // ParseToken 解析并验证 JWT token
 func (m *JWTManager) ParseToken(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return m.secret, nil
+		return m.publicKey, nil
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "token is expired") {
@@ -174,29 +177,29 @@ func ValidatePasswordStrength(password string) error {
 
 // GenerateActivationToken 生成 32 字节随机 hex 字符串作为激活令牌
 // 用于注册后通过邮件发送的激活链接 ?token=xxx
-func GenerateActivationToken() string {
+// rand.Read 失败时返回 error，调用方必须处理（不使用可预测的弱兜底值）
+func GenerateActivationToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		// 失败时用时间戳兜底（极端情况，不应发生）
-		return hex.EncodeToString([]byte(time.Now().Format("20060102150405"))) + hex.EncodeToString([]byte("fallbacktoken1234"))
+		return "", fmt.Errorf("generate activation token: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // GenerateResetCode 生成 6 位数字字符串作为密码重置验证码
 // 范围 000000-999999，前导零补齐
-func GenerateResetCode() string {
+// rand.Read 失败时返回 error，调用方必须处理（不使用固定值兜底，避免可预测验证码）
+func GenerateResetCode() (string, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
-		// 失败时返回固定值（极端情况）
-		return "123456"
+		return "", fmt.Errorf("generate reset code: %w", err)
 	}
 	// 把 4 字节转成无符号 32 位整数再对 1000000 取模
 	var num uint32
 	for _, c := range b {
 		num = num<<8 | uint32(c)
 	}
-	return fmt.Sprintf("%06d", num%1000000)
+	return fmt.Sprintf("%06d", num%1000000), nil
 }
 
 // GenerateUsernameFromEmail 从邮箱生成 username

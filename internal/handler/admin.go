@@ -13,12 +13,14 @@ import (
 
 // AdminHandler 处理管理员后台 API（系统统计、用户管理、分享管理）
 type AdminHandler struct {
-	db *store.DB
+	db  *store.DB
+	rsa *auth.RSAKeys // RSA 密钥对，用于解密前端加密的 new_password 字段
 }
 
 // NewAdminHandler 创建管理员 handler
-func NewAdminHandler(db *store.DB) *AdminHandler {
-	return &AdminHandler{db: db}
+// rsaKeys 用于解密重置密码接口前端用公钥加密的 new_password 字段
+func NewAdminHandler(db *store.DB, rsaKeys *auth.RSAKeys) *AdminHandler {
+	return &AdminHandler{db: db, rsa: rsaKeys}
 }
 
 // ServeHTTP 路由分发（所有路由需认证 + admin 权限）
@@ -199,6 +201,15 @@ func (h *AdminHandler) resetUserPassword(w http.ResponseWriter, r *http.Request,
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid_json"}`, http.StatusBadRequest)
 		return
+	}
+	// 解密前端用 RSA 公钥加密的 new_password 字段（不接受明文回退）
+	if h.rsa != nil {
+		decrypted, err := h.rsa.DecryptPassword(req.NewPassword)
+		if err != nil {
+			http.Error(w, `{"error":"password_encryption_required","message":"密码必须经 RSA 加密传输"}`, http.StatusBadRequest)
+			return
+		}
+		req.NewPassword = decrypted
 	}
 	if err := auth.ValidatePasswordStrength(req.NewPassword); err != nil {
 		http.Error(w, `{"error":"weak_password","message":"`+err.Error()+`"}`, http.StatusBadRequest)

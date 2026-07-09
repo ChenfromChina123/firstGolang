@@ -39,10 +39,11 @@
         const password = document.getElementById('password').value;
 
         try {
+            const encryptedPassword = await encryptPassword(password);
             const resp = await fetch('/api/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password }),
+                body: JSON.stringify({ username, password: encryptedPassword }),
                 credentials: 'same-origin'
             });
 

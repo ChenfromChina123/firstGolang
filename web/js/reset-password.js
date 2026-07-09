@@ -55,13 +55,15 @@
         }
 
         try {
+            const encryptedNew = await encryptPassword(password);
+            const encryptedConfirm = await encryptPassword(confirmPassword);
             const resp = await fetch('/api/reset-password', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     email, code,
-                    new_password: password,
-                    confirm_password: confirmPassword
+                    new_password: encryptedNew,
+                    confirm_password: encryptedConfirm
                 }),
                 credentials: 'same-origin'
             });
