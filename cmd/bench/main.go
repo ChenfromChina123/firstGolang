@@ -3,17 +3,21 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const baseURL = "http://localhost:8080"
+// baseURL 通过 -server flag 配置，默认 localhost:8080
+var baseURL = "http://localhost:8080"
 
 type BenchResult struct {
 	Label    string
@@ -26,11 +30,18 @@ type BenchResult struct {
 	P99      time.Duration
 }
 
+// benchmark 在给定并发度下运行 total 次请求 fn，统计 QPS / p50 / p90 / p99 / 错误数。
+// 优化点：
+//   - per-goroutine latency slice：消除全局锁争用（原 latMu 在 1000+ 并发下成为瓶颈）
+//   - channel buffer = concurrency：避免 total=10000 时预分配大 buffer
+//   - sort.Slice 替代 O(n²) 冒泡：10000 样本从 5000 万次比较降到 ~13 万次
+//   - 百分位边界保护：len=0 时不再 panic
 func benchmark(label string, concurrency, total int, fn func(int) error) BenchResult {
 	var errCount int64
 	start := time.Now()
 	var wg sync.WaitGroup
-	ch := make(chan int, total)
+	// buffer = concurrency 足够喂饱所有 worker，避免 total=10000 时浪费 80KB 内存
+	ch := make(chan int, concurrency)
 
 	go func() {
 		for i := 0; i < total; i++ {
@@ -39,31 +50,43 @@ func benchmark(label string, concurrency, total int, fn func(int) error) BenchRe
 		close(ch)
 	}()
 
-	latencies := make([]time.Duration, 0, total)
-	var latMu sync.Mutex
-
+	// per-goroutine latency 收集，无锁
+	perGoroutine := make([][]time.Duration, concurrency)
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
-		go func() {
+		perGoroutine[i] = make([]time.Duration, 0, total/concurrency+16)
+		go func(idx int) {
 			defer wg.Done()
 			for jobID := range ch {
 				t0 := time.Now()
 				if err := fn(jobID); err != nil {
 					atomic.AddInt64(&errCount, 1)
 				}
-				latMu.Lock()
-				latencies = append(latencies, time.Since(t0))
-				latMu.Unlock()
+				perGoroutine[idx] = append(perGoroutine[idx], time.Since(t0))
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 	elapsed := time.Since(start)
 
-	sortDurations(latencies)
-	p50 := latencies[len(latencies)*50/100]
-	p90 := latencies[len(latencies)*90/100]
-	p99 := latencies[len(latencies)*99/100]
+	// 合并 per-goroutine latencies
+	latencies := make([]time.Duration, 0, total)
+	for _, l := range perGoroutine {
+		latencies = append(latencies, l...)
+	}
+
+	// 边界保护：所有请求都失败时 latencies 为空
+	if len(latencies) == 0 {
+		fmt.Printf("  %s: no latency samples (total=%d, err=%d)\n", label, total, errCount)
+		return BenchResult{Label: label, Total: int64(total), Duration: elapsed, Errors: errCount}
+	}
+
+	// O(n log n) 排序
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+
+	p50 := latencies[percentileIndex(len(latencies), 50)]
+	p90 := latencies[percentileIndex(len(latencies), 90)]
+	p99 := latencies[percentileIndex(len(latencies), 99)]
 
 	qps := float64(total) / elapsed.Seconds()
 	fmt.Printf("  %s: %d req / %.2fs = %.0f QPS (err=%d, p50=%s, p90=%s, p99=%s)\n",
@@ -75,36 +98,56 @@ func benchmark(label string, concurrency, total int, fn func(int) error) BenchRe
 	}
 }
 
-func sortDurations(d []time.Duration) {
-	for i := 0; i < len(d); i++ {
-		for j := i + 1; j < len(d); j++ {
-			if d[j] < d[i] {
-				d[i], d[j] = d[j], d[i]
-			}
-		}
+// percentileIndex 计算第 p 百分位的数组索引（0<=p<=100），越界时返回最后一个元素索引。
+func percentileIndex(n, p int) int {
+	if n == 0 {
+		return 0
 	}
+	idx := n * p / 100
+	if idx >= n {
+		idx = n - 1
+	}
+	return idx
 }
 
 func main() {
+	// 支持 -server flag 配置目标服务器
+	flag.StringVar(&baseURL, "server", baseURL, "FileSync server URL")
+	flag.Parse()
+
 	client := &http.Client{
 		Timeout: 120 * time.Second,
 		Transport: &http.Transport{
-			MaxIdleConns:        5000,
-			MaxIdleConnsPerHost: 5000,
-			MaxConnsPerHost:     5000,
+			// Windows 有 10000 线程上限，不能设太高
+			MaxIdleConns:        2000,
+			MaxIdleConnsPerHost: 1000,
+			MaxConnsPerHost:     2000,
 			IdleConnTimeout:     30 * time.Second,
+			DisableKeepAlives:   false,
 		},
 	}
 
-	// Create sessions for read/chunk benchmarks
-	// 失败直接退出，避免后续测试用空 sid 跑出全错误的结果（C3 修复）
-	sidStatus := createSession(client, 1048576, 524288)
-	if sidStatus == "" {
-		log.Fatalf("FATAL: failed to create session for GetUploadStatus (server unreachable or 'bench.dat' conflict)")
+	// warmup 预热连接池，避免冷启动影响第一个 case 的测试结果
+	fmt.Println("Warming up connection pool...")
+	for i := 0; i < 50; i++ {
+		resp, err := client.Get(baseURL + "/api/health")
+		if err != nil {
+			log.Fatalf("FATAL: server unreachable at %s (err: %v)", baseURL, err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
-	sidChunk := createSession(client, 100*1048576, 524288)
+	fmt.Println("Warmup done.")
+
+	// Create sessions for read/chunk benchmarks
+	// Use unique filenames to avoid Redis SISMEMBER conflict with itself
+	sidStatus := createSession(client, "bench_status.dat", 1048576, 524288)
+	if sidStatus == "" {
+		log.Fatalf("FATAL: failed to create session for GetUploadStatus")
+	}
+	sidChunk := createSession(client, "bench_chunk.dat", 100*1048576, 524288)
 	if sidChunk == "" {
-		log.Fatalf("FATAL: failed to create session for UploadChunk (server unreachable or 'bench.dat' conflict)")
+		log.Fatalf("FATAL: failed to create session for UploadChunk")
 	}
 	chunkData := make([]byte, 4096)
 
@@ -120,20 +163,25 @@ func main() {
 	// ============================================================
 	// InitUpload — 高并发重量级测试
 	// ============================================================
-	for _, c := range []int{100, 500, 1000} {
+	// 全局唯一计数器，避免跨 case filename 重复累积 upload_sessions 脏数据
+	var initCounter int64
+	for _, c := range []int{100, 500, 1000, 2000} {
 		total := c * 20
 		if total > 10000 {
 			total = 10000
 		}
 		cases = append(cases, BenchCase{
 			Label: fmt.Sprintf("InitUpload(c=%d)", c), Concurrency: c, Total: total,
-			Fn: func(idx int) error {
-				body := fmt.Sprintf(`{"filename":"init_%d.dat","file_size":1024,"chunk_size":1024}`, idx)
+			Fn: func(int) error {
+				n := atomic.AddInt64(&initCounter, 1) - 1
+				body := fmt.Sprintf(`{"filename":"init_%d.dat","file_size":1024,"chunk_size":1024}`, n)
 				resp, err := client.Post(baseURL+"/api/upload/init", "application/json", bytes.NewReader([]byte(body)))
 				if err != nil {
 					return err
 				}
-				defer resp.Body.Close()
+				// 读取 body 以便连接复用，避免每次都新建 TCP 连接
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
 				if resp.StatusCode != 200 {
 					return fmt.Errorf("status %d", resp.StatusCode)
 				}
@@ -149,7 +197,8 @@ func main() {
 	//   1. 每个 case 用独立 chunkIdx（原代码跨 case 累积，32500 远超 200）
 	//   2. idx mod totalChunks 循环复用，确保不越界，避免污染 chunks 表
 	const uploadChunkTotal = 200 // 100MB / 512KB = 200 chunks
-	for _, c := range []int{50, 200, 500, 1000} {
+	// 并发级别提升到 2000 以测试更高 QPS（Windows 线程上限 10000）
+	for _, c := range []int{50, 200, 500, 1000, 2000} {
 		var chunkIdx int64 // 每个 case 独立计数器，闭包捕获本次迭代的变量
 		total := c * 50
 		if total > 10000 {
@@ -171,7 +220,9 @@ func main() {
 				if err != nil {
 					return err
 				}
-				defer resp.Body.Close()
+				// 读取 body 以便连接复用
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
 				if resp.StatusCode != 200 {
 					return fmt.Errorf("status %d", resp.StatusCode)
 				}
@@ -183,7 +234,7 @@ func main() {
 	// ============================================================
 	// GetUploadStatus — Pipeline 优化测试
 	// ============================================================
-	for _, c := range []int{100, 500, 1000} {
+	for _, c := range []int{100, 500, 1000, 2000} {
 		sid := sidStatus
 		cases = append(cases, BenchCase{
 			Label: fmt.Sprintf("GetUploadStatus(c=%d)", c), Concurrency: c, Total: c * 10,
@@ -192,7 +243,9 @@ func main() {
 				if err != nil {
 					return err
 				}
-				defer resp.Body.Close()
+				// 读取 body 以便连接复用
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
 				if resp.StatusCode != 200 {
 					return fmt.Errorf("status %d", resp.StatusCode)
 				}
@@ -256,19 +309,36 @@ func main() {
 	}
 
 	fmt.Println("\n========== HIGH CONCURRENCY BENCHMARK ==========")
-	fmt.Println("(并发: 100~1000, 目标 QPS: InitUpload 5000+, UploadChunk 10000+, GetUploadStatus 15000+)")
+	fmt.Printf("(server: %s, 并发: 100~2000, 目标: InitUpload 5000+, UploadChunk 10000+, GetUploadStatus 15000+)\n", baseURL)
 	fmt.Println()
 
+	// 收集所有结果用于 JSON 输出
+	results := make([]BenchResult, 0, len(cases))
 	for _, bc := range cases {
 		fmt.Printf("\n--- %s ---\n", bc.Label)
-		benchmark(bc.Label, bc.Concurrency, bc.Total, bc.Fn)
+		r := benchmark(bc.Label, bc.Concurrency, bc.Total, bc.Fn)
+		results = append(results, r)
+	}
+
+	// 输出 JSON 结果到文件，便于跨次对比
+	resultFile := fmt.Sprintf("bench_result_%s.json", time.Now().Format("20060102_150405"))
+	f, err := os.Create(resultFile)
+	if err != nil {
+		log.Printf("warning: failed to write result file: %v", err)
+	} else {
+		json.NewEncoder(f).Encode(map[string]interface{}{
+			"server":  baseURL,
+			"results": results,
+		})
+		f.Close()
+		fmt.Printf("\nResults saved to %s\n", resultFile)
 	}
 
 	fmt.Println("\n=== ALL DONE ===")
 }
 
-func createSession(client *http.Client, fileSize, chunkSize int64) string {
-	body := fmt.Sprintf(`{"filename":"bench.dat","file_size":%d,"chunk_size":%d}`, fileSize, chunkSize)
+func createSession(client *http.Client, filename string, fileSize, chunkSize int64) string {
+	body := fmt.Sprintf(`{"filename":"%s","file_size":%d,"chunk_size":%d}`, filename, fileSize, chunkSize)
 	resp, err := client.Post(baseURL+"/api/upload/init", "application/json", bytes.NewReader([]byte(body)))
 	if err != nil {
 		return ""
