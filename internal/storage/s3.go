@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +9,6 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -245,6 +243,17 @@ func (s *S3Storage) CopyFile(srcPath, dstPath string) error {
 	return nil
 }
 
+// WriteFile 写入文本内容到 S3 对象（用于在线编辑功能）。
+// 使用 PutObject 直接上传，适合小文本文件；存在则覆盖。
+func (s *S3Storage) WriteFile(path string, data io.Reader) (int64, error) {
+	ctx := context.Background()
+	info, err := s.client.PutObject(ctx, s.bucket, path, data, -1, minio.PutObjectOptions{ContentType: "text/plain; charset=utf-8"})
+	if err != nil {
+		return 0, fmt.Errorf("s3 put object %s: %w", path, err)
+	}
+	return info.Size, nil
+}
+
 // StoragePathFor 返回 S3 存储的对象键：ShardPath(fileID, filename)。
 // S3 的 storage_path 是相对 bucket 的对象键，无需拼接 basePath。
 func (s *S3Storage) StoragePathFor(fileID, filename string) string {
@@ -375,142 +384,4 @@ func (s *S3Storage) StatObject(objectKey string) (int64, error) {
 		return 0, fmt.Errorf("stat object %s: %w", objectKey, err)
 	}
 	return info.Size, nil
-}
-
-// === TranscodeCacheStore 接口实现 ===
-// 以下方法实现 TranscodeCacheStore 接口，用于视频 HLS 转码产物的 OSS 缓存。
-// key 规则见 transcode_cache.go 的 HLSPlaylistKey/HLSSegmentKey/HLSTranscodePrefix。
-
-// UploadTranscodeSegment 上传单个 HLS ts 切片到 OSS。
-// 实现 TranscodeCacheStore 接口。size=-1 时由 minio 自动分片上传。
-func (s *S3Storage) UploadTranscodeSegment(ctx context.Context, fileID, quality, segName string, r io.Reader, size int64) error {
-	key := HLSSegmentKey(fileID, quality, segName)
-	_, err := s.client.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{})
-	if err != nil {
-		return fmt.Errorf("s3 upload transcode segment %s: %w", key, err)
-	}
-	return nil
-}
-
-// UploadTranscodePlaylist 上传 m3u8 播放列表到 OSS。
-// 实现 TranscodeCacheStore 接口。上传 m3u8 标志转码产物已完整可用。
-// ContentType 设为 application/vnd.apple.mpegurl 确保浏览器识别为 HLS 播放列表。
-func (s *S3Storage) UploadTranscodePlaylist(ctx context.Context, fileID, quality string, m3u8Data []byte) error {
-	key := HLSPlaylistKey(fileID, quality)
-	_, err := s.client.PutObject(ctx, s.bucket, key, bytes.NewReader(m3u8Data), int64(len(m3u8Data)), minio.PutObjectOptions{
-		ContentType: "application/vnd.apple.mpegurl",
-	})
-	if err != nil {
-		return fmt.Errorf("s3 upload transcode playlist %s: %w", key, err)
-	}
-	return nil
-}
-
-// GetTranscodeSegment 下载单个 ts 切片。
-// 实现 TranscodeCacheStore 接口。调用方需 defer Close 返回的 ReadCloser。
-func (s *S3Storage) GetTranscodeSegment(ctx context.Context, fileID, quality, segName string) (io.ReadCloser, error) {
-	key := HLSSegmentKey(fileID, quality, segName)
-	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("s3 get transcode segment %s: %w", key, err)
-	}
-	return obj, nil
-}
-
-// GetTranscodePlaylist 下载 m3u8 播放列表。
-// 实现 TranscodeCacheStore 接口。调用方需 defer Close 返回的 ReadCloser。
-func (s *S3Storage) GetTranscodePlaylist(ctx context.Context, fileID, quality string) (io.ReadCloser, error) {
-	key := HLSPlaylistKey(fileID, quality)
-	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("s3 get transcode playlist %s: %w", key, err)
-	}
-	return obj, nil
-}
-
-// TranscodeExists 检查指定画质的转码产物是否已完整存在（以 m3u8 是否存在为准）。
-// 实现 TranscodeCacheStore 接口。NoSuchKey 视为不存在，其他错误向上抛。
-func (s *S3Storage) TranscodeExists(ctx context.Context, fileID, quality string) (bool, error) {
-	key := HLSPlaylistKey(fileID, quality)
-	_, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
-	if err != nil {
-		resp, ok := err.(minio.ErrorResponse)
-		if ok && resp.Code == "NoSuchKey" {
-			return false, nil
-		}
-		return false, fmt.Errorf("s3 stat transcode %s: %w", key, err)
-	}
-	return true, nil
-}
-
-// DeleteTranscode 删除指定画质的全部转码产物（m3u8 + 所有 ts 切片）。
-// 实现 TranscodeCacheStore 接口。通过 ListObjects + RemoveObjects 批量删除。
-func (s *S3Storage) DeleteTranscode(ctx context.Context, fileID, quality string) error {
-	prefix := HLSTranscodePrefix(fileID, quality)
-	objectsCh := s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
-		Prefix:    prefix,
-		Recursive: true,
-	})
-	removeCh := make(chan minio.ObjectInfo, 100)
-	go func() {
-		defer close(removeCh)
-		for obj := range objectsCh {
-			if obj.Err != nil {
-				log.Printf("[S3] list transcode for delete error: %v", obj.Err)
-				continue
-			}
-			removeCh <- obj
-		}
-	}()
-	errCh := s.client.RemoveObjects(ctx, s.bucket, removeCh, minio.RemoveObjectsOptions{})
-	for err := range errCh {
-		log.Printf("[S3] delete transcode error for %s: %v", err.ObjectName, err.Err)
-	}
-	return nil
-}
-
-// ListTranscodeByPrefix 按前缀列举转码产物对象（用于清理 worker LRU 策略）。
-// 实现 TranscodeCacheStore 接口。从 key 解析 FileID 和 Quality。
-func (s *S3Storage) ListTranscodeByPrefix(ctx context.Context, prefix string) ([]TranscodeObjectInfo, error) {
-	objectsCh := s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
-		Prefix:    prefix,
-		Recursive: true,
-	})
-	var result []TranscodeObjectInfo
-	for obj := range objectsCh {
-		if obj.Err != nil {
-			return nil, fmt.Errorf("s3 list transcode %s: %w", prefix, obj.Err)
-		}
-		info := TranscodeObjectInfo{
-			Key:          obj.Key,
-			LastModified: obj.LastModified,
-			Size:         obj.Size,
-		}
-		// 从 key 解析 fileID 和 quality：transcoded/{fileID}/{quality}/xxx
-		// 解析失败不报错，保留 Key 供清理 worker 使用
-		trimmed := strings.TrimPrefix(obj.Key, "transcoded/")
-		parts := strings.SplitN(trimmed, "/", 3)
-		if len(parts) >= 2 {
-			info.FileID = parts[0]
-			info.Quality = parts[1]
-		}
-		result = append(result, info)
-	}
-	return result, nil
-}
-
-// PresignedTranscodeURL 生成转码产物的 presigned GET URL。
-// 实现 TranscodeCacheStore 接口。segName 为空返回 m3u8 URL，否则返回 ts 切片 URL。
-func (s *S3Storage) PresignedTranscodeURL(ctx context.Context, fileID, quality, segName string, expiry time.Duration) (string, error) {
-	var key string
-	if segName == "" {
-		key = HLSPlaylistKey(fileID, quality)
-	} else {
-		key = HLSSegmentKey(fileID, quality, segName)
-	}
-	u, err := s.client.PresignedGetObject(ctx, s.bucket, key, expiry, nil)
-	if err != nil {
-		return "", fmt.Errorf("s3 presigned transcode %s: %w", key, err)
-	}
-	return u.String(), nil
 }

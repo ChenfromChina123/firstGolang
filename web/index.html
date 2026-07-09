@@ -113,6 +113,7 @@
                     <!-- 默认操作（选中 0 项时显示） -->
                     <div class="default-ops" id="default-ops">
                         <button class="ghost-btn" id="mkdir-btn">+ 新建目录</button>
+                        <button class="ghost-btn" id="new-file-btn">+ 新建文件</button>
                         <button class="ghost-btn" id="select-mode-btn">多选</button>
                         <button class="ghost-btn" id="share-manage-btn">分享管理</button>
                         <button class="ghost-btn" id="trash-btn">回收站</button>
@@ -186,6 +187,25 @@
             <div class="modal-foot modal-foot-right">
                 <button class="ghost-btn" id="mkdir-cancel">取消</button>
                 <button class="primary-btn" id="mkdir-confirm">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 文件编辑器对话框（新建/编辑文本文件） -->
+    <div class="modal" id="editor-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card" style="max-width:900px;width:90vw">
+            <div class="modal-head">
+                <h3 id="editor-title">新建文件</h3>
+            </div>
+            <div class="modal-input-wrap">
+                <input type="text" id="editor-filename" class="modal-input" placeholder="notes.txt（可含路径如 docs/notes.md）" autocomplete="off" />
+            </div>
+            <div id="editor-container" style="border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden;height:50vh;min-height:300px;background:#0d1117"></div>
+            <div class="modal-foot modal-foot-right">
+                <span id="editor-status" style="margin-right:auto;color:rgba(255,255,255,.5);font-size:13px"></span>
+                <button class="ghost-btn" id="editor-cancel">取消</button>
+                <button class="primary-btn" id="editor-save">保存</button>
             </div>
         </div>
     </div>
@@ -421,11 +441,12 @@
     <div class="ctx-menu" id="ctx-menu" hidden></div>
 
     <!-- Prism.js 代码高亮（按需加载语言包在 app.js 中动态注入） -->
+    <script src="/web/lib/codemirror/codemirror.bundle.js"></script>
     <script src="/web/lib/prism/prism.min.js"></script>
     <!-- marked.js Markdown 渲染（用于 .md 文件预览） -->
     <script src="/web/lib/marked/marked.min.js"></script>
     <!-- hls.js HLS 流式播放（视频转码边转边播） -->
     <script src="/web/lib/hls/hls.min.js"></script>
-    <script src="/web/app.js?v=20260708a"></script>
+    <script src="/web/app.js?v=20260709a"></script>
 </body>
 </html>

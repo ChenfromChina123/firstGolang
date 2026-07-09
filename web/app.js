@@ -31,6 +31,8 @@
         trashDelete: '/api/trash', // 回收站永久删除：/api/trash/{id}（前缀，拼接用）
         preview: '/api/preview', // 文件预览（元数据/缩略图/原始内容流）
         storageUsage: '/api/storage-usage', // 存储用量查询
+        filesCreate: '/api/files/create', // 在线新建文本文件
+        filesContent: '/api/files', // /api/files/{id}/content（前缀，拼接用）
     };
 
     // === 认证：路由守卫 + 401 拦截 ===
@@ -1461,6 +1463,24 @@
      * 根据当前选中项构建上下文菜单项。
      * @returns {Array} 菜单项数组
      */
+    // 可编辑的文本文件扩展名集合
+    const EDITABLE_EXTS = new Set(['txt', 'md', 'markdown', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'py', 'json', 'html', 'htm', 'css', 'scss', 'less', 'go', 'sql', 'yml', 'yaml', 'xml', 'svg', 'sh', 'bash', 'bat', 'ps1', 'log', 'csv', 'ini', 'conf', 'cfg', 'toml', 'env', 'c', 'cpp', 'h', 'hpp', 'java', 'rb', 'php', 'rs', 'swift', 'kt', 'vue', 'properties']);
+
+    /**
+     * 判断文件是否为可编辑的文本文件。
+     * 根据文件扩展名判断，支持常见文本/代码/配置文件类型。
+     * @param {string} filename - 文件名
+     * @returns {boolean}
+     */
+    function isEditableFile(filename) {
+        const lower = filename.toLowerCase();
+        // 无扩展名的常见文本文件名
+        const noExtNames = new Set(['dockerfile', 'makefile', '.gitignore', '.env', 'readme']);
+        if (noExtNames.has(lower)) return true;
+        const ext = (filename.split('.').pop() || '').toLowerCase();
+        return EDITABLE_EXTS.has(ext);
+    }
+
     function buildContextMenuItems() {
         const items = Array.from(selectedItems.values());
         const n = items.length;
@@ -1472,6 +1492,9 @@
             const it = items[0];
             if (it.type === 'file') {
                 menu.push({ label: '预览', action: () => previewFile(it.id, it.filename) });
+                if (isEditableFile(it.filename)) {
+                    menu.push({ label: '编辑', action: () => openEditFile(it.id, it.filename) });
+                }
                 menu.push({ label: '下载', action: () => downloadSelected() });
                 menu.push({ label: '分享', action: () => shareSelected() });
                 menu.push({ label: '重命名 / 移动', action: () => renameSelected() });
@@ -2949,6 +2972,154 @@
         };
     }
 
+    // === 在线文件编辑器（CodeMirror 6）===
+    let cmEditor = null; // CodeMirror 编辑器实例
+    let editingFileId = null; // 当前编辑的文件 ID（null 表示新建文件）
+
+    /**
+     * 打开新建文件编辑器。
+     * 创建一个空的 CodeMirror 编辑器，用户输入文件名和内容后保存。
+     */
+    function openNewFileEditor() {
+        const modal = document.getElementById('editor-modal');
+        const title = document.getElementById('editor-title');
+        const filenameInput = document.getElementById('editor-filename');
+        const container = document.getElementById('editor-container');
+        const status = document.getElementById('editor-status');
+
+        editingFileId = null;
+        title.textContent = '新建文件';
+        filenameInput.value = currentPath; // 默认当前目录前缀
+        filenameInput.disabled = false;
+        status.textContent = '';
+
+        // 创建 CodeMirror 编辑器实例
+        container.innerHTML = '';
+        cmEditor = CodeMirrorEditor.createEditor(container, {
+            content: '',
+            language: 'javascript',
+            onChange: (content) => { status.textContent = `${content.length} 字符`; },
+        });
+
+        modal.hidden = false;
+        filenameInput.focus();
+
+        const saveBtn = document.getElementById('editor-save');
+        const cancelBtn = document.getElementById('editor-cancel');
+        const submit = async () => {
+            const filename = filenameInput.value.trim();
+            if (!filename) { toast('文件名不能为空', 'err'); return; }
+            const content = cmEditor.state.doc.toString();
+            status.textContent = '保存中…';
+            try {
+                const res = await apiFetch(API.filesCreate, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename, content }),
+                });
+                if (res.status === 409) { toast('文件已存在', 'err'); status.textContent = ''; return; }
+                if (res.status === 400) {
+                    const txt = await res.text();
+                    toast(`文件名非法: ${txt}`, 'err'); status.textContent = ''; return;
+                }
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                toast(`文件「${filename}」已创建`, 'ok');
+                cleanup();
+                refreshAfterModify();
+            } catch (e) {
+                toast(`创建文件失败: ${e.message}`, 'err');
+                status.textContent = '';
+            }
+        };
+        const cleanup = () => {
+            modal.hidden = true;
+            if (cmEditor) { cmEditor.destroy(); cmEditor = null; }
+            saveBtn.onclick = null;
+            cancelBtn.onclick = null;
+            editingFileId = null;
+        };
+        cancelBtn.onclick = cleanup;
+        saveBtn.onclick = submit;
+        // Ctrl+S 保存快捷键
+        container.onkeydown = e => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); submit(); }
+        };
+    }
+
+    /**
+     * 打开编辑现有文件。
+     * 从后端加载文件内容到编辑器，保存时更新文件内容。
+     * @param {string} fileId - 文件 ID
+     * @param {string} filename - 文件名（用于确定语法高亮语言和标题）
+     */
+    async function openEditFile(fileId, filename) {
+        const modal = document.getElementById('editor-modal');
+        const title = document.getElementById('editor-title');
+        const filenameInput = document.getElementById('editor-filename');
+        const container = document.getElementById('editor-container');
+        const status = document.getElementById('editor-status');
+
+        editingFileId = fileId;
+        title.textContent = `编辑: ${filename}`;
+        filenameInput.value = filename;
+        filenameInput.disabled = true; // 编辑模式不允许改文件名
+        status.textContent = '加载中…';
+
+        // 从后端加载文件内容
+        try {
+            const res = await apiFetch(`${API.filesContent}/${fileId}/content`);
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const content = await res.text();
+
+            // 创建编辑器实例
+            container.innerHTML = '';
+            cmEditor = CodeMirrorEditor.createEditor(container, {
+                content,
+                language: filename,
+                onChange: (c) => { status.textContent = `${c.length} 字符`; },
+            });
+            status.textContent = `${content.length} 字符`;
+            modal.hidden = false;
+        } catch (e) {
+            toast(`加载文件失败: ${e.message}`, 'err');
+            editingFileId = null;
+            return;
+        }
+
+        const saveBtn = document.getElementById('editor-save');
+        const cancelBtn = document.getElementById('editor-cancel');
+        const submit = async () => {
+            const content = cmEditor.state.doc.toString();
+            status.textContent = '保存中…';
+            try {
+                const res = await apiFetch(`${API.filesContent}/${fileId}/content`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content }),
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                toast(`文件「${filename}」已保存`, 'ok');
+                status.textContent = `${data.size} 字节`;
+            } catch (e) {
+                toast(`保存失败: ${e.message}`, 'err');
+                status.textContent = '';
+            }
+        };
+        const cleanup = () => {
+            modal.hidden = true;
+            if (cmEditor) { cmEditor.destroy(); cmEditor = null; }
+            saveBtn.onclick = null;
+            cancelBtn.onclick = null;
+            editingFileId = null;
+        };
+        cancelBtn.onclick = cleanup;
+        saveBtn.onclick = submit;
+        container.onkeydown = e => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); submit(); }
+        };
+    }
+
     /**
      * 打开移动目录对话框。
      * 后端 MoveDir handler 会批量更新目录下所有文件的 filename 前缀，
@@ -3182,6 +3353,7 @@
 
         // 新建目录
         document.getElementById('mkdir-btn').addEventListener('click', mkdir);
+        document.getElementById('new-file-btn').addEventListener('click', openNewFileEditor);
 
         // 多选模式：进入多选模式，显示 checkbox
         const selectModeBtn = document.getElementById('select-mode-btn');

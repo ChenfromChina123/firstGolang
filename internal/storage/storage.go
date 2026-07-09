@@ -24,6 +24,10 @@ type Storage interface {
 	DeleteTemp(sessionID string) error
 	// ReadFile reads from the completed file at an optional offset
 	ReadFile(path string, offset int64) (io.ReadCloser, error)
+	// WriteFile writes data to a file at the given path, creating or overwriting it.
+	// 用于在线编辑功能：直接写入文本内容到存储（不经分片上传流程）。
+	// path 为后端返回的原始路径（Local=绝对路径，S3=对象键），返回写入字节数。
+	WriteFile(path string, data io.Reader) (int64, error)
 	// FileSize returns the size of a completed file
 	FileSize(path string) (int64, error)
 	// BasePath returns the storage base directory

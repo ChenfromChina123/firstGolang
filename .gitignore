@@ -47,6 +47,10 @@ bench_linux
 tools/minify/node_modules/
 tools/minify/package-lock.json
 
+# CodeMirror 6 打包工具的 node_modules（不入库）
+tools/build-codemirror/node_modules/
+tools/build-codemirror/package-lock.json
+
 # 前端压缩输出（部署前用 node tools/minify/minify.js 生成）
 web/dist/
 

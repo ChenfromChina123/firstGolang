@@ -1990,6 +1990,23 @@ func (db *DB) UpdateFilename(id, newFilename, owner string) error {
 	return err
 }
 
+// UpdateFileMeta 更新文件的 size/hash/updated_at（用于在线编辑保存内容）。
+// owner 为空时表示 admin 操作，不限制 owner；非空时仅更新 owner 匹配的记录。
+func (db *DB) UpdateFileMeta(id string, size int64, hash, owner string) error {
+	if owner == "" {
+		_, err := db.conn.Exec(
+			`UPDATE files SET size = ?, hash = ?, updated_at = ? WHERE id = ?`,
+			size, hash, time.Now().Format(time.RFC3339), id,
+		)
+		return err
+	}
+	_, err := db.conn.Exec(
+		`UPDATE files SET size = ?, hash = ?, updated_at = ? WHERE id = ? AND owner = ?`,
+		size, hash, time.Now().Format(time.RFC3339), id, owner,
+	)
+	return err
+}
+
 // === 分享链接 CRUD ===
 
 // CreateShare 创建分享记录。s.ID 由调用方生成（8 字符短 ID）。

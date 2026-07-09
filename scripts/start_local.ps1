@@ -45,6 +45,8 @@ if (-not [Environment]::GetEnvironmentVariable('S3_ENDPOINT', 'Process')) {
 # Required env vars for local test (override .env)
 [Environment]::SetEnvironmentVariable('PORT', '8080', 'Process')
 [Environment]::SetEnvironmentVariable('DOMAIN', '', 'Process')
+# Referer 白名单：本地 HTTP 模式下 DOMAIN 为空，需手动添加 localhost 避免 403
+[Environment]::SetEnvironmentVariable('ALLOWED_REFERERS', 'localhost:8080,127.0.0.1:8080', 'Process')
 [Environment]::SetEnvironmentVariable('DATA_DIR', './data_local_oss', 'Process')
 [Environment]::SetEnvironmentVariable('WEB_DIR', './web', 'Process')
 [Environment]::SetEnvironmentVariable('JWT_SECRET', 'local_test_jwt_secret_for_oss_validation_only', 'Process')

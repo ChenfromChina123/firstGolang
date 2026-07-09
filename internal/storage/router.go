@@ -134,3 +134,9 @@ func (r *Router) DeleteTemp(sessionID string) error {
 func (r *Router) StoragePathFor(fileID, filename string) string {
 	return r.local.StoragePathFor(fileID, filename)
 }
+
+// WriteFile 委托 local 后端写入文本内容（用于在线编辑功能）。
+// 在线创建/编辑的文本文件固定存 local 存储，不经由 Router 按前缀路由。
+func (r *Router) WriteFile(path string, data io.Reader) (int64, error) {
+	return r.local.WriteFile(path, data)
+}

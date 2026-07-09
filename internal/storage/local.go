@@ -280,6 +280,20 @@ func (s *LocalStorage) CopyFile(srcPath, dstPath string) error {
 	return nil
 }
 
+// WriteFile 写入文本内容到指定路径，创建或覆盖文件（用于在线编辑功能）。
+// 自动创建父目录，原子写入（os.Create 截断写入）。
+func (s *LocalStorage) WriteFile(path string, data io.Reader) (int64, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return 0, fmt.Errorf("create parent dir: %w", err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return 0, fmt.Errorf("create file: %w", err)
+	}
+	defer f.Close()
+	return io.Copy(f, data)
+}
+
 // StoragePathFor 返回 Local 存储的完整绝对路径：basePath + ShardPath(fileID, filename)。
 func (s *LocalStorage) StoragePathFor(fileID, filename string) string {
 	return filepath.Join(s.basePath, ShardPath(fileID, filename))
