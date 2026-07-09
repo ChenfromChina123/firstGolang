@@ -1,14 +1,14 @@
-"""部署视频预览控件到生产服务器（原生 controls + 自定义 buffer 进度条）.
+"""部署视频预览控件到生产服务器（仅原生 controls，移除自定义进度条）.
 
 上传 web/style.css、web/share.html、web/share.js 到 /opt/filesync/web/，
 并通过 HTTPS 验证文件可访问（200）且版本号正确。
 
 最终方案（经多轮用户确认）：
-- video 保留原生 controls（全屏/音量/播放/原生进度条）
-- video 下方新增自定义 buffer 进度条作为补充（buffer 范围可视化 + played 位置 + 时间 + 鼠标/触摸拖动 seek）
+- video 仅使用原生 controls（全屏/音量/播放/原生进度条）
+- 移除自定义 buffer 进度条 DOM/逻辑/样式（用户要求只用原生默认进度条）
 - 保留 loading/error 覆盖层（seek 缓冲时提示）
 - audio 保留原生 controls 不变
-- 版本号升级到 v=20260722 防缓存
+- 版本号升级到 v=20260723 防缓存
 """
 import sys
 import os
@@ -24,7 +24,7 @@ PASSWORD = '***REMOVED_SSH_PASSWORD***'
 LOCAL_WEB = r'd:\STUDY\GO\StudyGolang\firstGolang\filesync\web'
 REMOTE_WEB = '/opt/filesync/web'
 
-# 本次需要上传的文件（进度条 DOM + 样式 + 逻辑 + 版本号升级）
+# 本次需要上传的文件（移除进度条 DOM + 样式 + 逻辑 + 版本号升级）
 FILES = ['style.css', 'share.html', 'share.js']
 
 
@@ -91,8 +91,8 @@ def main():
     # 通过 HTTPS 验证生产可访问且版本号正确
     print('=== HTTPS 验证 ===')
     verify_cmd = (
-        'curl -sI "https://aistudy.icu/web/style.css?v=20260722" | head -1; '
-        'curl -sI "https://aistudy.icu/web/share.js?v=20260722" | head -1; '
+        'curl -sI "https://aistudy.icu/web/style.css?v=20260723" | head -1; '
+        'curl -sI "https://aistudy.icu/web/share.js?v=20260723" | head -1; '
         'curl -sI "https://aistudy.icu/web/share.html" | head -1; '
         'curl -s "https://aistudy.icu/web/share.html" | grep -E "style\\.css\\?v=|share\\.js\\?v=" | head -5'
     )
