@@ -1,0 +1,1082 @@
+openapi: 3.1.0
+
+info:
+  title: FileSync API
+  version: 1.0.0
+  description: |
+    FileSync 是一个支持**分片上传**和**断点续传**的文件同步服务。
+
+    ## 认证方式
+
+    所有受保护端点（除 `/api/login`, `/api/logout`, `/api/health`, `/web/` 外）均需携带 JWT HttpOnly Cookie。
+
+    - Cookie 名称: `filesync_token`
+    - HttpOnly: true
+    - SameSite: Strict
+    - 有效期: 24 小时
+
+    ## 文件名路径规则（路径枚举）
+
+    - `/` 作为虚拟目录分隔符（如 `docs/report.pdf`）
+    - 禁止以 `/` 开头
+    - 禁止 `..` 路径段
+    - 禁止反斜杠 `\`
+    - 禁止连续 `//`
+    - 长度 1~1024 字节
+
+  contact:
+    name: FileSync Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: 本地开发环境
+  - url: https://your-domain.com
+    description: 生产环境（HTTPS）
+
+tags:
+  - name: 系统
+    description: 系统状态和认证
+  - name: 上传
+    description: 分片上传相关端点
+  - name: 下载
+    description: 文件下载端点
+  - name: 文件管理
+    description: 文件列表、查询、删除和管理
+
+paths:
+  # =========================================================
+  # 健康检查
+  # =========================================================
+  /api/health:
+    get:
+      tags:
+        - 系统
+      summary: 健康检查
+      description: 检查服务运行状态和 Redis 连接状态。
+      security: []
+      responses:
+        '200':
+          description: 服务正常运行
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/HealthResponseRedis'
+                  - $ref: '#/components/schemas/HealthResponseNoRedis'
+              examples:
+                redis_enabled:
+                  summary: Redis 已启用
+                  value:
+                    healthy: true
+                    fail_count: 0
+                    max_retries: 3
+                    ping_interval: "5s"
+                    service: "filesync"
+                redis_disabled:
+                  summary: Redis 未启用
+                  value:
+                    status: "ok"
+                    service: "filesync"
+                    redis: "disabled"
+
+  # =========================================================
+  # 登录
+  # =========================================================
+  /api/login:
+    post:
+      tags:
+        - 系统
+      summary: 用户登录
+      description: 用户登录，成功后设置 JWT HttpOnly Cookie。速率限制: 5 次/分钟/IP。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              username: "admin"
+              password: "changeme123"
+      responses:
+        '200':
+          description: 登录成功，设置 Cookie
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: "filesync_token=eyJhbGciOiJIUzI1NiIs...; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: 认证失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "invalid_credentials"
+                message: "invalid username or password"
+        '429':
+          description: 请求过于频繁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "rate_limited"
+                message: "too many login attempts, try again later"
+
+  # =========================================================
+  # 登出
+  # =========================================================
+  /api/logout:
+    post:
+      tags:
+        - 系统
+      summary: 用户登出
+      description: 清除 JWT Cookie，结束当前会话。
+      security: []
+      responses:
+        '200':
+          description: 登出成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+
+  # =========================================================
+  # 当前用户
+  # =========================================================
+  /api/me:
+    get:
+      tags:
+        - 系统
+      summary: 当前用户信息
+      description: 获取当前登录用户的信息。
+      responses:
+        '200':
+          description: 用户信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: string
+                    description: 用户 ID
+                    example: "a1b2c3d4e5f678901234567890abcdef"
+                  username:
+                    type: string
+                    description: 用户名
+                    example: "admin"
+                  role:
+                    type: string
+                    description: 角色
+                    enum: [admin, user]
+                    example: "admin"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # =========================================================
+  # 初始化上传
+  # =========================================================
+  /api/upload/init:
+    post:
+      tags:
+        - 上传
+      summary: 初始化上传
+      description: |
+        创建一个新的分片上传会话。
+
+        如果文件名已存在，返回 409 Conflict。支持通过查询参数 `?force=true` 强制覆盖或 `?rename=true` 自动重命名。
+
+        支持断点续传（Resumable Upload）：如果 `file_hash` 匹配已有 active session，则复用该 session，避免重复上传已传分片。
+      parameters:
+        - name: force
+          in: query
+          description: 强制覆盖已有文件（跳过冲突检查）
+          schema:
+            type: string
+            enum: [true]
+          example: "true"
+        - name: rename
+          in: query
+          description: 自动重命名新文件（避免冲突）
+          schema:
+            type: string
+            enum: [true]
+          example: "true"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitUploadRequest'
+            example:
+              filename: "photo.jpg"
+              file_size: 10485760
+              chunk_size: 524288
+              file_hash: "e3b0c44298fc1c149afbf4c8996fb924..."
+              storage: "local"
+      responses:
+        '200':
+          description: 初始化成功（或复用已有 session）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InitUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: 文件名冲突
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictResponse'
+        '429':
+          description: 并发 InitUpload 超过限制（Redis 模式下限流 1000 并发）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "too many concurrent init uploads"
+
+  # =========================================================
+  # 上传分片
+  # =========================================================
+  /api/upload/chunk:
+    post:
+      tags:
+        - 上传
+      summary: 上传分片
+      description: |
+        上传单个文件分片。使用 `multipart/form-data` 格式。
+
+        幂等设计：同一分片重复上传返回相同成功响应，不会产生重复记录。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - session_id
+                - chunk_index
+                - chunk_data
+              properties:
+                session_id:
+                  type: string
+                  description: 上传会话 ID
+                  example: "a1b2c3d4e5f678901234567890abcdef"
+                chunk_index:
+                  type: integer
+                  description: 分片序号（从 0 开始）
+                  minimum: 0
+                  example: 0
+                chunk_data:
+                  type: string
+                  format: binary
+                  description: 分片二进制数据
+      responses:
+        '200':
+          description: 分片上传成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadChunkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Session 未找到
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "session not found"
+        '409':
+          description: Session 不是 active 状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "session is not active"
+
+  # =========================================================
+  # 查询上传进度
+  # =========================================================
+  /api/upload/status:
+    get:
+      tags:
+        - 上传
+      summary: 查询上传进度
+      description: |
+        查询指定上传会话的进度，返回已接收和缺失的分片列表。用于断点续传恢复。
+      parameters:
+        - name: session_id
+          in: query
+          required: true
+          description: 上传会话 ID
+          schema:
+            type: string
+          example: "a1b2c3d4e5f678901234567890abcdef"
+      responses:
+        '200':
+          description: 上传进度
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadStatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Session 未找到
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "session not found"
+
+  # =========================================================
+  # 完成上传
+  # =========================================================
+  /api/upload/complete:
+    post:
+      tags:
+        - 上传
+      summary: 完成上传
+      description: |
+        将所有已上传的分片合并为完整文件。完成后清理临时分片数据。
+
+        Redis 模式下使用分布式锁防止并发合并。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - session_id
+              properties:
+                session_id:
+                  type: string
+                  description: 上传会话 ID
+                  example: "a1b2c3d4e5f678901234567890abcdef"
+      responses:
+        '200':
+          description: 合并成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompleteUploadResponse'
+        '400':
+          description: 分片未全部接收
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "not all chunks received: 15/20"
+        '404':
+          description: Session 未找到
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "session not found"
+        '409':
+          description: 合并正在进行中
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "assembly already in progress"
+
+  # =========================================================
+  # 下载文件
+  # =========================================================
+  /api/download/{fileID}:
+    get:
+      tags:
+        - 下载
+      summary: 下载文件
+      description: |
+        下载已完成文件。支持 HTTP Range 请求头实现断点续传。
+
+        完整文件下载返回 200，范围请求返回 206 Partial Content。
+      parameters:
+        - name: fileID
+          in: path
+          required: true
+          description: 文件 ID
+          schema:
+            type: string
+          example: "abc123def456..."
+        - name: Range
+          in: header
+          description: HTTP 范围请求（可选），格式: `bytes=<start>-<end>`
+          schema:
+            type: string
+            pattern: "^bytes=\\d+-\\d*$"
+          example: "bytes=1024-"
+      responses:
+        '200':
+          description: 完整文件下载
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              example: 'attachment; filename="photo.jpg"'
+            Content-Type:
+              schema:
+                type: string
+              example: application/octet-stream
+            Accept-Ranges:
+              schema:
+                type: string
+              example: bytes
+            Content-Length:
+              schema:
+                type: integer
+              example: 10485760
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: 部分内容（范围请求）
+          headers:
+            Content-Range:
+              schema:
+                type: string
+              example: "bytes 1024-10485759/10485760"
+            Content-Length:
+              schema:
+                type: integer
+              example: 10484736
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '416':
+          description: 范围无法满足
+          headers:
+            Content-Range:
+              schema:
+                type: string
+              example: "bytes */10485760"
+
+  # =========================================================
+  # ZIP 下载目录
+  # =========================================================
+  /api/download/dir:
+    get:
+      tags:
+        - 下载
+      summary: ZIP 打包下载目录
+      description: 将指定虚拟目录下的所有文件递归打包为 ZIP 流式下载。自动过滤 .keep 占位文件。
+      parameters:
+        - name: prefix
+          in: query
+          required: true
+          description: 虚拟目录路径前缀
+          schema:
+            type: string
+          example: "docs/"
+      responses:
+        '200':
+          description: ZIP 文件流
+          headers:
+            Content-Type:
+              schema:
+                type: string
+              example: application/zip
+            Content-Disposition:
+              schema:
+                type: string
+              example: 'attachment; filename="docs.zip"'
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: 目录为空或不存在
+
+  # =========================================================
+  # 文件列表
+  # =========================================================
+  /api/files:
+    get:
+      tags:
+        - 文件管理
+      summary: 文件列表
+      description: |
+        列出所有已完成文件。支持按虚拟目录前缀递归过滤。
+        通过 `?prefix=docs/` 查询 docs/ 目录下所有文件。
+      parameters:
+        - name: prefix
+          in: query
+          description: 虚拟目录路径前缀（可选，递归匹配子目录）
+          schema:
+            type: string
+          example: "docs/"
+      responses:
+        '200':
+          description: 文件列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FileInfoResponse'
+
+    delete:
+      tags:
+        - 文件管理
+      summary: 删除目录（递归）
+      description: 递归删除指定前缀下的所有文件及其存储文件。
+      parameters:
+        - name: prefix
+          in: query
+          required: true
+          description: 虚拟目录路径前缀
+          schema:
+            type: string
+          example: "docs/"
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    example: true
+                  prefix:
+                    type: string
+                    example: "docs/"
+                  files_deleted:
+                    type: integer
+                    example: 5
+                  storage_errors:
+                    type: integer
+                    example: 0
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  # =========================================================
+  # 文件详情 / 删除文件
+  # =========================================================
+  /api/files/{fileID}:
+    get:
+      tags:
+        - 文件管理
+      summary: 文件详情
+      description: 获取单个文件的详细信息。
+      parameters:
+        - name: fileID
+          in: path
+          required: true
+          description: 文件 ID
+          schema:
+            type: string
+          example: "abc123def456..."
+      responses:
+        '200':
+          description: 文件信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileInfoResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - 文件管理
+      summary: 删除文件
+      description: 删除单个文件（包含存储文件和数据库记录）。空的父目录会被递归清理。
+      parameters:
+        - name: fileID
+          in: path
+          required: true
+          description: 文件 ID
+          schema:
+            type: string
+          example: "abc123def456..."
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+                    example: true
+                  id:
+                    type: string
+                    example: "abc123def456..."
+                  filename:
+                    type: string
+                    example: "photo.jpg"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # =========================================================
+  # 新建目录
+  # =========================================================
+  /api/files/mkdir:
+    post:
+      tags:
+        - 文件管理
+      summary: 新建虚拟目录
+      description: |
+        创建一个虚拟目录（通过创建 .keep 占位文件实现）。
+        前端和 ZIP 打包会自动过滤 .keep 文件，用户不可见。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - path
+              properties:
+                path:
+                  type: string
+                  description: 目录路径（末尾自动补 /）
+                  example: "docs/sub/"
+      responses:
+        '201':
+          description: 目录创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created:
+                    type: boolean
+                    example: true
+                  path:
+                    type: string
+                    example: "docs/sub/"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: 目录已存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "directory already exists"
+
+  # =========================================================
+  # 重命名
+  # =========================================================
+  /api/files/rename:
+    post:
+      tags:
+        - 文件管理
+      summary: 重命名/移动文件
+      description: |
+        重命名文件或移动到其他虚拟目录。仅修改 filename 字段，不移动物理存储文件。
+
+        通过修改 filename 路径前缀实现文件移动到其他目录。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - id
+                - new_filename
+              properties:
+                id:
+                  type: string
+                  description: 文件 ID
+                  example: "abc123def456..."
+                new_filename:
+                  type: string
+                  description: 新文件名（含虚拟目录路径）
+                  example: "docs/renamed_report.pdf"
+      responses:
+        '200':
+          description: 重命名成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  renamed:
+                    type: boolean
+                    example: true
+                  id:
+                    type: string
+                    example: "abc123def456..."
+                  old_filename:
+                    type: string
+                    example: "report.pdf"
+                  new_filename:
+                    type: string
+                    example: "docs/renamed_report.pdf"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 目标文件名已存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "file 'docs/renamed_report.pdf' already exists"
+
+components:
+  schemas:
+    # =========================================
+    # 认证相关
+    # =========================================
+    LoginRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          description: 用户名
+          example: "admin"
+        password:
+          type: string
+          description: 密码
+          example: "changeme123"
+
+    LoginResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        username:
+          type: string
+          example: "admin"
+        role:
+          type: string
+          enum: [admin, user]
+          example: "admin"
+
+    # =========================================
+    # 上传相关
+    # =========================================
+    InitUploadRequest:
+      type: object
+      required:
+        - filename
+        - file_size
+      properties:
+        filename:
+          type: string
+          description: 文件名（支持 / 虚拟目录）
+          example: "photo.jpg"
+        file_size:
+          type: integer
+          format: int64
+          description: 文件总大小（字节）
+          minimum: 1
+          example: 10485760
+        chunk_size:
+          type: integer
+          format: int64
+          description: 分片大小（字节）
+          default: 524288
+          example: 524288
+        file_hash:
+          type: string
+          description: 客户端预计算的 SHA256（可选，用于断点续传匹配）
+          example: "e3b0c44298fc1c149afbf4c8996fb924..."
+        storage:
+          type: string
+          description: 存储后端
+          enum: [local, s3]
+          default: local
+          example: "local"
+
+    InitUploadResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+          description: 上传会话 ID（32 字符 hex）
+          example: "a1b2c3d4e5f678901234567890abcdef"
+        filename:
+          type: string
+          example: "photo.jpg"
+        chunk_size:
+          type: integer
+          format: int64
+          example: 524288
+        total_chunks:
+          type: integer
+          description: 总分片数
+          example: 20
+        storage_type:
+          type: string
+          enum: [local, s3]
+          example: "local"
+
+    ConflictResponse:
+      type: object
+      properties:
+        conflict:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "file 'photo.jpg' already exists"
+        strategies:
+          type: array
+          items:
+            type: string
+            enum: [skip, overwrite, rename]
+          example: ["skip", "overwrite", "rename"]
+        existing:
+          $ref: '#/components/schemas/FileInfoResponse'
+
+    UploadChunkResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+          example: "a1b2c3d4e5f678901234567890abcdef"
+        chunk_index:
+          type: integer
+          example: 0
+        received:
+          type: boolean
+          example: true
+
+    UploadStatusResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+          example: "a1b2c3d4e5f678901234567890abcdef"
+        filename:
+          type: string
+          example: "photo.jpg"
+        file_size:
+          type: integer
+          format: int64
+          example: 10485760
+        chunk_size:
+          type: integer
+          format: int64
+          example: 524288
+        total_chunks:
+          type: integer
+          example: 20
+        received_chunks:
+          type: array
+          items:
+            type: integer
+          example: [0, 1, 2, 3]
+        missing_chunks:
+          type: array
+          items:
+            type: integer
+          example: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        progress:
+          type: string
+          description: 进度百分比
+          example: "20.0%"
+        status:
+          type: string
+          enum: [active, completed, cancelled]
+          example: "active"
+
+    CompleteUploadResponse:
+      type: object
+      properties:
+        file_id:
+          type: string
+          description: 文件 ID
+          example: "file-abc-def-456-789"
+        filename:
+          type: string
+          example: "photo.jpg"
+        size:
+          type: integer
+          format: int64
+          example: 10485760
+        hash:
+          type: string
+          description: SHA256 校验值
+          example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        storage_path:
+          type: string
+          description: 存储路径
+          example: "ab/cd/abcdef1234567890.jpg"
+
+    # =========================================
+    # 文件相关
+    # =========================================
+    FileInfoResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "abc123def456..."
+        filename:
+          type: string
+          example: "photo.jpg"
+        size:
+          type: integer
+          format: int64
+          example: 10485760
+        hash:
+          type: string
+          example: "e3b0c44298fc1c149afbf4c8996fb924..."
+        storage_path:
+          type: string
+          example: "ab/cd/abc123def456....jpg"
+        storage_type:
+          type: string
+          enum: [local, s3]
+          example: "local"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-07-05T10:30:00Z"
+
+    # =========================================
+    # 通用错误
+    # =========================================
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: 错误码
+          example: "bad_request"
+        message:
+          type: string
+          description: 错误描述
+          example: "filename is required"
+
+    # =========================================
+    # 健康检查
+    # =========================================
+    HealthResponseRedis:
+      type: object
+      properties:
+        healthy:
+          type: boolean
+          example: true
+        fail_count:
+          type: integer
+          example: 0
+        max_retries:
+          type: integer
+          example: 3
+        ping_interval:
+          type: string
+          example: "5s"
+        service:
+          type: string
+          example: "filesync"
+
+    HealthResponseNoRedis:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        service:
+          type: string
+          example: "filesync"
+        redis:
+          type: string
+          example: "disabled"
+
+  # =========================================
+  # 响应复用
+  # =========================================
+  responses:
+    BadRequest:
+      description: 请求参数错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "bad_request"
+            message: "invalid request format"
+
+    Unauthorized:
+      description: 未认证或认证失败
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "unauthorized"
+            message: "login required"
+
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "not_found"
+            message: "resource not found"
+
+  # =========================================
+  # 安全方案
+  # =========================================
+  securitySchemes:
+    CookieAuth:
+      type: apiKey
+      in: cookie
+      name: filesync_token
+      description: |
+        JWT HttpOnly Cookie，登录成功后自动设置。
+        有效期: 24 小时。
+
+security:
+  - CookieAuth: []

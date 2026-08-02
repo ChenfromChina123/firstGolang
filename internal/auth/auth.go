@@ -108,7 +108,13 @@ func (m *JWTManager) ParseToken(tokenString string) (*Claims, error) {
 }
 
 // SetAuthCookie 将 JWT token 设置到 HttpOnly Cookie
+// 开发环境（HTTP）使用 SameSite=Lax，允许跨端口 Cookie 发送（localhost:8888 → localhost:8080）
+// 生产环境（HTTPS）使用 SameSite=Strict，最大化安全
 func (m *JWTManager) SetAuthCookie(w http.ResponseWriter, token string) {
+	sameSite := http.SameSiteStrictMode
+	if !m.secure {
+		sameSite = http.SameSiteLaxMode
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    token,
@@ -117,12 +123,17 @@ func (m *JWTManager) SetAuthCookie(w http.ResponseWriter, token string) {
 		MaxAge:   int(TokenExpiry.Seconds()),
 		HttpOnly: true,
 		Secure:   m.secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: sameSite,
 	})
 }
 
 // ClearAuthCookie 清除认证 Cookie（登出时调用）
+// SameSite 策略与 SetAuthCookie 保持一致
 func (m *JWTManager) ClearAuthCookie(w http.ResponseWriter) {
+	sameSite := http.SameSiteStrictMode
+	if !m.secure {
+		sameSite = http.SameSiteLaxMode
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    "",
@@ -131,7 +142,7 @@ func (m *JWTManager) ClearAuthCookie(w http.ResponseWriter) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   m.secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: sameSite,
 	})
 }
 

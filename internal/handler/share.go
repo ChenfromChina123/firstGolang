@@ -1432,3 +1432,46 @@ func generateUniqueFilename(filename, owner string, db *store.DB) string {
 	// 兜底：用时间戳
 	return fmt.Sprintf("%s_%d%s", base, time.Now().Unix(), ext)
 }
+
+
+// ==================== FileSvc 微服务兼容方法 ====================
+
+// CreateShareCompat 适配 FileSvc 的 /api/shares 端点。
+// 内部调用 ShareHandler 的 createShare(username)，避免暴露非导出方法。
+func (h *ShareHandler) CreateShareCompat(w http.ResponseWriter, r *http.Request, username string) {
+	if username == "" {
+		// 网关透传模式下，X-Auth-Username 可能为空，用 X-Auth-User-ID 兜底
+		username = r.Header.Get("X-Auth-User-ID")
+	}
+	if username == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	h.createShare(w, r, username)
+}
+
+// GetShareInfoCompat 适配 FileSvc 的 /api/shares/{id} 端点。
+// 内部调用 getSharePublic。
+func (h *ShareHandler) GetShareInfoCompat(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Path
+	id := strings.TrimPrefix(p, "/api/shares/")
+	id = strings.Trim(id, "/")
+	if id == "" {
+		// 没有 id → 返回用户自己的分享列表（需要用户名）
+		username := r.Header.Get("X-Auth-Username")
+		if username == "" {
+			username = r.Header.Get("X-Auth-User-ID")
+		}
+		if username == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		h.listShares(w, r, username)
+		return
+	}
+	h.getSharePublic(w, r, id)
+}

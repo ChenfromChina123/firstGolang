@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="FileSync - 安全可靠的文件同步云存储服务，支持分片上传、断点续传、秒传、分享链接、回收站、压缩包在线解压">
+    <title>FileSync · 安全云存储与文件同步服务</title>
+    <link rel="icon" href="/web/img/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/web/img/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/style.css?v=20260714">
+    <style>
+        /* === 介绍页专用样式 === */
+        body { background: var(--bg-0); color: var(--fg-1); font-family: var(--sans); }
+
+        /* Hero 区域 */
+        .hero {
+            position: relative;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 80px 24px 60px;
+            overflow: hidden;
+        }
+        .hero-bg {
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(ellipse at 20% 30%, rgba(0, 217, 255, 0.12) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 70%, rgba(63, 185, 80, 0.08) 0%, transparent 50%),
+                var(--bg-0);
+            z-index: 0;
+        }
+        .hero-bg::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(var(--border-soft) 1px, transparent 1px),
+                linear-gradient(90deg, var(--border-soft) 1px, transparent 1px);
+            background-size: 48px 48px;
+            opacity: 0.3;
+            mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%);
+            -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 80%);
+        }
+        .hero-content {
+            position: relative;
+            z-index: 1;
+            max-width: 900px;
+        }
+        .hero-logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 24px;
+            filter: drop-shadow(0 0 24px var(--accent-glow));
+            animation: float 4s ease-in-out infinite;
+        }
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+        .hero-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            background: var(--accent-dim);
+            border: 1px solid var(--accent-glow);
+            border-radius: 999px;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--accent);
+            letter-spacing: 2px;
+            margin-bottom: 20px;
+        }
+        .hero h1 {
+            font-family: var(--sans);
+            font-weight: 800;
+            font-size: clamp(40px, 8vw, 72px);
+            color: var(--fg-0);
+            letter-spacing: -1px;
+            margin-bottom: 16px;
+            line-height: 1.1;
+        }
+        .hero h1 .accent {
+            background: linear-gradient(135deg, var(--accent) 0%, var(--ok) 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .hero-sub {
+            font-family: var(--mono);
+            font-size: clamp(13px, 2vw, 16px);
+            color: var(--fg-2);
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+        .hero-tagline {
+            font-family: var(--sans);
+            font-size: clamp(16px, 3vw, 20px);
+            color: var(--fg-1);
+            margin-bottom: 40px;
+            line-height: 1.6;
+        }
+        .hero-cta {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .cta-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 32px;
+            border-radius: var(--radius);
+            font-family: var(--sans);
+            font-weight: 600;
+            font-size: 15px;
+            text-decoration: none;
+            transition: all 0.2s;
+            cursor: pointer;
+            border: 1px solid transparent;
+        }
+        .cta-primary {
+            background: var(--accent);
+            color: var(--bg-0);
+            box-shadow: 0 0 24px var(--accent-glow);
+        }
+        .cta-primary:hover {
+            background: #33e0ff;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 32px var(--accent-glow);
+        }
+        .cta-secondary {
+            background: transparent;
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+        .cta-secondary:hover {
+            background: var(--accent-dim);
+            transform: translateY(-2px);
+        }
+        .hero-stats {
+            display: flex;
+            gap: 40px;
+            justify-content: center;
+            margin-top: 60px;
+            flex-wrap: wrap;
+        }
+        .hero-stat {
+            text-align: center;
+        }
+        .hero-stat-value {
+            font-family: var(--mono);
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .hero-stat-label {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--fg-3);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-top: 4px;
+        }
+
+        /* 通用 section */
+        .section {
+            position: relative;
+            z-index: 1;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 80px 24px;
+        }
+        .section-head {
+            text-align: center;
+            margin-bottom: 56px;
+        }
+        .section-tag {
+            display: inline-block;
+            padding: 4px 12px;
+            background: var(--accent-dim);
+            border: 1px solid var(--accent-glow);
+            border-radius: 999px;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--accent);
+            letter-spacing: 2px;
+            margin-bottom: 16px;
+        }
+        .section-head h2 {
+            font-family: var(--sans);
+            font-weight: 700;
+            font-size: clamp(28px, 5vw, 40px);
+            color: var(--fg-0);
+            margin-bottom: 12px;
+            letter-spacing: -0.5px;
+        }
+        .section-head p {
+            font-size: 16px;
+            color: var(--fg-2);
+            max-width: 600px;
+            margin: 0 auto;
+            line-height: 1.6;
+        }
+
+        /* 功能卡片网格 */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        .feature-card {
+            background: var(--bg-1);
+            border: 1px solid var(--border-soft);
+            border-radius: var(--radius);
+            padding: 28px;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .feature-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-4px);
+            box-shadow: 0 8px 32px rgba(0, 217, 255, 0.1);
+        }
+        .feature-card:hover::before {
+            opacity: 1;
+        }
+        .feature-icon {
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--accent-dim);
+            border: 1px solid var(--accent-glow);
+            border-radius: 10px;
+            margin-bottom: 16px;
+            color: var(--accent);
+        }
+        .feature-card h3 {
+            font-family: var(--sans);
+            font-size: 17px;
+            font-weight: 600;
+            color: var(--fg-0);
+            margin-bottom: 8px;
+        }
+        .feature-card p {
+            font-size: 13px;
+            color: var(--fg-2);
+            line-height: 1.7;
+        }
+        .feature-meta {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+        .feature-meta span {
+            font-family: var(--mono);
+            font-size: 10px;
+            padding: 2px 8px;
+            background: var(--bg-2);
+            border: 1px solid var(--border-soft);
+            border-radius: 3px;
+            color: var(--fg-3);
+            letter-spacing: 0.5px;
+        }
+
+        /* 安全特性区 */
+        .security-section {
+            background: linear-gradient(180deg, transparent, rgba(0, 217, 255, 0.03), transparent);
+        }
+        .security-score {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 40px;
+        }
+        .score-card {
+            text-align: center;
+            padding: 32px 48px;
+            background: var(--bg-1);
+            border: 1px solid var(--accent-glow);
+            border-radius: var(--radius);
+            box-shadow: 0 0 40px rgba(0, 217, 255, 0.1);
+        }
+        .score-value {
+            font-family: var(--mono);
+            font-size: 56px;
+            font-weight: 700;
+            color: var(--ok);
+            line-height: 1;
+        }
+        .score-label {
+            font-family: var(--mono);
+            font-size: 12px;
+            color: var(--fg-3);
+            letter-spacing: 2px;
+            margin-top: 8px;
+            text-transform: uppercase;
+        }
+        .security-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 16px;
+        }
+        .security-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 16px;
+            background: var(--bg-1);
+            border: 1px solid var(--border-soft);
+            border-radius: var(--radius);
+        }
+        .security-check {
+            color: var(--ok);
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .security-item-text {
+            font-size: 13px;
+            color: var(--fg-1);
+            line-height: 1.5;
+        }
+        .security-item-text strong {
+            color: var(--fg-0);
+            display: block;
+            margin-bottom: 2px;
+        }
+
+        /* 技术栈 */
+        .tech-stack {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .tech-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 20px;
+            background: var(--bg-1);
+            border: 1px solid var(--border-soft);
+            border-radius: var(--radius);
+            font-family: var(--mono);
+            font-size: 13px;
+            color: var(--fg-1);
+            transition: all 0.2s;
+        }
+        .tech-item:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .tech-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+
+        /* 管理后台展示 */
+        .admin-showcase {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 32px;
+            align-items: center;
+        }
+        .admin-features {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .admin-feature {
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+        .admin-feature-num {
+            font-family: var(--mono);
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--accent);
+            background: var(--accent-dim);
+            border: 1px solid var(--accent-glow);
+            border-radius: 4px;
+            padding: 2px 8px;
+            flex-shrink: 0;
+        }
+        .admin-feature-text h4 {
+            font-size: 15px;
+            color: var(--fg-0);
+            margin-bottom: 4px;
+        }
+        .admin-feature-text p {
+            font-size: 13px;
+            color: var(--fg-2);
+            line-height: 1.5;
+        }
+
+        /* CTA 区域 */
+        .cta-section {
+            text-align: center;
+            padding: 80px 24px;
+            background:
+                radial-gradient(ellipse at center, rgba(0, 217, 255, 0.1) 0%, transparent 70%);
+        }
+        .cta-section h2 {
+            font-family: var(--sans);
+            font-weight: 700;
+            font-size: clamp(28px, 5vw, 40px);
+            color: var(--fg-0);
+            margin-bottom: 16px;
+        }
+        .cta-section p {
+            font-size: 16px;
+            color: var(--fg-2);
+            margin-bottom: 32px;
+        }
+
+        /* 页脚 */
+        .footer {
+            border-top: 1px solid var(--border-soft);
+            padding: 40px 24px;
+            text-align: center;
+        }
+        .footer-brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .footer-brand img {
+            width: 24px;
+            height: 24px;
+        }
+        .footer-brand span {
+            font-family: var(--mono);
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--fg-0);
+        }
+        .footer-links {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .footer-links a {
+            font-family: var(--mono);
+            font-size: 12px;
+            color: var(--fg-2);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+        .footer-links a:hover { color: var(--accent); }
+        .footer-copy {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--fg-3);
+            letter-spacing: 1px;
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .admin-showcase { grid-template-columns: 1fr; }
+            .hero-stats { gap: 24px; }
+            .section { padding: 60px 16px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Hero 首屏 -->
+    <section class="hero">
+        <div class="hero-bg"></div>
+        <div class="hero-content">
+            <img src="/web/img/logo.svg" alt="FileSync logo" class="hero-logo">
+            <div class="hero-badge">CHUNKED · SYNC · CONSOLE</div>
+            <h1><span class="accent">FileSync</span></h1>
+            <div class="hero-sub">分片上传 · 断点续传 · 秒传 · 安全云存储</div>
+            <p class="hero-tagline">基于 Go 构建的现代化文件同步服务，支持大文件分片上传、断点续传、跨用户秒传、分享链接、回收站恢复、压缩包在线解压，配备 9.5/10 安全评分的企业级防护。</p>
+            <div class="hero-cta">
+                <a href="/web/index.html" class="cta-btn cta-primary">进入控制台</a>
+                <a href="/web/login.html" class="cta-btn cta-secondary">登录</a>
+                <a href="/web/register.html" class="cta-btn cta-secondary">注册账号</a>
+            </div>
+            <div class="hero-stats">
+                <div class="hero-stat">
+                    <div class="hero-stat-value">9.5/10</div>
+                    <div class="hero-stat-label">安全评分</div>
+                </div>
+                <div class="hero-stat">
+                    <div class="hero-stat-value">512KB</div>
+                    <div class="hero-stat-label">分片大小</div>
+                </div>
+                <div class="hero-stat">
+                    <div class="hero-stat-value">30天</div>
+                    <div class="hero-stat-label">回收站保留</div>
+                </div>
+                <div class="hero-stat">
+                    <div class="hero-stat-value">4 层</div>
+                    <div class="hero-stat-label">防盗链防护</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 核心功能 -->
+    <section class="section">
+        <div class="section-head">
+            <div class="section-tag">CORE FEATURES</div>
+            <h2>核心功能</h2>
+            <p>从上传到分享，覆盖文件全生命周期管理</p>
+        </div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                </div>
+                <h3>分片上传</h3>
+                <p>大文件自动切分为 512KB 分片逐个上传，支持 256KB/512KB/1MB/4MB 可选分片大小，3-12 并发数可调，断网后自动恢复。</p>
+                <div class="feature-meta"><span>SHA256 校验</span><span>Web Worker</span><span>并发控制</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                </div>
+                <h3>断点续传</h3>
+                <p>上传与下载均支持断点续传。上传通过 session_id 记录已完成分片，下载支持 HTTP Range 请求，中断后从断点继续。</p>
+                <div class="feature-meta"><span>UNIQUE 约束</span><span>HTTP Range</span><span>幂等分片</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+                <h3>秒传功能</h3>
+                <p>上传前 Web Worker 后台计算完整文件 SHA256，命中已有 hash+size 直接共享源文件，跨用户秒传，永久删除通过引用计数判断。</p>
+                <div class="feature-meta"><span>跨用户秒传</span><span>引用计数</span><span>自动降级</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+                </div>
+                <h3>分享链接</h3>
+                <p>将文件或目录生成分享链接，访客无需登录即可查看下载。支持有效期设置、访问密码、下载次数去重统计、目录批量下载。</p>
+                <div class="feature-meta"><span>HMAC-SHA256</span><span>visitor cookie</span><span>批量 ZIP</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                </div>
+                <h3>回收站</h3>
+                <p>文件删除采用软删除机制（deleted_at 字段），移入回收站保留 30 天可恢复。支持恢复（含冲突检测）、永久删除、清空。服务启动自动清理过期。</p>
+                <div class="feature-meta"><span>软删除</span><span>30 天恢复</span><span>admin 全局</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+                </div>
+                <h3>压缩包在线解压</h3>
+                <p>支持 zip / tar / tar.gz / tar.bz2 四种格式在线预览，单击即列出包内文件树，目录可折叠。文件可在线预览或下载，无需下载整个压缩包。</p>
+                <div class="feature-meta"><span>Zip Slip 防护</span><span>流式解析</span><span>压缩炸弹限制</span></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 安全特性 -->
+    <section class="section security-section">
+        <div class="section-head">
+            <div class="section-tag">SECURITY</div>
+            <h2>企业级安全防护</h2>
+            <p>基于 aistudy.icu 安全评估报告，从 7.3/10 提升至 9.5/10</p>
+        </div>
+        <div class="security-score">
+            <div class="score-card">
+                <div class="score-value">9.5/10</div>
+                <div class="score-label">SECURITY SCORE</div>
+            </div>
+        </div>
+        <div class="security-grid">
+            <div class="security-item">
+                <svg class="security-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="security-item-text"><strong>8 个安全响应头</strong>HSTS / CSP / Permissions-Policy / X-Frame-Options / X-Content-Type-Options / Referrer-Policy / X-Permitted-Cross-Domain-Policies / X-XSS-Protection</div>
+            </div>
+            <div class="security-item">
+                <svg class="security-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="security-item-text"><strong>CSP 精细化</strong>script-src 'self'（内联脚本全部提取为外部 .js）、Google Fonts 白名单、表单 method=POST 防密码泄露</div>
+            </div>
+            <div class="security-item">
+                <svg class="security-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="security-item-text"><strong>HTTP 方法限制</strong>拒绝 TRACE / CONNECT 方法（返回 405），防止 XST 攻击</div>
+            </div>
+            <div class="security-item">
+                <svg class="security-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="security-item-text"><strong>路径净化中间件</strong>拒绝 /../ 和 /./ 路径序列（返回 400），纵深防御防止路径穿越</div>
+            </div>
+            <div class="security-item">
+                <svg class="security-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="security-item-text"><strong>登录限流</strong>令牌桶算法 rps=0.05, burst=2，2 次错误登录后触发 429</div>
+            </div>
+            <div class="security-item">
+                <svg class="security-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="security-item-text"><strong>分享端点限流</strong>30 次/分钟/IP，防止分享 ID 暴力枚举</div>
+            </div>
+            <div class="security-item">
+                <svg class="security-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="security-item-text"><strong>4 层防盗链</strong>安全响应头 + Referer 校验 + 签名 Token（HMAC-SHA256，30 分钟）+ 频率限制</div>
+            </div>
+            <div class="security-item">
+                <svg class="security-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="security-item-text"><strong>Cache-Control 分路径</strong>/api/ no-store 防敏感数据缓存，/web/ public max-age=3600 加速静态资源</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 技术栈 -->
+    <section class="section">
+        <div class="section-head">
+            <div class="section-tag">TECH STACK</div>
+            <h2>技术架构</h2>
+            <p>基于 Go 语言构建，MySQL + Redis 高可用架构</p>
+        </div>
+        <div class="tech-stack">
+            <div class="tech-item"><span class="tech-dot"></span>Go 1.23+</div>
+            <div class="tech-item"><span class="tech-dot"></span>MySQL 8.0</div>
+            <div class="tech-item"><span class="tech-dot"></span>Redis Sentinel</div>
+            <div class="tech-item"><span class="tech-dot"></span>HTTPS / TLS 1.3</div>
+            <div class="tech-item"><span class="tech-dot"></span>JWT Auth</div>
+            <div class="tech-item"><span class="tech-dot"></span>BCrypt</div>
+            <div class="tech-item"><span class="tech-dot"></span>SHA256</div>
+            <div class="tech-item"><span class="tech-dot"></span>Let's Encrypt</div>
+            <div class="tech-item"><span class="tech-dot"></span>systemd</div>
+        </div>
+    </section>
+
+    <!-- 管理后台 -->
+    <section class="section">
+        <div class="section-head">
+            <div class="section-tag">ADMIN</div>
+            <h2>管理员后台</h2>
+            <p>独立管理界面，4 大模块全方位管控</p>
+        </div>
+        <div class="admin-showcase">
+            <div class="admin-features">
+                <div class="admin-feature">
+                    <div class="admin-feature-num">01</div>
+                    <div class="admin-feature-text">
+                        <h4>系统总览</h4>
+                        <p>用户数、文件数、存储大小、分享数、回收站 5 大统计卡片实时展示</p>
+                    </div>
+                </div>
+                <div class="admin-feature">
+                    <div class="admin-feature-num">02</div>
+                    <div class="admin-feature-text">
+                        <h4>用户管理</h4>
+                        <p>列表查看、禁用/启用用户、重置密码，防止管理员禁用自己或修改其他 admin</p>
+                    </div>
+                </div>
+                <div class="admin-feature">
+                    <div class="admin-feature-num">03</div>
+                    <div class="admin-feature-text">
+                        <h4>文件管理</h4>
+                        <p>所有用户文件列表，含 owner 列，跨用户文件可见</p>
+                    </div>
+                </div>
+                <div class="admin-feature">
+                    <div class="admin-feature-num">04</div>
+                    <div class="admin-feature-text">
+                        <h4>分享管理</h4>
+                        <p>所有分享列表、删除分享、查看分享页，全局分享管控</p>
+                    </div>
+                </div>
+            </div>
+            <div style="text-align:center;">
+                <img src="/web/img/banner.svg" alt="FileSync 管理后台" style="width:100%;max-width:500px;border:1px solid var(--border-soft);border-radius:var(--radius);box-shadow:0 8px 32px rgba(0,0,0,0.4);">
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA 区域 -->
+    <section class="cta-section">
+        <h2>开始使用 FileSync</h2>
+        <p>注册账号即可享受安全可靠的云存储服务</p>
+        <div class="hero-cta">
+            <a href="/web/index.html" class="cta-btn cta-primary">进入控制台</a>
+            <a href="/web/register.html" class="cta-btn cta-secondary">免费注册</a>
+        </div>
+    </section>
+
+    <!-- 页脚 -->
+    <footer class="footer">
+        <div class="footer-brand">
+            <img src="/web/img/logo.svg" alt="FileSync logo">
+            <span>FileSync</span>
+        </div>
+        <div class="footer-links">
+            <a href="/web/intro.html">介绍页</a>
+            <a href="/web/login.html">登录</a>
+            <a href="/web/register.html">注册</a>
+            <a href="/web/forgot-password.html">忘记密码</a>
+            <a href="https://aistudy.icu/api/health">服务状态</a>
+        </div>
+        <div class="footer-copy">HTTPS · JWT · SHA256 · BCRYPT · v2026.07</div>
+    </footer>
+</body>
+</html>

@@ -147,14 +147,7 @@ func (h *FileHandler) GetFileInfo(w http.ResponseWriter, r *http.Request) {
 
 // ServeHTTP routes file-related requests
 func (h *FileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+	// CORS 由全局 CORS 中间件统一处理（支持 credentials），此处不再设置局部 CORS 头
 
 	path := strings.TrimSuffix(r.URL.Path, "/")
 

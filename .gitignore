@@ -64,3 +64,34 @@ web/dist/
 ram_*_snapshot.md
 创建用户结果*.csv
 
+# ===== 会话/日志/IDE 产物（不入库）=====
+.sessions/
+.trae/
+.logs/
+.seesions/
+
+# ===== 运行时数据目录（自动生成，不入库）=====
+auth_data/
+biz_data/
+file_data/
+workbench_data/
+docker_data/
+data_local_oss/
+data_preview_test/
+_test_data/
+
+# ===== 一次性部署/运维脚本（含服务器路径等敏感信息，不入库）=====
+deploy/
+
+# ===== 前端构建产物 / 压缩输出 =====
+dist/
+
+# ===== 本地测试数据 / 中间产物 =====
+test_local/
+test_local_security/
+test_prod_*.json
+_tmp_*
+_tmp_server_linux
+filesync_server_linux
+server_linux_new
+

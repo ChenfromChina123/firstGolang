@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # ============================
+  # Redis 缓存
+  # ============================
+  redis:
+    image: redis:7-alpine
+    container_name: filesync-redis
+    restart: unless-stopped
+    command: redis-server --requirepass redis123 --appendonly yes
+    ports:
+      - "36379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis123", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+  # ============================
+  # FileSync Server
+  # ============================
+  filesync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: filesync-server
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      # 服务配置
+      PORT: "8080"
+      DOMAIN: ""
+      DATA_DIR: "/app/data"
+      WEB_DIR: "/app/web"
+      # 使用 SQLite（无需 MySQL），如需 MySQL 取消注释下方 MYSQL_DSN
+      # MYSQL_DSN: "filesync:***REMOVED_DB_PASSWORD***@tcp(mysql:3306)/filesync?parseTime=true&loc=Local&charset=utf8mb4"
+      # Redis 配置
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: "redis123"
+      REDIS_DB: "0"
+      # JWT 密钥
+      JWT_SECRET: "***REMOVED_JWT_SECRET***"
+      # 允许 localhost 访问 WebDAV（避免防盗链拦截）
+      ALLOWED_REFERERS: "localhost,localhost:8080"
+      # 初始管理员
+      FILESYNC_INITIAL_USERNAME: "admin"
+      FILESYNC_INITIAL_PASSWORD: "***REMOVED_PASSWORD***"
+    volumes:
+      # ===== 关键：bind mount 将容器数据暴露到宿主机 =====
+      - ./docker_data:/app/data
+      # 也可指定绝对路径：- d:/STUDY/GO/StudyGolang/firstGolang/filesync/docker_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  redis_data:
+    driver: local

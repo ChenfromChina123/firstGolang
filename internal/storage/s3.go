@@ -385,3 +385,25 @@ func (s *S3Storage) StatObject(objectKey string) (int64, error) {
 	}
 	return info.Size, nil
 }
+
+// ListObjects 列举 bucket 中指定前缀的所有对象
+// 返回 minio SDK 的对象通道，调用方需遍历通道处理结果
+func (s *S3Storage) ListObjects(ctx context.Context, prefix string, recursive bool) <-chan minio.ObjectInfo {
+	return s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: recursive,
+	})
+}
+
+// FPutObject 上传本地文件到 S3 对象存储
+// 用于上传缩略图、PDF 页面图片等本地文件
+func (s *S3Storage) FPutObject(objectKey string, filePath string, contentType string) error {
+	ctx := context.Background()
+	info, err := s.client.FPutObject(ctx, s.bucket, objectKey, filePath, minio.PutObjectOptions{ContentType: contentType})
+	if err != nil {
+		return fmt.Errorf("fput object %s: %w", objectKey, err)
+	}
+	_ = info
+	return nil
+}
+

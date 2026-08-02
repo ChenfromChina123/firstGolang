@@ -18,6 +18,7 @@ import (
 	"filesync/internal/middleware"
 	"filesync/internal/storage"
 	"filesync/internal/store"
+	"filesync/internal/webdav"
 
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -384,6 +385,29 @@ func main() {
 	// 文件预览（需认证）：元数据/缩略图/原始内容流，权限同下载
 	mux.Handle("/api/preview/", previewHandler)
 
+	// WebDAV 协议支持（需认证）：通过 rclone/Win 映射网络驱动器挂载为本地磁盘
+	// 所有操作经过服务端认证（Basic Auth → 用户数据库校验）+ 文件 I/O（服务端 os 调用）
+	// 存储于 {DATA_DIR}/webdav/
+	webdavAuth := func(username, password string) bool {
+		user, err := db.GetUserByUsername(username)
+		if err != nil {
+			return false
+		}
+		return auth.CheckPassword(password, user.PasswordHash)
+	}
+	webdavHandler := webdav.Handler(absDataDir, webdavAuth)
+	mux.Handle("/webdav/", http.StripPrefix("/webdav", webdavHandler))
+	handleWebdavRoot := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/webdav" || r.URL.Path == "/webdav/" {
+			r.URL.Path = "/"
+			webdavHandler.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}
+	mux.HandleFunc("/webdav", handleWebdavRoot)
+	log.Printf("WebDAV: /webdav/ -> %s (auth: Basic Auth, user db)", filepath.Join(absDataDir, "webdav"))
+
 	// 静态文件服务：前端 Web 控制台（/web/ 路径 + 根路径重定向）
 	// 前端仅做页面展示，所有业务方法走 /api/* 后端（规则15）
 	webDir := getEnv("WEB_DIR", "./web")
@@ -415,6 +439,7 @@ func main() {
 		"/api/health",
 		"/api/s/", // 分享公开访问（获取分享信息、下载）
 		"/web/",
+		"/webdav/", // WebDAV 自行处理 Basic Auth，跳过 JWT
 		"/",
 	}
 

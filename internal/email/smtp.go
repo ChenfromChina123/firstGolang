@@ -150,6 +150,13 @@ func (m *SMTPMailer) SendResetCodeEmailAsync(to, code string) {
 	}()
 }
 
+
+// SendPasswordResetEmailAsync 异步发送密码重置验证码邮件（别名）
+// 内部委托给 SendResetCodeEmailAsync，保持接口兼容性
+func (m *SMTPMailer) SendPasswordResetEmailAsync(to, code string) {
+	m.SendResetCodeEmailAsync(to, code)
+}
+
 // Host 返回 SMTP 主机地址（用于日志和测试）
 func (m *SMTPMailer) Host() string {
 	return net.JoinHostPort(m.host, fmt.Sprintf("%d", m.port))
