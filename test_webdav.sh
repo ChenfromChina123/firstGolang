@@ -18,7 +18,7 @@ SERVER_URL="${SERVER_URL:-http://localhost:8080}"
 WEBDAV_PATH="${WEBDAV_PATH:-/webdav}"
 # 注意：不要用 WEBDAV_USER，Windows 环境变量会冲突！
 WEBDAV_USER="${WEBDAV_USER:-admin}"
-WEBDAV_PASS="${WEBDAV_PASS:-***REMOVED_PASSWORD***}"
+WEBDAV_PASS="${WEBDAV_PASS:-}"
 RCLONE_BIN="${RCLONE_BIN:-/tmp/rclone.exe}"
 DOCKER_DATA_DIR="${DOCKER_DATA_DIR:-d:/STUDY/GO/StudyGolang/firstGolang/filesync/docker_data}"
 COMPOSE_DIR="${COMPOSE_DIR:-d:/STUDY/GO/StudyGolang/firstGolang/filesync}"

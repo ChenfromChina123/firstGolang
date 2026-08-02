@@ -28,7 +28,7 @@ type testConfig struct {
 func parseArgs() *testConfig {
 	if len(os.Args) < 5 {
 		fmt.Println("用法: crossuser <userA> <passA> <userB> <passB> [server_url]")
-		fmt.Println("示例: crossuser 3301767269@qq.com 12345678A admin ***REMOVED_PASSWORD*** https://aistudy.icu")
+		fmt.Println("示例: crossuser <userA-email> <passA> <userB> <passB> <server-url>")
 		os.Exit(1)
 	}
 	cfg := &testConfig{
