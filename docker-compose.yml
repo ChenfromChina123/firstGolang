@@ -45,13 +45,13 @@ services:
       REDIS_ADDR: "redis:6379"
       REDIS_PASSWORD: "redis123"
       REDIS_DB: "0"
-      # JWT 密钥
-      JWT_SECRET: "***REMOVED_JWT_SECRET***"
+      # JWT 密钥（通过 .env 提供，禁止硬编码）
+      JWT_SECRET: "${JWT_SECRET:-please-change-me}"
       # 允许 localhost 访问 WebDAV（避免防盗链拦截）
       ALLOWED_REFERERS: "localhost,localhost:8080"
-      # 初始管理员
-      FILESYNC_INITIAL_USERNAME: "admin"
-      FILESYNC_INITIAL_PASSWORD: "***REMOVED_PASSWORD***"
+      # 初始管理员（通过 .env 提供）
+      FILESYNC_INITIAL_USERNAME: "${FILESYNC_INITIAL_USERNAME:-admin}"
+      FILESYNC_INITIAL_PASSWORD: "${FILESYNC_INITIAL_PASSWORD:-please-change-me}"
     volumes:
       # ===== 关键：bind mount 将容器数据暴露到宿主机 =====
       - ./docker_data:/app/data
