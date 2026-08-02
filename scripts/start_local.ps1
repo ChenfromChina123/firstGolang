@@ -32,14 +32,10 @@ if (Test-Path $envFile) {
 }
 
 # Fallback: ensure S3_ENDPOINT is set even if .env parse had issues (defensive)
+# 注意：AccessKey/Secret 必须从 .env 提供，禁止硬编码在脚本中（安全要求）
 if (-not [Environment]::GetEnvironmentVariable('S3_ENDPOINT', 'Process')) {
-    Write-Host "[start_local] S3_ENDPOINT empty after .env load, hardcoding fallback" -ForegroundColor Yellow
-    [Environment]::SetEnvironmentVariable('S3_ENDPOINT', 'oss-cn-shenzhen.aliyuncs.com', 'Process')
-    [Environment]::SetEnvironmentVariable('S3_REGION', 'oss-cn-shenzhen', 'Process')
-    [Environment]::SetEnvironmentVariable('S3_BUCKET', 'aistudy-filesync', 'Process')
-    [Environment]::SetEnvironmentVariable('S3_ACCESS_KEY', '***REMOVED_AK_ID***', 'Process')
-    [Environment]::SetEnvironmentVariable('S3_SECRET_KEY', '***REMOVED_AK_SECRET***', 'Process')
-    [Environment]::SetEnvironmentVariable('S3_USE_SSL', 'true', 'Process')
+    Write-Host "[start_local] WARNING: .env 未提供 S3_ENDPOINT，OSS 模式不可用" -ForegroundColor Yellow
+    Write-Host "[start_local] 请在 .env 中配置 S3_ENDPOINT/S3_REGION/S3_BUCKET/S3_ACCESS_KEY/S3_SECRET_KEY 后重试" -ForegroundColor Yellow
 }
 
 # Required env vars for local test (override .env)

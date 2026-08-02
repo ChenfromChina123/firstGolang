@@ -30,7 +30,7 @@
 | RAM 用户登录名 | `aistudy-filesync@1947356891717358.onaliyun.com` |
 | 显示名称 | `aistudy-filesync-app` |
 | 主体 ID | `205695583447984598` |
-| AccessKey ID | `***REMOVED_AK_ID***` |
+| AccessKey ID | `<your-access-key-id>`（见 `.env`，禁止明文入库） |
 | AccessKey Secret | 见部署配置文件 `.env` / `filesync.service`（不在此明文记录） |
 | 权限策略 | `AliyunOSSFullAccess`（系统策略，管理 OSS 全部权限） |
 | 资源范围 | 账号级别 |
@@ -48,8 +48,8 @@
 | `S3_ENDPOINT` | `oss-cn-shenzhen.aliyuncs.com` | OSS 访问域名（同地域 ECS 可改用 `-internal` 后缀） |
 | `S3_REGION` | `oss-cn-shenzhen` | 地域 ID |
 | `S3_BUCKET` | `aistudy-filesync` | Bucket 名称 |
-| `S3_ACCESS_KEY` | `***REMOVED_AK_ID***` | RAM 用户 AccessKey ID |
-| `S3_SECRET_KEY` | `<secret>` | RAM 用户 AccessKey Secret |
+| `S3_ACCESS_KEY` | `<your-access-key-id>` | RAM 用户 AccessKey ID（见 `.env`） |
+| `S3_SECRET_KEY` | `<your-access-key-secret>` | RAM 用户 AccessKey Secret（见 `.env`） |
 | `S3_USE_SSL` | `true` | 是否启用 HTTPS |
 
 ### 3.2 配置位置
