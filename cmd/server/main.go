@@ -12,13 +12,20 @@ import (
 	"strings"
 	"time"
 
+	"filesync/internal/agentsvc"
 	"filesync/internal/auth"
+	"filesync/internal/authutil"
+	"filesync/internal/cmdutil"
 	"filesync/internal/email"
 	"filesync/internal/handler"
+	"filesync/internal/mcp"
 	"filesync/internal/middleware"
+	"filesync/internal/model"
+	"filesync/internal/service"
 	"filesync/internal/storage"
 	"filesync/internal/store"
 	"filesync/internal/webdav"
+	"filesync/internal/ws"
 
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -28,8 +35,8 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	// Configuration
-	port := getEnv("PORT", "8080")
-	dataDir := getEnv("DATA_DIR", "./data")
+	port := cmdutil.GetEnv("PORT", "8080")
+	dataDir := cmdutil.GetEnv("DATA_DIR", "./data")
 	// STORAGE_TYPE 已废弃：混合存储由 S3_ENDPOINT 是否配置决定（见下方存储初始化）。
 
 	// Ensure data directory exists
@@ -85,14 +92,14 @@ func main() {
 
 	// S3/OSS 仅在配置了 S3_ENDPOINT 时启用（混合存储：旧文件留本地，新文件可选 OSS）。
 	var s3St storage.Storage
-	if s3Endpoint := getEnv("S3_ENDPOINT", ""); s3Endpoint != "" {
+	if s3Endpoint := cmdutil.GetEnv("S3_ENDPOINT", ""); s3Endpoint != "" {
 		s3Cfg := storage.S3Config{
 			Endpoint:  s3Endpoint,
-			Region:    getEnv("S3_REGION", "us-east-1"),
-			Bucket:    getEnv("S3_BUCKET", "filesync"),
-			AccessKey: getEnv("S3_ACCESS_KEY", ""),
-			SecretKey: getEnv("S3_SECRET_KEY", ""),
-			UseSSL:    getEnv("S3_USE_SSL", "false") == "true",
+			Region:    cmdutil.GetEnv("S3_REGION", "us-east-1"),
+			Bucket:    cmdutil.GetEnv("S3_BUCKET", "filesync"),
+			AccessKey: cmdutil.GetEnv("S3_ACCESS_KEY", ""),
+			SecretKey: cmdutil.GetEnv("S3_SECRET_KEY", ""),
+			UseSSL:    cmdutil.GetEnv("S3_USE_SSL", "false") == "true",
 		}
 		s3St, err = storage.NewS3(s3Cfg)
 		if err != nil {
@@ -118,9 +125,9 @@ func main() {
 
 	if redisSentinelAddrs != "" {
 		// === Mode 1: Redis Sentinel (分布式 + 投票选主) ===
-		masterName := getEnv("REDIS_SENTINEL_MASTER", "mymaster")
+		masterName := cmdutil.GetEnv("REDIS_SENTINEL_MASTER", "mymaster")
 		redisPassword := os.Getenv("REDIS_PASSWORD")
-		redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
+		redisDB, _ := strconv.Atoi(cmdutil.GetEnv("REDIS_DB", "0"))
 		cacheTTL := 10 * time.Minute
 
 		cfg := store.RedisSentinelConfig{
@@ -138,7 +145,7 @@ func main() {
 	} else if redisAddr := os.Getenv("REDIS_ADDR"); redisAddr != "" {
 		// === Mode 2: Single-instance Redis ===
 		redisPassword := os.Getenv("REDIS_PASSWORD")
-		redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
+		redisDB, _ := strconv.Atoi(cmdutil.GetEnv("REDIS_DB", "0"))
 
 		rc = store.NewRedisCache(redisAddr, redisPassword, redisDB, 10*time.Minute)
 		log.Printf("Redis: STANDALONE mode -> addr=%s db=%d", redisAddr, redisDB)
@@ -154,6 +161,7 @@ func main() {
 	fileHandler := handler.NewFileHandler(db, router, storages, rc)
 	trashHandler := handler.NewTrashHandler(db, router, rc)
 	settingsHandler := handler.NewSettingsHandler(db)
+	spaceHandler := handler.NewSpaceHandler(db)
 
 	// 加载或生成 RSA 密钥对（用于前端加密 password 字段传输，私钥持久化到 data/rsa_private.pem）
 	rsaKeyPath := filepath.Join(absDataDir, "rsa_private.pem")
@@ -166,25 +174,42 @@ func main() {
 	adminHandler := handler.NewAdminHandler(db, rsaKeys)
 
 	// === 认证系统初始化 ===
-	// JWT 使用 RS256 非对称签名：加载或生成独立的 RSA 私钥（持久化到 data/jwt_rsa_private.pem）
-	// 与密码加密 RSA 密钥分离，避免单密钥泄露同时影响密码传输和 token 签名
-	jwtRSAPath := filepath.Join(absDataDir, "jwt_rsa_private.pem")
-	jwtKeys, err := auth.LoadOrGenerateKeys(jwtRSAPath)
+	// 认证唯一化：与 AuthSvc 使用同一套 RefreshTokenManager(RS256) 实现，
+	// 部署时通过 JWT_RSA_KEY_FILE 与 auth-svc 共享同一私钥（JWKS 可验证 server 签发的 token）。
+	// 未配置 JWT_RSA_KEY_FILE 时使用 data/jwt_rsa_private.pem（独立密钥，跨服务 token 不互通）。
+	jwtKeyFile := cmdutil.GetEnv("JWT_RSA_KEY_FILE", "")
+	if jwtKeyFile == "" {
+		jwtKeyFile = filepath.Join(absDataDir, "jwt_rsa_private.pem")
+	}
+	jwtKeys, err := auth.LoadOrGenerateKeys(jwtKeyFile)
 	if err != nil {
 		log.Fatalf("[Auth] load JWT RSA keys: %v", err)
 	}
-	log.Printf("[Auth] JWT RSA keys loaded from %s (RS256 signing)", jwtRSAPath)
+	log.Printf("[Auth] JWT RSA keys loaded from %s (RS256 signing)", jwtKeyFile)
 
 	// 域名：用于 Cookie Domain 和 autocert
-	domain := getEnv("DOMAIN", "")
+	domain := cmdutil.GetEnv("DOMAIN", "")
 	// HTTPS 模式：DOMAIN 设置时启用
 	enableHTTPS := domain != ""
 
-	jwtManager := auth.NewJWTManager(jwtKeys.PrivateKey(), domain, enableHTTPS)
+	// 双 Token 管理器（与 AuthSvc 一致）
+	accessTTL := time.Duration(cmdutil.GetEnvInt("JWT_ACCESS_TTL", 900)) * time.Second
+	refreshTTL := time.Duration(cmdutil.GetEnvInt("JWT_REFRESH_TTL", 604800)) * time.Second
+	cookieSecure := enableHTTPS
+	tokens := auth.NewRefreshTokenManager(
+		jwtKeys.PrivateKey(), domain, cookieSecure,
+		db, // RefreshSessionStore
+		db, // BlacklistStore
+	).WithTTL(accessTTL, refreshTTL)
+
+	var ssoMgr *auth.SSOSessionManager
+	ssoMgr = auth.NewSSOSessionManager(
+		service.SSOStoreAdapter{DB: db}, domain, cookieSecure,
+	).WithTTL(time.Duration(cmdutil.GetEnvInt("SSO_SESSION_TTL", 86400)) * time.Second)
 
 	// 分享下载 token 仍用 HMAC（对称场景：签名和验证同一方，无需非对称）
 	// JWT_SECRET 环境变量用于此 HMAC；未设置则随机生成（重启后失效）
-	jwtSecret := getEnv("JWT_SECRET", "")
+	jwtSecret := cmdutil.GetEnv("JWT_SECRET", "")
 	if jwtSecret == "" {
 		jwtSecret = auth.GenerateSecret()
 		log.Printf("[Auth] WARNING: JWT_SECRET not set, generated random secret for share token HMAC (invalidated on restart)")
@@ -193,12 +218,12 @@ func main() {
 
 	// === 邮件服务初始化（用于账号注册和忘记密码） ===
 	// SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS 必填，SMTP_FROM/APP_BASE_URL 可选
-	smtpHost := getEnv("SMTP_HOST", "smtp.qiye.aliyun.com")
-	smtpPortStr := getEnv("SMTP_PORT", "465")
-	smtpUser := getEnv("SMTP_USER", "")
-	smtpPass := getEnv("SMTP_PASS", "")
-	smtpFrom := getEnv("SMTP_FROM", "")
-	appBaseURL := getEnv("APP_BASE_URL", "")
+	smtpHost := cmdutil.GetEnv("SMTP_HOST", "smtp.qiye.aliyun.com")
+	smtpPortStr := cmdutil.GetEnv("SMTP_PORT", "465")
+	smtpUser := cmdutil.GetEnv("SMTP_USER", "")
+	smtpPass := cmdutil.GetEnv("SMTP_PASS", "")
+	smtpFrom := cmdutil.GetEnv("SMTP_FROM", "")
+	appBaseURL := cmdutil.GetEnv("APP_BASE_URL", "")
 	// 默认 APP_BASE_URL 根据 domain 推导
 	if appBaseURL == "" && domain != "" {
 		appBaseURL = "https://" + domain
@@ -258,7 +283,7 @@ func main() {
 
 	// 可信代理：仅这些 IP 的 X-Forwarded-For 才被采信（防 XFF 伪造绕过限流）
 	// 生产环境应配置为反向代理的内网 IP（如 127.0.0.1,10.0.0.2）
-	if trustedProxyStr := getEnv("TRUSTED_PROXIES", ""); trustedProxyStr != "" {
+	if trustedProxyStr := cmdutil.GetEnv("TRUSTED_PROXIES", ""); trustedProxyStr != "" {
 		auth.SetTrustedProxies(strings.Split(trustedProxyStr, ","))
 		log.Printf("[Auth] trusted proxies configured: %s", trustedProxyStr)
 	} else {
@@ -276,7 +301,23 @@ func main() {
 	registerLimiter := auth.NewLoginRateLimiter(0.0083, 5)
 	forgotLimiter := auth.NewLoginRateLimiter(0.0083, 5)
 
-	authHandler := handler.NewAuthHandler(db, jwtManager, mailer, appBaseURL, rsaKeys)
+	// === AuthService（与 AuthSvc 共用同一实现，认证唯一化） ===
+	// 表结构迁移：OAuth 客户端表 / 黑名单表（幂等，旧库直接补齐）
+	if err := db.EnsureOAuthClientsTables(); err != nil {
+		log.Fatalf("ensure oauth tables: %v", err)
+	}
+	if err := db.EnsureBlacklistTable(); err != nil {
+		log.Fatalf("ensure blacklist table: %v", err)
+	}
+	authSvc := service.NewAuthService(db, tokens, ssoMgr, mailer, appBaseURL, rsaKeys, "filesync-web")
+	oauthSvc := service.NewOAuthService(db, tokens, ssoMgr)
+	privKey := jwtKeys.PrivateKey()
+	if privKey == nil {
+		log.Fatalf("[Auth] JWT RSA private key is nil")
+	}
+	jwksSvc := service.NewJWKSService(&privKey.PublicKey, "rsa-key-1")
+	loginPage := cmdutil.GetEnv("LOGIN_PAGE_URL", "/web/login.html")
+	authHandler := handler.NewAuthSvcHandler(authSvc, oauthSvc, jwksSvc, loginPage)
 
 	// 类型断言注入 OSS 转码缓存能力（S3Storage 实现 TranscodeCacheStore 接口）
 	var tcs storage.TranscodeCacheStore
@@ -351,6 +392,14 @@ func main() {
 	})
 	// 重置密码：无速率限制（验证码本身有限流，且用户可能多次尝试）
 	mux.HandleFunc("/api/reset-password", authHandler.ResetPassword)
+	// access token 刷新（access TTL 900s，避免过期只能重新登录）
+	mux.HandleFunc("/api/token/refresh", authHandler.RefreshToken)
+	// OAuth2（OIDC）端点
+	mux.HandleFunc("/oauth/authorize", authHandler.Authorize)
+	mux.HandleFunc("/oauth/token", authHandler.Token)
+	mux.HandleFunc("/.well-known/jwks.json", authHandler.JWKS)
+	mux.HandleFunc("/.well-known/openid-configuration", authHandler.OpenIDConfig)
+	mux.HandleFunc("/.well-known/oauth-protected-resource", authHandler.ProtectedResourceMetadata)
 	mux.Handle("/api/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if rc != nil {
@@ -363,17 +412,22 @@ func main() {
 	}))
 
 	// 受保护路由（需要认证）
+	// PAT scope 门禁：文件域读写按方法区分（read/write），分享域需 share。
+	// Web JWT 会话为账号级信任，不受此限制（见 middleware/scope.go）。
 	mux.HandleFunc("/api/me", authHandler.Me)
-	mux.Handle("/api/upload/", uploadHandler)
-	mux.Handle("/api/download/", downloadHandler)
-	mux.Handle("/api/files/", fileHandler)
-	mux.Handle("/api/files", fileHandler)
+	mux.Handle("/api/upload/", middleware.RequireFileScope(uploadHandler))
+	mux.Handle("/api/download/", middleware.RequireFileScope(downloadHandler))
+	mux.Handle("/api/files/", middleware.RequireFileScope(fileHandler))
+	mux.Handle("/api/files", middleware.RequireFileScope(fileHandler))
 	// 回收站（需认证）：列出/恢复/永久删除/清空
-	mux.Handle("/api/trash", trashHandler)
-	mux.Handle("/api/trash/", trashHandler)
+	mux.Handle("/api/trash", middleware.RequireFileScope(trashHandler))
+	mux.Handle("/api/trash/", middleware.RequireFileScope(trashHandler))
+	// 空间管理（需认证）：列出/创建/详情/删除（多空间文件树隔离）
+	mux.Handle("/api/spaces", middleware.RequireFileScope(spaceHandler))
+	mux.Handle("/api/spaces/", middleware.RequireFileScope(spaceHandler))
 	// 分享管理（需认证）：创建/列出/删除分享
-	mux.Handle("/api/share", shareHandler)
-	mux.Handle("/api/share/", shareHandler)
+	mux.Handle("/api/share", middleware.RequireShareScope(shareHandler))
+	mux.Handle("/api/share/", middleware.RequireShareScope(shareHandler))
 	// 分享公开访问（无需认证）：/api/s/ 在白名单中
 	mux.Handle("/api/s/", shareHandler)
 	// 用户配置同步（需认证）：跨浏览器同步分片大小和并发数
@@ -382,6 +436,80 @@ func main() {
 	mux.HandleFunc("/api/storage-usage", settingsHandler.StorageUsage)
 	// 管理员后台 API（需认证 + admin 权限）：系统统计/用户管理/分享管理
 	mux.Handle("/api/admin/", adminHandler)
+	// PAT 管理 API（需认证）：生成/列表/吊销个人访问令牌（MCP/Agent 认证用）
+	patHandler := handler.NewPATHandler(db)
+	mux.Handle("/api/tokens", patHandler)
+	mux.Handle("/api/tokens/", patHandler)
+
+	// === MCP Server（Streamable HTTP，远程 Agent） ===
+	// /mcp 在 JWT 白名单中；此处自行验证 PAT（Bearer fsk_*）并将身份注入请求 ctx，
+	// SDK 会把 ctx 传播到每个 tool 调用（认证见 middleware/scope.go 与 mcp.ToolContext）。
+	mcpSvc := mcp.New(agentsvc.New(db, router, appBaseURL))
+	mux.Handle("/mcp", mcpAuthMiddleware(db, mcpSvc.HTTPHandler()))
+
+	// === WebSocket 实时事件推送（MCP/外部上传实时通知前端传输中心） ===
+	// /api/ws/events 在 JWT 白名单中；此处自行验证 PAT（Bearer fsk_*）或 JWT
+	// （登录 Cookie / Bearer），校验通过后用用户名建立连接，
+	// MCP 上传完成后 ws.PublishUpload 广播事件。
+	// 同时注册历史落库回调：MCP 上传事件写入 upload_events 表（传输中心历史回溯）。
+	ws.SetUploadRecorder(func(ev ws.Event) {
+		_ = db.CreateUploadEvent(&model.UploadEvent{
+			Username:  ev.Username,
+			Filename:  ev.Filename,
+			Size:      ev.Size,
+			SpaceID:   ev.SpaceID,
+			Tool:      ev.Tool,
+			CreatedAt: ev.Time,
+		})
+	})
+	mux.Handle("/api/ws/events", wsAuthMiddleware(db, tokens, func(username string) http.Handler {
+		return ws.Default.Handler(username)
+	}))
+
+	// 上传事件历史（传输中心 MCP 记录）：GET 读取当前用户最近记录，DELETE 清空
+	mux.HandleFunc("/api/upload-events", func(w http.ResponseWriter, r *http.Request) {
+		username := auth.UsernameFromContext(r.Context())
+		if username == "" {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			events, err := db.ListUploadEvents(username, 100)
+			if err != nil {
+				http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"events": events})
+		case http.MethodDelete:
+			n, err := db.ClearUploadEvents(username)
+			if err != nil {
+				http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"deleted": n})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// MCP 文档站：manifest（机器可读）+ llms.txt（agent 速查），均从工具定义自动生成
+	mcpEndpoint := "/mcp"
+	if appBaseURL != "" {
+		mcpEndpoint = appBaseURL + "/mcp"
+	}
+	manifestJSON, _ := json.MarshalIndent(mcpSvc.BuildManifest(mcpEndpoint), "", "  ")
+	llmsTxt := mcpSvc.BuildLLMSText()
+	mux.HandleFunc("/mcp/manifest.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(manifestJSON)
+	})
+	mux.HandleFunc("/mcp/llms.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte(llmsTxt))
+	})
 	// 文件预览（需认证）：元数据/缩略图/原始内容流，权限同下载
 	mux.Handle("/api/preview/", previewHandler)
 
@@ -410,14 +538,15 @@ func main() {
 
 	// 静态文件服务：前端 Web 控制台（/web/ 路径 + 根路径重定向）
 	// 前端仅做页面展示，所有业务方法走 /api/* 后端（规则15）
-	webDir := getEnv("WEB_DIR", "./web")
+	webDir := cmdutil.GetEnv("WEB_DIR", "./web")
 	if _, err := os.Stat(webDir); err == nil {
 		mux.Handle("/web/", http.StripPrefix("/web/", http.FileServer(http.Dir(webDir))))
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/" {
-				http.Redirect(w, r, "/web/intro.html", http.StatusFound)
-				return
-			}
+if r.URL.Path == "/" {
+			landingPage := cmdutil.GetEnv("LANDING_PAGE", "/web/intro.html")
+			http.Redirect(w, r, landingPage, http.StatusFound)
+			return
+		}
 			http.NotFound(w, r)
 		})
 		log.Printf("Web console: /web/ -> %s", webDir)
@@ -435,16 +564,28 @@ func main() {
 		"/api/resend-activation",
 		"/api/forgot-password",
 		"/api/reset-password",
-		"/api/pubkey", // RSA 公钥（前端加密 password 用，公开）
+		"/api/token/refresh", // refresh token 换取新 access token（带 refresh cookie）
+		"/oauth/authorize",   // OAuth2 授权端点（302 或渲染登录页）
+		"/oauth/token",       // OAuth2 token 端点（client_secret 自验）
+		"/.well-known/jwks.json",                // JWKS 公钥（JWKS 验签场景公开）
+		"/.well-known/openid-configuration",     // OIDC 发现文档
+		"/.well-known/oauth-protected-resource", // RFC9728 受保护资源元数据
+		"/api/pubkey", // RSA 公钥（前端加密 password 用，公开")
 		"/api/health",
 		"/api/s/", // 分享公开访问（获取分享信息、下载）
 		"/web/",
 		"/webdav/", // WebDAV 自行处理 Basic Auth，跳过 JWT
+		"/mcp",     // MCP Streamable HTTP：使用 PAT (Bearer fsk_*) 自认证，跳过 JWT
+		"/mcp/",    // MCP 文档资源（manifest.json / llms.txt）公开可读
+		"/api/ws/events", // WebSocket 实时事件推送：PAT 自认证，跳过 JWT
 		"/",
 	}
 
-	// 用 JWT 中间件包装 mux
-	jwtAuthed := jwtManager.Middleware(whitelist, mux)
+	// 用 JWT 中间件包装 mux（RefreshTokenManager 本地验签，与 AuthSvc 同实现）
+	// 启用 PAT（fsk_ 前缀）认证：MCP / 外部 Agent 使用个人访问令牌替代账号密码
+	jwtAuthed := middleware.NewJWTAuthMiddleware(tokens).
+		WithPATValidator(auth.NewPATValidator(db), db).
+		Mux(whitelist, mux)
 
 	// === 防盗链中间件 ===
 	// Referer 白名单：主域名 + www 子域 + 环境变量额外配置
@@ -452,7 +593,7 @@ func main() {
 	if domain != "" {
 		allowedDomains = append(allowedDomains, domain, "www."+domain)
 	}
-	if extra := getEnv("ALLOWED_REFERERS", ""); extra != "" {
+	if extra := cmdutil.GetEnv("ALLOWED_REFERERS", ""); extra != "" {
 		for _, d := range strings.Split(extra, ",") {
 			d = strings.TrimSpace(d)
 			if d != "" {
@@ -525,7 +666,7 @@ func main() {
 		log.Printf("[HTTPS] autocert will request Let's Encrypt certificate")
 
 		// 证书缓存目录
-		certDir := getEnv("CERT_DIR", "/opt/filesync/certs")
+		certDir := cmdutil.GetEnv("CERT_DIR", "/opt/filesync/certs")
 		os.MkdirAll(certDir, 0700)
 
 		hostPolicy := autocert.HostWhitelist(domain)
@@ -595,9 +736,110 @@ func main() {
 	}
 }
 
-func getEnv(key, defaultVal string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// deriveBaseURL 从请求推导对外基础地址（优先配置的 APP_BASE_URL，其次请求 Host）。
+// 用于 MCP 生成绝对分享/下载 URL。
+func deriveBaseURL(r *http.Request) string {
+	if v := cmdutil.GetEnv("APP_BASE_URL", ""); v != "" {
+		return strings.TrimSuffix(v, "/")
 	}
-	return defaultVal
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+		scheme = strings.Split(fwd, ",")[0]
+	}
+	host := r.Host
+	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+		host = strings.Split(fwd, ",")[0]
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+// mcpAuthMiddleware 验证 MCP 请求的 PAT（Bearer fsk_*）并将身份注入请求 ctx。
+// 无 token / 无效 token → 401。校验通过后将身份放入 ctx，
+// 由 go-sdk 传播到每个 tool 调用（tools.go 通过 GetToolContext 读取）。
+func mcpAuthMiddleware(db *store.DB, next http.Handler) http.Handler {
+	validator := auth.NewPATValidator(db)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 健康探测 / 元数据探针（无 Authorization 时给友好错误而非 401 风暴）
+		if r.Method == http.MethodGet || r.Method == http.MethodDelete {
+			next.ServeHTTP(w, r)
+			return
+		}
+		tok := authutil.BearerToken(r)
+		if tok == "" || !auth.LooksLikePAT(tok) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","message":"Authorization: Bearer <fsk_ token> required"}`))
+			return
+		}
+		rec, err := validator.Authenticate(tok)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","message":"invalid or revoked PAT"}`))
+			return
+		}
+		role := "user"
+		if u, uErr := db.GetUserByUsername(rec.Username); uErr == nil {
+			role = u.Role
+		}
+		tc := &mcp.ToolContext{
+			Username:   rec.Username,
+			Role:       role,
+			Scopes:     rec.Scopes,
+			TokenID:    rec.ID,
+			SpaceID:    rec.SpaceID,
+			PathPrefix: rec.PathPrefix,
+			QuotaBytes: rec.QuotaBytes,
+			QuotaUsed:  rec.QuotaUsed,
+			BaseURL:    deriveBaseURL(r),
+		}
+		db.TouchAPIToken(rec.ID)
+		ctx := mcp.WithToolContext(r.Context(), tc)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// wsAuthMiddleware 验证 WebSocket 事件推送请求的 PAT（Bearer fsk_*）或
+// JWT access token（登录 Cookie / Bearer），校验通过后把 username 传给
+// next（用于建立事件订阅连接）。
+func wsAuthMiddleware(db *store.DB, tokens *auth.RefreshTokenManager, next func(username string) http.Handler) http.Handler {
+	validator := auth.NewPATValidator(db)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := authutil.BearerToken(r)
+		if tok == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","message":"missing token"}`))
+			return
+		}
+		// 1) PAT（fsk_*）：MCP / 外部 Agent
+		if auth.LooksLikePAT(tok) {
+			rec, err := validator.Authenticate(tok)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"unauthorized","message":"invalid or revoked PAT"}`))
+				return
+			}
+			db.TouchAPIToken(rec.ID)
+			next(rec.Username).ServeHTTP(w, r)
+			return
+		}
+		// 2) JWT access token：Web 登录用户（Cookie / Bearer）
+		if tokens != nil {
+			if claims, err := tokens.ParseAccessToken(tok); err == nil && claims.Username != "" {
+				next(claims.Username).ServeHTTP(w, r)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"unauthorized","message":"invalid token"}`))
+	})
 }

@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#2563EB">
+    <script src="/web/v2/theme.js"></script>
+    <title>FileSync · 安全文件同步服务</title>
+    <link rel="icon" href="/web/img/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/web/img/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/v2/style.css?v=20260809-dark">
+    <style>
+        /* ===== v2 落地页（Minimalism & Swiss / Feature-Rich Showcase） ===== */
+        .land-nav{
+            position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:24px;
+            padding:16px 40px;background:rgba(255,255,255,.88);backdrop-filter:blur(10px);
+            border-bottom:1px solid var(--color-border);
+        }
+        .land-nav .nav-links{display:flex;gap:24px;margin-left:32px;flex:1}
+        .land-nav .nav-links a{color:var(--color-text-2);text-decoration:none;font-size:14px;font-weight:500;transition:color .15s}
+        .land-nav .nav-links a:hover{color:var(--color-primary)}
+        .land-nav .nav-cta{display:flex;gap:10px;align-items:center}
+        .hero{
+            padding:88px 40px 72px;text-align:center;background:
+                radial-gradient(ellipse at 50% -20%, var(--c-blue-09) 0%, transparent 55%),
+                var(--color-background);
+        }
+        .hero-badge{
+            display:inline-flex;align-items:center;gap:8px;padding:6px 16px;border-radius:999px;
+            background:var(--c-blue-08);color:var(--color-primary);font-size:13px;font-weight:600;margin-bottom:24px;
+        }
+        .hero h1{font-size:46px;line-height:1.2;margin-bottom:18px;font-weight:700}
+        .hero h1 .accent{color:var(--color-primary)}
+        .hero-sub{font-size:18px;color:var(--color-text-2);max-width:640px;margin:0 auto 36px;line-height:1.7}
+        .hero-cta{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-bottom:56px}
+        .hero-stats{display:flex;justify-content:center;gap:56px;flex-wrap:wrap}
+        .hero-stat-value{font-size:26px;font-weight:700;font-family:var(--font-mono);color:var(--color-foreground)}
+        .hero-stat-label{font-size:13px;color:var(--color-text-2);margin-top:4px}
+        .section{padding:72px 40px}
+        .section-head{text-align:center;max-width:640px;margin:0 auto 56px}
+        .section-tag{font-size:12px;font-weight:600;letter-spacing:1.5px;color:var(--color-primary);text-transform:uppercase;margin-bottom:12px}
+        .section-head h2{font-size:32px;font-weight:700;margin-bottom:14px}
+        .section-head p{font-size:15px;color:var(--color-text-2);line-height:1.7}
+        .features-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;max-width:1100px;margin:0 auto}
+        .feature-card{
+            background:var(--color-surface);border:1px solid var(--color-border);border-radius:16px;padding:28px;
+            box-shadow:var(--shadow-sm);transition:box-shadow .2s,transform .2s;
+        }
+        .feature-card:hover{box-shadow:var(--shadow-md);transform:translateY(-3px)}
+        .feature-icon{
+            width:44px;height:44px;border-radius:12px;background:var(--c-blue-09);color:var(--color-primary);
+            display:flex;align-items:center;justify-content:center;margin-bottom:16px;
+        }
+        .feature-card h3{font-size:17px;font-weight:600;margin-bottom:10px}
+        .feature-card p{font-size:14px;color:var(--color-text-2);line-height:1.7;margin-bottom:16px}
+        .feature-meta{display:flex;gap:8px;flex-wrap:wrap;font-family:var(--font-mono);font-size:11px;color:var(--color-text-2)}
+        .feature-meta span{background:var(--color-muted);padding:3px 10px;border-radius:999px}
+        .security-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;max-width:1100px;margin:0 auto}
+        .security-item{display:flex;gap:14px;align-items:flex-start}
+        .security-check{width:32px;height:32px;border-radius:50%;background:rgba(22,163,74,.1);color:var(--color-success);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+        .security-item strong{display:block;font-size:15px;font-weight:600;margin-bottom:5px}
+        .security-item p{font-size:13px;color:var(--color-text-2);line-height:1.6}
+        .tech-stack{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;max-width:900px;margin:0 auto}
+        .tech-chip{display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:999px;font-size:13px;font-weight:500}
+        .tech-dot{width:8px;height:8px;border-radius:50%;background:var(--color-primary)}
+        .cta-section{
+            text-align:center;padding:96px 40px;background:var(--color-surface);border-top:1px solid var(--color-border);
+        }
+        .cta-section h2{font-size:32px;font-weight:700;margin-bottom:14px}
+        .cta-section p{font-size:16px;color:var(--color-text-2);margin-bottom:32px}
+        .footer{
+            padding:40px;border-top:1px solid var(--color-border);background:var(--color-surface);
+            display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;
+        }
+        .footer-copy{font-size:13px;color:var(--color-text-3)}
+        .footer-links a{color:var(--color-text-2);text-decoration:none;font-size:13px;margin-left:20px;transition:color .15s}
+        .footer-links a:hover{color:var(--color-primary)}
+        @media(max-width:900px){
+            .features-grid{grid-template-columns:1fr}
+            .hero{padding:64px 24px}
+            .hero h1{font-size:34px}
+            .section{padding:64px 24px}
+            .land-nav .nav-links{display:none}
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航 -->
+    <nav class="land-nav">
+        <div class="brand" style="padding:0">
+            <div class="brand-mark" aria-hidden="true" style="width:32px;height:32px;border-radius:8px">
+                <img src="/web/img/logo.svg" width="18" height="18" alt="FileSync logo">
+            </div>
+            <div class="brand-text">
+                <h1 style="font-size:16px">FileSync</h1>
+                <span class="brand-sub">SECURE FILE SYNC</span>
+            </div>
+        </div>
+        <div class="nav-links">
+            <a href="#features">核心功能</a>
+            <a href="#security">安全防护</a>
+            <a href="#tech">技术栈</a>
+            <a href="#admin">管理后台</a>
+        </div>
+        <div class="nav-cta">
+            <a href="/web/intro.html" style="font-size:13px;color:var(--color-text-2);text-decoration:none;border:1px solid var(--color-border);border-radius:8px;padding:7px 12px;transition:all .15s" onmouseover="this.style.borderColor='var(--color-primary)';this.style.color='var(--color-primary)'" onmouseout="this.style.borderColor='';this.style.color='var(--color-text-2)'">经典版</a>
+            <a href="/web/v2/register.html" class="btn btn-secondary" style="text-decoration:none">注册</a>
+            <a href="/web/v2/login.html" class="primary-btn" style="text-decoration:none">登录</a>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <header class="hero">
+        <div class="hero-badge">安全 · 高效 · 可靠的国产文件同步服务</div>
+        <h1>文件同步，就该<br><span class="accent">安全且简单</span></h1>
+        <p class="hero-sub">512KB 分片上传 · 断点续传 · SHA256 秒传 · 在线预览与编辑，一套属于你的私有云盘。</p>
+        <div class="hero-cta">
+            <a href="/web/v2/register.html" class="primary-btn" style="text-decoration:none">免费开始使用</a>
+            <a href="#features" class="btn btn-secondary" style="text-decoration:none">了解更多</a>
+        </div>
+        <div class="hero-stats">
+            <div><div class="hero-stat-value">512KB</div><div class="hero-stat-label">分片上传</div></div>
+            <div><div class="hero-stat-value">30 天</div><div class="hero-stat-label">回收站保留</div></div>
+            <div><div class="hero-stat-value">9.5 / 10</div><div class="hero-stat-label">安全评分</div></div>
+            <div><div class="hero-stat-value">40+</div><div class="hero-stat-label">在线预览类型</div></div>
+        </div>
+    </header>
+
+    <!-- 核心功能 -->
+    <section class="section" id="features">
+        <div class="section-head">
+            <div class="section-tag">Core Features</div>
+            <h2>核心功能</h2>
+            <p>从上传到分享，覆盖文件同步的每一个环节</p>
+        </div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8V6a4 4 0 0 0-8 0v2"/><rect x="4" y="8" width="16" height="12" rx="2"/></svg></div>
+                <h3>分片上传 · 断点续传</h3>
+                <p>大文件以 512KB 分片并发上传，网络中断自动续传，进度实时可见，传输中心统一管理。</p>
+                <div class="feature-meta"><span>并发 5/8/12</span><span>断点续传</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/></svg></div>
+                <h3>SHA256 秒传</h3>
+                <p>Web Worker 增量计算文件哈希，相同文件全局引用计数共享物理存储，秒级完成上传。</p>
+                <div class="feature-meta"><span>Worker 计算</span><span>引用计数</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16"/><path d="M10 6l6 6-6 6"/></svg></div>
+                <h3>安全分享链接</h3>
+                <p>可选有效期与访问密码，自动防盗链与下载计数，访客无需登录即可预览与下载。</p>
+                <div class="feature-meta"><span>密码保护</span><span>防盗链</span><span>有效期</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h6l2 2h8v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7z"/></svg></div>
+                <h3>在线预览 · 40+ 格式</h3>
+                <p>图片、PDF、视频 HLS 转码、音频、Markdown、代码高亮、文本、CSV 表格，即点即看。</p>
+                <div class="feature-meta"><span>HLS</span><span>PDF.js</span><span>CodeMirror</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15l4-6 3 4 3-6"/></svg></div>
+                <h3>传输中心 · 实时监控</h3>
+                <p>全量传输任务面板，实时速度、剩余时间、暂停/恢复/重试，批量控制一目了然。</p>
+                <div class="feature-meta"><span>实时速度</span><span>批量控制</span></div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/><path d="M12 7v5l3 3"/></svg></div>
+                <h3>回收站 · 多处备份</h3>
+                <p>删除文件进入回收站保留 30 天，随时恢复；本地磁盘 + S3/OSS 混合存储灵活扩展。</p>
+                <div class="feature-meta"><span>30 天</span><span>S3/OSS</span></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 安全防护 -->
+    <section class="section" id="security" style="background:var(--color-surface);border-top:1px solid var(--color-border)">
+        <div class="section-head">
+            <div class="section-tag">Security</div>
+            <h2>安全防护</h2>
+            <p>从传输到存储，多层级安全加固</p>
+        </div>
+        <div class="security-grid">
+            <div class="security-item">
+                <div class="security-check"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+                <div><strong>RSA 密码加密</strong><p>登录密码前端 RSA-2048 加密传输，服务端 BCRYPT 加盐存储。</p></div>
+            </div>
+            <div class="security-item">
+                <div class="security-check"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+                <div><strong>JWT RS256 鉴权</strong><p>无状态令牌认证，会话隔离，限流防暴力破解。</p></div>
+            </div>
+            <div class="security-item">
+                <div class="security-check"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+                <div><strong>OAuth2 / SSO</strong><p>企业级单点登录集成，多种身份源统一认证。</p></div>
+            </div>
+            <div class="security-item">
+                <div class="security-check"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+                <div><strong>分享防盗链</strong><p>四层防护：签名 Token、Referer 校验、限速限流、有效期控制。</p></div>
+            </div>
+            <div class="security-item">
+                <div class="security-check"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+                <div><strong>CSP 安全头</strong><p>严格内容安全策略，无内联脚本，第三方资源白名单加载。</p></div>
+            </div>
+            <div class="security-item">
+                <div class="security-check"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+                <div><strong>限流防护</strong><p>登录、激活、验证码等多接口限流，防爆破防滥用。</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 技术栈 -->
+    <section class="section" id="tech">
+        <div class="section-head">
+            <div class="section-tag">Tech Stack</div>
+            <h2>技术栈</h2>
+            <p>现代 Go 后端 + 原生轻量前端</p>
+        </div>
+        <div class="tech-stack">
+            <span class="tech-chip"><span class="tech-dot"></span>Go 1.22</span>
+            <span class="tech-chip"><span class="tech-dot"></span>SQLite / MySQL</span>
+            <span class="tech-chip"><span class="tech-dot"></span>JWT RS256</span>
+            <span class="tech-chip"><span class="tech-dot"></span>S3 / OSS</span>
+            <span class="tech-chip"><span class="tech-dot"></span>WebDAV</span>
+            <span class="tech-chip"><span class="tech-dot"></span>SHA256</span>
+            <span class="tech-chip"><span class="tech-dot"></span>CodeMirror 6</span>
+            <span class="tech-chip"><span class="tech-dot"></span>HLS.js</span>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="cta-section" id="admin">
+        <h2>准备好开始安全同步了吗？</h2>
+        <p>注册即用 · 支持多空间 · 在线预览与编辑</p>
+        <div class="hero-cta" style="margin-bottom:0">
+            <a href="/web/v2/register.html" class="primary-btn" style="text-decoration:none">立即注册</a>
+            <a href="/web/v2/login.html" class="btn btn-secondary" style="text-decoration:none">账号登录</a>
+        </div>
+    </section>
+
+    <!-- 页脚 -->
+    <footer class="footer">
+        <div class="footer-copy">© 2026 FileSync · 安全云存储服务</div>
+        <div class="footer-links">
+            <a href="/web/v2/index.html">控制台</a>
+            <a href="/web/v2/login.html">登录</a>
+            <a href="/web/v2/register.html">注册</a>
+            <a href="/web/intro.html">经典版介绍</a>
+        </div>
+    </footer>
+</body>
+</html>

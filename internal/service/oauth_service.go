@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 	"filesync/internal/auth"
 	"filesync/internal/store"
@@ -98,7 +99,7 @@ func (svc *OAuthService) Authorize(w http.ResponseWriter, r *http.Request, req A
 		return nil, err
 	}
 	// 3. 校验 scope（获取允许的 scope 列表用于过滤）
-	_, _, _, allowedScopes, _, err := svc.clients.GetByID(req.ClientID)
+	_, _, _, allowedScopes, _, _, err := svc.clients.GetByID(req.ClientID)
 	if err != nil {
 		return nil, err
 	}
@@ -193,9 +194,79 @@ func (svc *OAuthService) Token(w http.ResponseWriter, r *http.Request, req Token
 		return svc.tokenFromCode(w, r, req)
 	case "refresh_token":
 		return svc.tokenFromRefresh(w, r, req)
+	case "client_credentials":
+		return svc.tokenFromClientCredentials(w, r, req)
 	default:
-		return nil, errors.New("unsupported grant_type, use 'authorization_code' or 'refresh_token'")
+		return nil, errors.New("unsupported grant_type, use 'authorization_code', 'refresh_token' or 'client_credentials'")
 	}
+}
+
+// tokenFromClientCredentials 客户端凭证模式（RFC 6749 §4.4）
+// 适用于服务到服务的 MCP/OAuth 客户端：以 client 绑定的用户身份签发 access token。
+// 要求：client 预注册时配置 owner_username；scope 取 client 允许范围与请求范围交集。
+func (svc *OAuthService) tokenFromClientCredentials(w http.ResponseWriter, r *http.Request, req TokenRequest) (*TokenResponse, error) {
+	// 1. client_id / client_secret 必须校验（此模式不允许公开客户端）
+	if req.ClientID == "" || req.ClientSecret == "" {
+		return nil, errors.New("client_id and client_secret required for client_credentials")
+	}
+	secretHash, _, _, allowedScopes, ownerUsername, isPublic, err := svc.clients.GetByID(req.ClientID)
+	if err != nil {
+		return nil, err
+	}
+	if isPublic {
+		return nil, errors.New("client_credentials not allowed for public clients")
+	}
+	if !svc.clients.VerifySecret(secretHash, req.ClientSecret) {
+		return nil, auth.ErrInvalidClient
+	}
+	// 2. client 必须绑定用户（作为令牌身份）
+	if ownerUsername == "" {
+		return nil, errors.New("client not bound to an owner user; set owner_username on the client")
+	}
+	u, err := svc.db.GetUserByUsername(ownerUsername)
+	if err != nil {
+		return nil, fmt.Errorf("client owner user not found: %w", err)
+	}
+	// 3. scope：请求 scope ∩ 客户端允许范围（空请求则用客户端默认全范围）
+	grantedScope := req.Scope
+	if grantedScope == "" {
+		grantedScope = joinScope(allowedScopes)
+	} else {
+		grantedScope, err = auth.ValidateScope(allowedScopes, req.Scope)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// 4. 仅签发 access token（不签发 refresh，符合 client_credentials 语义）
+	ip := ClientIP(r)
+	ua := UserAgent(r)
+	accessTok, _, expiresIn, err := svc.tokens.IssueTokenPair(
+		w, u.ID, u.Username, u.Role, req.ClientID, grantedScope, ip, ua,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &TokenResponse{
+		AccessToken: accessTok,
+		TokenType:   "Bearer",
+		ExpiresIn:   expiresIn,
+		Scope:       grantedScope,
+	}, nil
+}
+
+// joinScope 用空格拼接 scope 列表。
+func joinScope(scopes []string) string {
+	var b strings.Builder
+	for i, s := range scopes {
+		if s == "" {
+			continue
+		}
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(s)
+	}
+	return b.String()
 }
 
 // tokenFromCode 授权码换 Token
@@ -210,8 +281,8 @@ func (svc *OAuthService) tokenFromCode(w http.ResponseWriter, r *http.Request, r
 	if err := auth.ValidateClientSecret(svc.clients, req.ClientID, req.ClientSecret); err != nil {
 		return nil, err
 	}
-	// 2. 校验授权码（一次性消费）
-	userID, grantedScope, _, err := auth.ValidateAuthCode(svc.codes, req.Code, req.ClientID, req.RedirectURI)
+	// 2. 校验授权码（一次性消费 + PKCE 校验）
+	userID, grantedScope, _, err := auth.ValidateAuthCode(svc.codes, req.Code, req.ClientID, req.RedirectURI, req.CodeVerifier)
 	if err != nil {
 		return nil, err
 	}

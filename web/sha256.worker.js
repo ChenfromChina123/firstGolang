@@ -196,8 +196,14 @@ self.onmessage = async function (e) {
     }
 
     try {
+        var lastReport = -1;
         var hash = await computeFileSHA256(file, chunkSize, function (percent) {
-            self.postMessage({ type: 'progress', percent: percent });
+            // 节流：每 2% 上报一次（4MB/块，10GB 文件将产生 2560 条消息），
+            // 高频 postMessage 会挤占主线程，导致大文件 hash 阶段 UI 卡顿。
+            if (percent - lastReport >= 2 || percent >= 100) {
+                lastReport = percent;
+                self.postMessage({ type: 'progress', percent: percent });
+            }
         });
         self.postMessage({ type: 'done', hash: hash });
     } catch (err) {

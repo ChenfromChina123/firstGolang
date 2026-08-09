@@ -111,11 +111,15 @@ func (s *AuthService) Login(w http.ResponseWriter, r *http.Request, usernameOrEm
 	if usernameOrEmail == "" || password == "" {
 		return nil, errors.New("username and password required")
 	}
-	// 密码处理：优先尝试 RSA 解密（前端加密场景）；解密失败则把原密码当明文再试一次（开发/调试场景）
+	// 密码处理：前端 RSA 加密场景。解密失败则 fail-closed（对齐 Register），
+	// 防止"密文当明文比对"的静默降级与中间人密文探测
 	if s.rsaKeys != nil {
-		if decrypted, rsaErr := s.rsaKeys.DecryptPassword(password); rsaErr == nil && decrypted != "" {
-			password = decrypted
+		decrypted, rsaErr := s.rsaKeys.DecryptPassword(password)
+		if rsaErr != nil || decrypted == "" {
+			log.Printf("[Auth] login failed: RSA decrypt error ip=%s", ClientIP(r))
+			return nil, fmt.Errorf("%w", ErrInvalidCredentials)
 		}
+		password = decrypted
 	}
 	// 查询用户
 	var user *model.User
@@ -127,16 +131,16 @@ func (s *AuthService) Login(w http.ResponseWriter, r *http.Request, usernameOrEm
 	}
 	if err != nil || user == nil {
 		log.Printf("[Auth] login failed: user not found id=%s ip=%s", usernameOrEmail, ClientIP(r))
-		return nil, errors.New("invalid username or password")
+		return nil, fmt.Errorf("%w", ErrInvalidCredentials)
 	}
 	// 校验密码
 	if !auth.CheckPassword(password, user.PasswordHash) {
 		log.Printf("[Auth] login failed: wrong password user=%s ip=%s", user.Username, ClientIP(r))
-		return nil, errors.New("invalid username or password")
+		return nil, fmt.Errorf("%w", ErrInvalidCredentials)
 	}
 	// 检查状态
 	if user.Status != "active" {
-		return nil, fmt.Errorf("account not activated: status=%s", user.Status)
+		return nil, fmt.Errorf("%w: status=%s", ErrAccountNotActive, user.Status)
 	}
 	// 默认客户端
 	if clientID == "" {
@@ -326,6 +330,27 @@ func (s *AuthService) sendActivationEmail(userID, emailAddr string) error {
 	return nil
 }
 
+// ResendActivation 重新发送激活邮件到指定邮箱
+// 用户不存在或已激活时不报错（避免邮箱枚举），仅在未激活时重发
+func (s *AuthService) ResendActivation(emailAddr string) error {
+	if s.mailer == nil {
+		return errors.New("email service disabled")
+	}
+	emailAddr = auth.NormalizeEmail(emailAddr)
+	if err := auth.ValidateEmail(emailAddr); err != nil {
+		return err
+	}
+	user, err := s.db.GetUserByEmail(emailAddr)
+	if err != nil || user == nil {
+		return nil // 避免邮箱枚举
+	}
+	if user.Status == "active" {
+		return nil // 已激活，无需重发
+	}
+	_ = s.db.DeleteActivationTokensByUserID(user.ID)
+	return s.sendActivationEmail(user.ID, emailAddr)
+}
+
 // Activate 激活账号
 func (s *AuthService) Activate(token string) error {
 	if token == "" {
@@ -337,7 +362,7 @@ func (s *AuthService) Activate(token string) error {
 	}
 	if time.Now().After(expiresAt) {
 		_ = s.db.DeleteActivationToken(token)
-		return errors.New("activation token expired")
+		return fmt.Errorf("%w", ErrActivationExpired)
 	}
 	if err := s.db.UpdateUserStatus(userID, "active"); err != nil {
 		return err
@@ -361,6 +386,10 @@ func (s *AuthService) ForgotPassword(emailAddr string) error {
 	user, err := s.db.GetUserByEmail(emailAddr)
 	if err != nil || user == nil {
 		// 邮箱不存在，静默返回成功（避免枚举）
+		return nil
+	}
+	// 未激活账号不发送重置码
+	if user.Status != "active" {
 		return nil
 	}
 	code, err := auth.GenerateResetCode()

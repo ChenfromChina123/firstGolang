@@ -72,7 +72,7 @@
     function showSuccess(msg, email) {
         successBox.innerHTML = msg + '<br><br>' +
             '没有收到邮件？<a href="#" id="resend-link">重新发送</a>　·　' +
-            '<a href="/web/login.html">返回登录</a>';
+            '<a href="' + (window.__FS_LOGIN_URL || '/web/login.html') + '">返回登录</a>';
         successBox.classList.add('show');
         // 隐藏表单
         form.style.display = 'none';

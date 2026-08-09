@@ -88,7 +88,7 @@
                 const data = await resp.json().catch(() => ({}));
                 if (resp.ok && data.success) {
                     alert(data.message || '激活邮件已发送，请查收邮箱');
-                    window.location.href = '/web/login.html';
+                    window.location.href = window.__FS_LOGIN_URL || '/web/login.html';
                 } else {
                     alert(data.message || '发送失败');
                 }

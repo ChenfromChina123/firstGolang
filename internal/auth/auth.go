@@ -2,58 +2,13 @@ package auth
 
 import (
 	"crypto/rand"
-	"crypto/rsa"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
-	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
-
-// Token 过期时间
-const TokenExpiry = 24 * time.Hour
-
-// Cookie 名称
-const CookieName = "filesync_token"
-
-// 常见错误
-var (
-	ErrInvalidToken = errors.New("invalid token")
-	ErrExpiredToken = errors.New("token expired")
-)
-
-// Claims JWT 自定义声明
-type Claims struct {
-	UserID   string `json:"user_id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
-	jwt.RegisteredClaims
-}
-
-// JWTManager 管理 JWT 签发与验证（RS256 非对称签名：私钥签发，公钥验证）
-type JWTManager struct {
-	privateKey *rsa.PrivateKey
-	publicKey  *rsa.PublicKey
-	domain     string
-	secure     bool
-}
-
-// NewJWTManager 创建 JWT 管理器（RS256 非对称签名）
-// privateKey: RSA 私钥（用于签发 token，绝不外泄）
-// domain: Cookie 的 Domain（如 aistudy.icu）
-// secure: Cookie 是否启用 Secure 标记（HTTPS 时为 true）
-func NewJWTManager(privateKey *rsa.PrivateKey, domain string, secure bool) *JWTManager {
-	return &JWTManager{
-		privateKey: privateKey,
-		publicKey:  &privateKey.PublicKey,
-		domain:     domain,
-		secure:     secure,
-	}
-}
 
 // HashPassword 用 bcrypt 哈希密码（cost=12）
 func HashPassword(password string) (string, error) {
@@ -65,94 +20,6 @@ func HashPassword(password string) (string, error) {
 func CheckPassword(password, hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil
-}
-
-// GenerateToken 签发 JWT token
-func (m *JWTManager) GenerateToken(userID, username, role string) (string, error) {
-	claims := &Claims{
-		UserID:   userID,
-		Username: username,
-		Role:     role,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(TokenExpiry)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			NotBefore: jwt.NewNumericDate(time.Now()),
-			Issuer:    "filesync",
-			Subject:   userID,
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	return token.SignedString(m.privateKey)
-}
-
-// ParseToken 解析并验证 JWT token
-func (m *JWTManager) ParseToken(tokenString string) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return m.publicKey, nil
-	})
-	if err != nil {
-		if strings.Contains(err.Error(), "token is expired") {
-			return nil, ErrExpiredToken
-		}
-		return nil, ErrInvalidToken
-	}
-
-	claims, ok := token.Claims.(*Claims)
-	if !ok || !token.Valid {
-		return nil, ErrInvalidToken
-	}
-	return claims, nil
-}
-
-// SetAuthCookie 将 JWT token 设置到 HttpOnly Cookie
-// 开发环境（HTTP）使用 SameSite=Lax，允许跨端口 Cookie 发送（localhost:8888 → localhost:8080）
-// 生产环境（HTTPS）使用 SameSite=Strict，最大化安全
-func (m *JWTManager) SetAuthCookie(w http.ResponseWriter, token string) {
-	sameSite := http.SameSiteStrictMode
-	if !m.secure {
-		sameSite = http.SameSiteLaxMode
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    token,
-		Path:     "/",
-		Domain:   m.domain,
-		MaxAge:   int(TokenExpiry.Seconds()),
-		HttpOnly: true,
-		Secure:   m.secure,
-		SameSite: sameSite,
-	})
-}
-
-// ClearAuthCookie 清除认证 Cookie（登出时调用）
-// SameSite 策略与 SetAuthCookie 保持一致
-func (m *JWTManager) ClearAuthCookie(w http.ResponseWriter) {
-	sameSite := http.SameSiteStrictMode
-	if !m.secure {
-		sameSite = http.SameSiteLaxMode
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    "",
-		Path:     "/",
-		Domain:   m.domain,
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   m.secure,
-		SameSite: sameSite,
-	})
-}
-
-// ReadTokenFromRequest 从请求中读取 JWT token（仅支持 Cookie 方式）
-func (m *JWTManager) ReadTokenFromRequest(r *http.Request) string {
-	c, err := r.Cookie(CookieName)
-	if err != nil {
-		return ""
-	}
-	return c.Value
 }
 
 // GenerateSecret 生成 32 字节随机密钥（用于 JWT_SECRET 环境变量未设置时）

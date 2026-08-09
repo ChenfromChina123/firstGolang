@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FileSync 全新 UI 预览 — 设计系统</title>
+<style>
+:root{
+  --color-primary:#2563EB; --color-on-primary:#FFFFFF;
+  --color-secondary:#3B82F6; --color-accent:#D97706;
+  --color-background:#F8FAFC; --color-foreground:#0F172A;
+  --color-muted:#F1F5FD; --color-border:#E4ECFC;
+  --color-destructive:#DC2626; --color-ring:#2563EB;
+  --color-success:#16A34A; --color-warning:#D97706;
+  --font-heading:'Plus Jakarta Sans',system-ui,sans-serif;
+  --font-body:'Plus Jakarta Sans',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --space-xs:4px; --space-sm:8px; --space-md:16px; --space-lg:24px; --space-xl:32px; --space-2xl:48px; --space-3xl:64px;
+  --radius-sm:6px; --radius-md:8px; --radius-lg:12px; --radius-xl:16px;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.05);
+  --shadow-md:0 4px 6px rgba(0,0,0,.1);
+  --shadow-lg:0 10px 15px rgba(0,0,0,.1);
+  --shadow-xl:0 20px 25px rgba(0,0,0,.15);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font-body);font-size:16px;line-height:1.5;color:var(--color-foreground);background:var(--color-background);color-scheme:light}
+.sidebar{
+  position:fixed;top:0;left:0;bottom:0;width:248px;background:#fff;border-right:1px solid var(--color-border);
+  display:flex;flex-direction:column;padding:var(--space-lg) var(--space-md);
+}
+.main{margin-left:248px;padding:var(--space-2xl) var(--space-2xl) var(--space-3xl)}
+.topbar{
+  position:sticky;top:0;margin:calc(var(--space-2xl) * -1) calc(var(--space-2xl) * -1) var(--space-xl);
+  background:rgba(255,255,255,.85);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--color-border);
+  padding:var(--space-md) var(--space-2xl);display:flex;align-items:center;gap:var(--space-md);
+}
+body{padding-top:0}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;color:var(--color-foreground)}
+.logo-mark{width:32px;height:32px;border-radius:var(--radius-md);background:var(--color-primary);display:flex;align-items:center;justify-content:center}
+.logo-mark svg{stroke:#fff}
+.nav{display:flex;flex-direction:column;gap:4px;margin-top:var(--space-xl)}
+.nav a{
+  display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:var(--radius-md);
+  color:var(--color-foreground);text-decoration:none;font-weight:500;font-size:14px;
+  transition:background .2s ease,color .2s ease;cursor:pointer;
+}
+.nav a svg{stroke:#64748B;transition:stroke .2s ease}
+.nav a:hover{background:var(--color-muted)}
+.nav a:hover svg{stroke:var(--color-primary)}
+.nav a.active{background:var(--color-primary);color:#fff}
+.nav a.active svg{stroke:#fff}
+.section-title{font-family:var(--font-heading);font-size:22px;font-weight:600;margin:0 0 8px}
+.section-sub{color:#64748B;font-size:14px;margin-bottom:var(--space-lg)}
+.section{margin-bottom:var(--space-3xl)}
+.grid{display:grid;gap:var(--space-md)}
+.grid-2{grid-template-columns:repeat(2,1fr)}
+.grid-3{grid-template-columns:repeat(3,1fr)}
+.grid-4{grid-template-columns:repeat(4,1fr)}
+.grid-5{grid-template-columns:repeat(5,1fr)}
+.card{background:#fff;border-radius:var(--radius-lg);padding:var(--space-lg);box-shadow:var(--shadow-md);transition:box-shadow .2s ease,transform .2s ease}
+.card:hover{box-shadow:var(--shadow-lg);transform:translateY(-2px)}
+.swatch{border-radius:var(--radius-md);padding:var(--space-md);color:#fff;font-size:12px;font-family:var(--font-mono);height:84px;display:flex;flex-direction:column;justify-content:flex-end}
+.swatch span{font-size:10px;opacity:.8;font-family:var(--font-mono)}
+.btn{border:none;border-radius:var(--radius-md);padding:12px 24px;font-size:14px;font-weight:600;font-family:var(--font-body);cursor:pointer;transition:all .2s ease;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:var(--color-primary);color:#fff}
+.btn-primary:hover{opacity:.9;transform:translateY(-1px)}
+.btn-secondary{background:transparent;color:var(--color-primary);border:2px solid var(--color-primary)}
+.btn-secondary:hover{background:var(--color-muted)}
+.btn-ghost{background:transparent;color:var(--color-foreground)}
+.btn-ghost:hover{background:rgba(37,99,235,.06)}
+.btn-danger{background:var(--color-destructive);color:#fff}
+.btn-danger:hover{opacity:.9}
+.input{width:100%;padding:12px 16px;border:1px solid #E2E8F0;border-radius:var(--radius-md);font-size:16px;font-family:var(--font-body);transition:border-color .2s ease,box-shadow .2s ease}
+.input:focus{border-color:var(--color-primary);outline:none;box-shadow:0 0 0 3px rgba(37,99,235,.13)}
+.label{display:block;font-size:13px;font-weight:600;margin-bottom:6px;color:var(--color-foreground)}
+.file-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:#fff;margin-bottom:8px;transition:background .15s ease;cursor:pointer}
+.file-row:hover{background:var(--color-muted)}
+.icon-box{width:36px;height:36px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.icon-box.folder{background:rgba(37,99,235,.12);color:var(--color-primary)}
+.icon-box.file{background:rgba(217,119,6,.12);color:var(--color-accent)}
+.icon-box svg{stroke:currentColor}
+.file-name{font-size:14px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-meta{font-size:12px;color:#64748B}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px}
+.badge-dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.badge-syncing{background:rgba(37,99,235,.1);color:var(--color-primary)}
+.badge-done{background:rgba(22,163,74,.1);color:var(--color-success)}
+.badge-error{background:rgba(220,38,38,.1);color:var(--color-destructive)}
+.badge-wait{background:#F1F5F9;color:#64748B}
+.breadcrumb{font-size:13px;color:#64748B;margin-bottom:var(--space-md)}
+.breadcrumb b{color:var(--color-foreground);font-weight:600}
+.breadcrumb a{color:var(--color-primary);text-decoration:none;cursor:pointer}
+.kpi{display:flex;flex-direction:column;gap:4px}
+.kpi-label{font-size:13px;color:#64748B}
+.kpi-value{font-size:24px;font-weight:600}
+.kpi-delta{font-size:12px;font-weight:600}
+.kpi-delta.up{color:var(--color-success)}
+.kpi-delta.down{color:var(--color-destructive)}
+.type-scale{display:flex;flex-direction:column;gap:8px}
+.tab{display:flex;gap:var(--space-lg);border-bottom:2px solid var(--color-border);margin-bottom:var(--space-lg)}
+.tab button{background:none;border:none;padding:10px 4px;font-size:14px;font-weight:600;color:#64748B;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:color .15s ease,border-color .15s ease;font-family:var(--font-body)}
+.tab button.active{color:var(--color-primary);border-bottom-color:var(--color-primary)}
+.table{width:100%;border-collapse:collapse;background:#fff;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--color-border)}
+.table th{background:var(--color-muted);font-weight:600;font-size:13px;text-align:left;padding:12px 16px;color:#475569}
+.table td{padding:12px 16px;font-size:14px;border-top:1px solid var(--color-border)}
+.table tr:hover td{background:#F8FAFC}
+.auth-demo{display:grid;grid-template-columns:1fr 1fr;gap:0;border-radius:var(--radius-xl);overflow:hidden;box-shadow:var(--shadow-lg);background:#fff;border:1px solid var(--color-border)}
+.auth-brand{background:var(--color-primary);color:#fff;padding:var(--space-2xl);display:flex;flex-direction:column;justify-content:space-between}
+.auth-form{padding:var(--space-2xl);display:flex;flex-direction:column;gap:var(--space-md);justify-content:center}
+.hero-demo{background:#fff;border:1px solid var(--color-border);border-radius:var(--radius-xl);padding:var(--space-3xl);text-align:center}
+.hero-title{font-size:38px;font-weight:600;margin-bottom:var(--space-md)}
+.hero-sub{font-size:18px;color:#64748B;margin-bottom:var(--space-xl)}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--color-border);background:var(--color-muted);border-radius:999px;padding:4px 12px;font-family:var(--font-mono);font-size:12px;margin:0 4px 8px 0}
+.checklist{display:flex;flex-direction:column;gap:10px;margin:var(--space-lg) 0}
+.checklist li{list-style:none;display:flex;gap:10px;align-items:flex-start;font-size:14px}
+.checklist svg{stroke:var(--color-success);flex-shrink:0;margin-top:2px}
+.progress{height:8px;background:var(--color-muted);border-radius:999px;overflow:hidden}
+.progress-bar{height:100%;background:var(--color-primary);border-radius:999px;width:64%;transition:width .3s ease}
+footer{color:#94A3B8;font-size:13px;text-align:center;padding:var(--space-2xl) 0 var(--space-lg)}
+@media(max-width:1024px){
+  .sidebar{display:none}
+  .main{margin-left:0;padding:var(--space-lg)}
+  .topbar{margin:calc(var(--space-lg) * -1) calc(var(--space-lg) * -1) var(--space-lg);padding:var(--space-md) var(--space-lg)}
+  .grid-4,.grid-5{grid-template-columns:repeat(2,1fr)}
+  .grid-3{grid-template-columns:1fr}
+  .auth-demo{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo">
+    <span class="logo-mark">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h6l2 2h8v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7z"/><path d="M4 7V5a1 1 0 0 1 1-1h5l2 2h7a1 1 0 0 1 1 1v2"/></svg>
+    </span>
+    FileSync
+  </div>
+  <nav class="nav">
+    <a class="active"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>文件库</a>
+    <a><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>上传</a>
+    <a><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2v6h6"/><path d="M3 20V10a2 2 0 0 1 2-2h10l4 4v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>传输中心</a>
+    <a><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>分享管理</a>
+    <a><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 4v5h5"/><path d="M12 7v5l3 3"/></svg>回收站</a>
+    <a><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.09a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.09a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置</a>
+  </nav>
+  <div style="margin-top:auto;font-size:12px;color:#94A3B8">v2.0 · 新 UI 预览</div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div style="font-weight:600;font-size:15px">设计系统预览</div>
+    <div style="flex:1"></div>
+    <span class="badge badge-done"><span class="badge-dot"></span>已连接</span>
+    <a class="btn btn-primary" style="padding:8px 16px">上传文件</a>
+  </div>
+
+  <div class="breadcrumb"><a>文件库</a> › <a>项目</a> › <b>设计方案</b></div>
+
+  <!-- 配色 -->
+  <section class="section">
+    <h2 class="section-title">01 · 配色系统</h2>
+    <p class="section-sub">文件夹蓝 + 文件琥珀语义 · 背景 #F8FAFC / 前景 #0F172A 对比度 15.9:1</p>
+    <div class="grid grid-5">
+      <div class="swatch" style="background:#2563EB">Primary #2563EB<span>主操作 / 导航</span></div>
+      <div class="swatch" style="background:#3B82F6">Secondary #3B82F6<span>辅助蓝</span></div>
+      <div class="swatch" style="background:#D97706">Accent #D97706<span>文件 / CTA</span></div>
+      <div class="swatch" style="background:#16A34A">Success #16A34A<span>同步完成</span></div>
+      <div class="swatch" style="background:#DC2626">Danger #DC2626<span>删除 / 错误</span></div>
+      <div class="swatch" style="background:#F8FAFC;color:#0F172A;border:1px solid #E4ECFC">Background #F8FAFC<span>页面底色</span></div>
+      <div class="swatch" style="background:#0F172A">Foreground #0F172A<span>正文</span></div>
+      <div class="swatch" style="background:#F1F5FD;color:#0F172A;border:1px solid #E4ECFC">Muted #F1F5FD<span>hover / 表头</span></div>
+      <div class="swatch" style="background:#FFFFFF;color:#0F172A;border:1px solid #E4ECFC">Surface #FFFFFF<span>卡片</span></div>
+      <div class="swatch" style="background:#E4ECFC;color:#0F172A">Border #E4ECFC<span>分隔线</span></div>
+    </div>
+  </section>
+
+  <!-- 字体 -->
+  <section class="section">
+    <h2 class="section-title">02 · 字体</h2>
+    <p class="section-sub">Plus Jakarta Sans（友好现代 SaaS）+ JetBrains Mono（哈希/代码）</p>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="type-scale">
+          <div style="font-size:30px;font-weight:700">H1 · 文件同步就该如此简单</div>
+          <div style="font-size:24px;font-weight:600">H2 · 断点续传 · 秒传 · 安全分享</div>
+          <div style="font-size:20px;font-weight:600">H3 · 传输中心监控面板</div>
+          <div style="font-size:16px">正文 · 无论 512KB 分片上传还是大文件同步</div>
+          <div style="font-size:13px;color:#64748B">辅助 · 12:00 上传完成 · 2.4 GB</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="type-scale" style="font-family:var(--font-mono)">
+          <div style="font-size:14px">SHA256: 9f86d081884c7d659a2f</div>
+          <div style="font-size:13px;color:#64748B">const chunk = file.slice(offset, offset + 524288)</div>
+          <div style="font-size:13px;color:#2563EB">$ filesync upload --resume</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 按钮 & 输入 -->
+  <section class="section">
+    <h2 class="section-title">03 · 按钮 & 表单</h2>
+    <p class="section-sub">150-250ms 过渡 · 按压 scale(.97) · 焦点环 3px 蓝色</p>
+    <div class="card">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:var(--space-xl)">
+        <button class="btn btn-primary">主要操作</button>
+        <button class="btn btn-secondary">次要操作</button>
+        <button class="btn btn-ghost">幽灵按钮</button>
+        <button class="btn btn-danger">危险操作</button>
+        <button class="btn btn-primary" style="opacity:.5;pointer-events:none">禁用态</button>
+      </div>
+      <div class="grid grid-2">
+        <div>
+          <label class="label" for="demo-email">邮箱地址</label>
+          <input class="input" id="demo-email" type="email" placeholder="you@example.com" autocomplete="email">
+        </div>
+        <div>
+          <label class="label" for="demo-pwd">密码（带显示切换）</label>
+          <input class="input" id="demo-pwd" type="password" value="password123" autocomplete="current-password">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 文件行 & 徽章 -->
+  <section class="section">
+    <h2 class="section-title">04 · 文件列表 & 状态徽章</h2>
+    <p class="section-sub">Flat 卡片（白底 + 1px 边框）· 图标实色圆角底</p>
+    <div>
+      <div class="file-row">
+        <span class="icon-box folder"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h6l2 2h8v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7z"/><path d="M4 7V5a1 1 0 0 1 1-1h5l2 2h7a1 1 0 0 1 1 1v2"/></svg></span>
+        <span class="file-name">设计方案</span>
+        <span class="file-meta">12 个文件 · 8.4 MB</span>
+        <span class="badge badge-syncing"><span class="badge-dot"></span>同步中</span>
+      </div>
+      <div class="file-row">
+        <span class="icon-box file"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span>
+        <span class="file-name">设计系统 MASTER.md</span>
+        <span class="file-meta">24 KB · 刚刚</span>
+        <span class="badge badge-done"><span class="badge-dot"></span>已完成</span>
+      </div>
+      <div class="file-row">
+        <span class="icon-box file"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12h8M8 16h5"/></svg></span>
+        <span class="file-name">preview_design.pdf</span>
+        <span class="file-meta">2.4 MB · 传输失败</span>
+        <span class="badge badge-error"><span class="badge-dot"></span>失败</span>
+      </div>
+      <div class="file-row">
+        <span class="icon-box file"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span>
+        <span class="file-name">video_demo.mp4</span>
+        <span class="file-meta">1.2 GB · 排队中</span>
+        <span class="badge badge-wait"><span class="badge-dot"></span>等待中</span>
+      </div>
+    </div>
+    <div style="margin-top:var(--space-md)">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:#64748B;margin-bottom:6px"><span>设计系统文件上传</span><span>64% · 34.2 MB</span></div>
+      <div class="progress"><div class="progress-bar"></div></div>
+    </div>
+  </section>
+
+  <!-- KPI & 表格 -->
+  <section class="section">
+    <h2 class="section-title">05 · 管理后台 · KPI & 表格</h2>
+    <p class="section-sub">density 8/10 紧凑布局 · Tab 下划线式</p>
+    <div class="grid grid-4" style="margin-bottom:var(--space-lg)">
+      <div class="card kpi"><span class="kpi-label">系统总览</span><span class="kpi-value">1,284</span><span class="kpi-delta up">↑ 12.5% 本周</span></div>
+      <div class="card kpi"><span class="kpi-label">用户总数</span><span class="kpi-value">8,432</span><span class="kpi-delta up">↑ 3.2% 本周</span></div>
+      <div class="card kpi"><span class="kpi-label">文件总数</span><span class="kpi-value">56,913</span><span class="kpi-delta down">↓ 0.8% 本周</span></div>
+      <div class="card kpi"><span class="kpi-label">分享链接</span><span class="kpi-value">1,057</span><span class="kpi-delta up">↑ 8.4% 本周</span></div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <div class="tab" style="padding:0 16px;margin:0">
+        <button class="active">系统总览</button><button>用户管理</button><button>文件管理</button><button>分享管理</button>
+      </div>
+      <table class="table" style="border:none;border-radius:0">
+        <thead><tr><th>用户</th><th>邮箱</th><th>存储用量</th><th>状态</th><th>注册时间</th></tr></thead>
+        <tbody>
+          <tr><td>张三</td><td>zhang@example.com</td><td>2.4 GB / 10 GB</td><td><span class="badge badge-done"><span class="badge-dot"></span>正常</span></td><td>2026-07-01</td></tr>
+          <tr><td>李四</td><td>li@example.com</td><td>8.1 GB / 10 GB</td><td><span class="badge badge-syncing"><span class="badge-dot"></span>近满</span></td><td>2026-06-18</td></tr>
+          <tr><td>王五</td><td>wang@example.com</td><td>0.4 GB / 10 GB</td><td><span class="badge badge-error"><span class="badge-dot"></span>禁用</span></td><td>2026-05-30</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 认证页 -->
+  <section class="section">
+    <h2 class="section-title">06 · 认证页 · 分屏布局</h2>
+    <p class="section-sub">左品牌区 + 右表单（<768px 自动单列）</p>
+    <div class="auth-demo">
+      <div class="auth-brand">
+        <div style="display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h6l2 2h8v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7z"/><path d="M4 7V5a1 1 0 0 1 1-1h5l2 2h7a1 1 0 0 1 1 1v2"/></svg>
+          FileSync
+        </div>
+        <div>
+          <div style="font-size:24px;font-weight:600;line-height:1.35">您的文件，<br>安全同步每一刻</div>
+          <ul class="checklist" style="margin-top:var(--space-lg)">
+            <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>端到端加密 · RSA + JWT</li>
+            <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>断点续传 · SHA256 秒传</li>
+            <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>多空间 · 回收站 · 分享链接</li>
+          </ul>
+        </div>
+        <div style="font-size:12px;opacity:.7">© 2026 FileSync · 安全云存储服务</div>
+      </div>
+      <div class="auth-form">
+        <div style="font-size:20px;font-weight:600">欢迎回来</div>
+        <div>
+          <label class="label" for="a-email">邮箱</label>
+          <input class="input" id="a-email" type="email" placeholder="you@example.com" autocomplete="email">
+        </div>
+        <div>
+          <label class="label" for="a-pwd">密码</label>
+          <input class="input" id="a-pwd" type="password" placeholder="••••••••" autocomplete="current-password">
+        </div>
+        <button class="btn btn-primary" style="width:100%;justify-content:center">登 录</button>
+        <div style="display:flex;justify-content:space-between;font-size:13px">
+          <a style="color:var(--color-primary);cursor:pointer">忘记密码？</a>
+          <a style="color:var(--color-primary);cursor:pointer">注册账号</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 落地页 -->
+  <section class="section">
+    <h2 class="section-title">07 · 落地页 · Hero</h2>
+    <div class="hero-demo">
+      <div style="font-size:38px;font-weight:600;line-height:1.25">安全、高效的文件同步服务</div>
+      <div style="font-size:18px;color:#64748B;margin:16px 0 32px">512KB 分片上传 · 断点续传 · SHA256 秒传 · 分享预览 · 在线编辑</div>
+      <div style="display:flex;gap:12px;justify-content:center;margin-bottom:var(--space-xl)">
+        <button class="btn btn-primary">免费开始使用</button>
+        <button class="btn btn-secondary">了解更多</button>
+      </div>
+      <div>
+        <span class="chip">RSA-2048</span><span class="chip">JWT RS256</span><span class="chip">OAuth2 / SSO</span><span class="chip">SHA256 秒传</span><span class="chip">WebDAV</span><span class="chip">S3 / OSS</span>
+      </div>
+    </div>
+  </section>
+
+  <footer>FileSync 全新 UI 方案预览 · 由 ui-ux-pro-max 设计系统生成 · 浅色瑞士极简风</footer>
+</div>
+
+</body>
+</html>

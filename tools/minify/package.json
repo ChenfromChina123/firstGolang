@@ -7,8 +7,11 @@
     "minify": "node minify.js"
   },
   "dependencies": {
-    "terser": "^5.31.0",
     "clean-css": "^5.3.3",
-    "html-minifier-terser": "^7.2.0"
+    "html-minifier-terser": "^7.2.0",
+    "terser": "^5.31.0"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "^5.5.0"
   }
 }

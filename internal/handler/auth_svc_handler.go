@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"filesync/internal/auth"
-	"filesync/internal/model"
 	"filesync/internal/service"
 )
 
@@ -20,9 +19,9 @@ import (
 
 // AuthSvcHandler 组合认证服务 + OAuth 服务 + JWKS 服务
 type AuthSvcHandler struct {
-	Auth  *service.AuthService
-	OAuth *service.OAuthService
-	JWKSSvc  *service.JWKSService  // 重命名避免与 JWKS() 方法同名
+	Auth    *service.AuthService
+	OAuth   *service.OAuthService
+	JWKSSvc *service.JWKSService // 重命名避免与 JWKS() 方法同名
 	// 统一登录页地址（未登录时重定向）
 	LoginPageURL string
 }
@@ -99,14 +98,13 @@ func (h *AuthSvcHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.Auth.Login(w, r, body.Username, body.Password, body.ClientID)
 	if err != nil {
-		errMsg := err.Error()
 		switch {
-		case errors.Is(err, errors.New("invalid username or password")):
-			writeError(w, http.StatusUnauthorized, "invalid_credentials", errMsg)
-		case errMsg != "" && len(errMsg) > 17 && errMsg[:17] == "account not activ":
-			writeError(w, http.StatusForbidden, "account_not_activated", errMsg)
+		case errors.Is(err, service.ErrInvalidCredentials):
+			writeError(w, http.StatusUnauthorized, "invalid_credentials", err.Error())
+		case errors.Is(err, service.ErrAccountNotActive):
+			writeError(w, http.StatusForbidden, "account_not_activated", err.Error())
 		default:
-			writeError(w, http.StatusBadRequest, "login_failed", errMsg)
+			writeError(w, http.StatusBadRequest, "login_failed", err.Error())
 		}
 		return
 	}
@@ -195,6 +193,24 @@ func (h *AuthSvcHandler) Register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ResendActivation POST /auth/resend-activation
+func (h *AuthSvcHandler) ResendActivation(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email string `json:"email"`
+	}
+	if err := readBody(w, r, 2048, &body); err != nil {
+		return
+	}
+	if err := h.Auth.ResendActivation(body.Email); err != nil {
+		writeError(w, http.StatusBadRequest, "resend_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "if email is available and not activated, activation email has been sent",
+	})
+}
+
 // Activate GET /auth/activate?token=xxx
 // 激活后重定向到前端激活结果页
 func (h *AuthSvcHandler) Activate(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +223,7 @@ func (h *AuthSvcHandler) Activate(w http.ResponseWriter, r *http.Request) {
 	u, _ := url.Parse(redirectBase)
 	q := u.Query()
 	if err != nil {
-		if errors.Is(err, errors.New("activation token expired")) {
+		if errors.Is(err, service.ErrActivationExpired) {
 			q.Set("activate", "expired")
 		} else {
 			q.Set("activate", "error")
@@ -369,19 +385,39 @@ func (h *AuthSvcHandler) OpenIDConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	base := scheme + "://" + r.Host
 	cfg := map[string]any{
-		"issuer":                 base,
-		"authorization_endpoint": base + "/oauth/authorize",
-		"token_endpoint":         base + "/oauth/token",
-		"userinfo_endpoint":      base + "/auth/me",
-		"jwks_uri":               base + "/.well-known/jwks.json",
-		"scopes_supported":       []string{"filesync:read", "filesync:write", "filesync:*"},
-		"response_types_supported": []string{"code"},
-		"grant_types_supported":    []string{"authorization_code", "refresh_token"},
+		"issuer":                                base,
+		"authorization_endpoint":                base + "/oauth/authorize",
+		"token_endpoint":                        base + "/oauth/token",
+		"userinfo_endpoint":                     base + "/auth/me",
+		"jwks_uri":                              base + "/.well-known/jwks.json",
+		"scopes_supported":                      []string{"filesync:read", "filesync:write", "filesync:*"},
+		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token", "client_credentials"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post", "none"},
+		"code_challenge_methods_supported":      []string{"S256", "plain"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
-		"subject_types_supported":                []string{"public"},
+		"subject_types_supported":               []string{"public"},
 	}
 	writeJSON(w, http.StatusOK, cfg)
+}
+
+// ProtectedResourceMetadata GET /.well-known/oauth-protected-resource
+// RFC 9728：受保护资源元数据。MCP/网关等资源服务器用 JWKS + RS256 验签，
+// 该文档声明本服务器的 bearer token 校验方式与授权服务器。
+func (h *AuthSvcHandler) ProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	base := scheme + "://" + r.Host
+	md := map[string]any{
+		"resource":                base,
+		"authorization_servers":   []string{base},
+		"scopes_supported":        []string{"filesync:read", "filesync:write", "filesync:share"},
+		"bearer_methods_supported": []string{"header", "query"},
+		"resource_signing_algs":    []string{"RS256"},
+	}
+	writeJSON(w, http.StatusOK, md)
 }
 
 // ===== 10. 管理员端点（users CRUD）=====
@@ -394,7 +430,7 @@ func (h *AuthSvcHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	_ = q  // 预留分页参数
+	_ = q // 预留分页参数
 	page := 1
 	pageSize := 20
 	_ = page
@@ -418,9 +454,4 @@ func (h *AuthSvcHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": result, "total": len(result)})
-}
-
-// AuthSvc_DB_ListUsers 辅助：暴露给 handler 的用户列表查询
-func (h *AuthSvcHandler) AuthSvc_DB_ListUsers() ([]*model.User, error) {
-	return h.Auth.ListUsersExport()
 }

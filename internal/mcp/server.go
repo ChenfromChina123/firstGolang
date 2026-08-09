@@ -1,0 +1,157 @@
+// Package mcp 实现 FileSync MCP Server。
+//
+// 支持两种 transport：
+//   - stdio（本地 agent，Claude Desktop / Cursor）
+//   - Streamable HTTP（POST /mcp，远程 agent）
+//
+// 认证：PAT（Bearer fsk_*）由 HTTP 包装 handler 验证后注入 ToolContext；
+// stdio 模式从环境变量 FILESYNC_PAT 读取。
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"reflect"
+	"strings"
+	"time"
+
+	"filesync/internal/agentsvc"
+	"filesync/internal/model"
+
+	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// MCP 持有 AgentSvc 引用并负责工具注册。
+type MCP struct {
+	svc   *agentsvc.AgentSvc
+	tools []*mcp.Tool // 已注册工具（含自动生成的 InputSchema），供 manifest 导出
+}
+
+// New 创建 MCP 服务实例。
+func New(svc *agentsvc.AgentSvc) *MCP {
+	return &MCP{svc: svc}
+}
+
+// Server 构建并注册全部工具的 MCP server（stdio 与 HTTP 共用）。
+func (s *MCP) Server() *mcp.Server {
+	srv := mcp.NewServer(&mcp.Implementation{
+		Name:    "filesync",
+		Version: "1.0.0",
+	}, &mcp.ServerOptions{
+		Instructions: "FileSync MCP Server: 文件管理、回收站、分享。使用前先调用 whoami 查看当前令牌能力边界。",
+	})
+	s.registerTools(srv, s.svc)
+	return srv
+}
+
+// RegisteredTools 返回已注册工具列表（含 InputSchema），供 manifest 生成。
+func (s *MCP) RegisteredTools() []*mcp.Tool { return s.tools }
+
+// addTool 注册工具并收集定义（供 manifest 自动导出，避免文档漂移）。
+func addTool[In, Out any](s *MCP, srv *mcp.Server, tool *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	if tool.InputSchema == nil {
+		// 用 jsonschema-go 反射生成参数 schema（与 SDK 内部同源）
+		if sch, err := jsonschema.ForType(reflect.TypeFor[In](), &jsonschema.ForOptions{}); err == nil {
+			tool.InputSchema = sch
+		}
+	}
+	s.tools = append(s.tools, tool)
+	mcp.AddTool(srv, tool, h)
+}
+
+// HTTPHandler 返回可挂载到 /mcp 的 Streamable HTTP handler。
+// stateless 模式：每个请求独立认证（Authorization: Bearer fsk_*）。
+// server 实例只构建一次并缓存复用——每次请求重建会触发客户端
+// 重新 initialize / 重新加载工具（表现为「刷新客户端 UI 全部重建」）。
+func (s *MCP) HTTPHandler() http.Handler {
+	srv := s.Server()
+	return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		return srv
+	}, &mcp.StreamableHTTPOptions{
+		Stateless:    true,
+		JSONResponse: true,
+	})
+}
+
+// downloadURL 生成 30 分钟有效的分享式下载链接。
+// 复用分享公开路由（/api/s/{id}/download?token=...）：
+// 直接创建带 30 分钟过期的 file 分享，返回其访问路径。
+func (s *MCP) downloadURL(f *model.FileRecord) (string, error) {
+	// 用分享机制生成临时链接（带过期），确保外部可访问 + 防盗链
+	v, err := s.svc.CreateShare(context.Background(), agentsvc.ShareCreateOptions{
+		FileID:    f.ID,
+		ShareType: "file",
+		ExpiresIn: 1800,
+		Username:  f.Owner,
+		Role:      "user",
+	})
+	if err != nil {
+		return "", err
+	}
+	return v.URL, nil
+}
+
+// ============ 工具 helper ============
+
+// jsonMarshal 序列化结构化内容（无法失败，仅内部使用）。
+func jsonMarshal(v any) (json.RawMessage, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
+}
+
+// looksBinary 判断字节流是否含二进制内容（NUL 或高比例控制字符）。
+func looksBinary(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	const sample = 512
+	n := len(data)
+	if n > sample {
+		n = sample
+	}
+	ctrl := 0
+	for _, b := range data[:n] {
+		if b == 0 {
+			return true
+		}
+		if b < 0x20 && b != '\n' && b != '\r' && b != '\t' {
+			ctrl++
+		}
+	}
+	return ctrl > 2
+}
+
+// fetchURL 下载远程 URL 内容（fs_upload source_url 用）。
+// maxBytes 限制大小，默认 200MB。仅允许 http/https。
+func fetchURL(rawURL string, maxBytes int64) ([]byte, error) {
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		return nil, fmt.Errorf("source_url must be http(s)://")
+	}
+	client := &http.Client{Timeout: 5 * time.Minute}
+	if maxBytes <= 0 {
+		maxBytes = 200 * 1024 * 1024
+	}
+	resp, err := client.Get(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch source_url: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch source_url: HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("fetch source_url: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("source_url content too large (max %d bytes)", maxBytes)
+	}
+	return data, nil
+}

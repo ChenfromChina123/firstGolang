@@ -20,24 +20,26 @@ type UploadSession struct {
 	StorageType    string    `json:"storage_type"` // local, s3
 	UploadMode     string    `json:"upload_mode,omitempty"` // "presigned" | "relay"（空=relay，兼容旧客户端）
 	ObjectKey      string    `json:"object_key,omitempty"` // presigned 模式下的最终对象键（合并后的目标）
+	SpaceID        string    `json:"space_id,omitempty"`   // 目标空间 ID（空=默认空间）
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // FileRecord represents a completed file
 type FileRecord struct {
-	ID          string    `json:"id"`
-	Filename    string    `json:"filename"`
-	Size        int64     `json:"size"`
-	Hash        string    `json:"hash"`
-	StoragePath string    `json:"storage_path"`
-	StorageType string    `json:"storage_type"`
-	ChunkSize   int64     `json:"chunk_size"`
-	TotalChunks int       `json:"total_chunks"`
-	Status      string    `json:"status"` // completed, failed
-	Owner       string    `json:"owner"`  // 文件归属用户名（空=历史数据/公共）
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string     `json:"id"`
+	Filename    string     `json:"filename"`
+	Size        int64      `json:"size"`
+	Hash        string     `json:"hash"`
+	StoragePath string     `json:"storage_path"`
+	StorageType string     `json:"storage_type"`
+	ChunkSize   int64      `json:"chunk_size"`
+	TotalChunks int        `json:"total_chunks"`
+	Status      string     `json:"status"` // completed, failed
+	Owner       string     `json:"owner"`  // 文件归属用户名（空=历史数据/公共）
+	SpaceID     string     `json:"space_id"` // 所属空间 ID（空=默认空间）
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 	DeletedAt   *time.Time `json:"deleted_at,omitempty"` // NULL=正常，非NULL=已移入回收站（删除时间）
 }
 
@@ -57,7 +59,21 @@ type InitUploadRequest struct {
 	FileSize   int64  `json:"file_size"`
 	ChunkSize  int64  `json:"chunk_size"`
 	FileHash   string `json:"file_hash,omitempty"`
-	Storage    string `json:"storage"` // local, s3
+	Storage    string `json:"storage"`         // local, s3
+	SpaceID    string `json:"space_id,omitempty"` // 目标空间 ID（空=默认空间）
+}
+
+// Space 表示用户的存储空间（相当于一个独立磁盘 / 文件树根）。
+// 每个用户可创建多个空间，文件通过 files.space_id 关联所属空间。
+// 空间间文件树相互隔离：切换空间即切换文件列表根。
+type Space struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Owner       string    `json:"owner"`         // 归属用户名（空=历史/公共，admin 可操作）
+	StorageType string    `json:"storage_type"`  // local | s3（空间默认存储后端）
+	FileCount   int64     `json:"file_count"`    // 空间内文件数（含 .keep 占位，动态统计）
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // PresignedPartInfo 描述一个分片的 presigned 上传信息（断点续传时客户端按此切片）。
@@ -207,6 +223,7 @@ type Share struct {
 	DirPrefix     string     `json:"dir_prefix,omitempty"`     // 目录分享：目录前缀
 	ShareType     string     `json:"share_type"`               // "file" | "dir"
 	CreatedBy     string     `json:"created_by"`               // 创建者用户名
+	SpaceID       string     `json:"space_id,omitempty"`       // 分享所在空间 ID（空=默认空间，旧分享兼容）
 	CreatedAt     time.Time  `json:"created_at"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`     // nil=永久
 	DownloadCount int        `json:"download_count"`
@@ -243,6 +260,7 @@ type CheckUploadRequest struct {
 	Filename string `json:"filename"` // 目标文件名（含路径前缀，如 "docs/report.pdf"）
 	FileSize int64  `json:"file_size"` // 文件大小（字节）
 	FileHash string `json:"file_hash"` // 完整 SHA256 hex（64 字符）
+	SpaceID  string `json:"space_id,omitempty"` // 目标空间 ID（空=默认空间）
 }
 
 // CheckUploadResponse 秒传检查响应。
@@ -253,6 +271,28 @@ type CheckUploadResponse struct {
 	Filename      string `json:"filename,omitempty"`       // 实际文件名
 	Size          int64  `json:"size,omitempty"`           // 文件大小
 	Hash          string `json:"hash,omitempty"`           // 文件 SHA256
+}
+
+// APIToken 表示个人访问令牌（PAT，Personal Access Token）。
+// 用于 MCP/外部 Agent 认证，取代「账号密码 + RSA 加密登录 + 每 15 分钟刷新」流程。
+// 明文只在创建时返回一次（fsk_ 前缀），库内仅存 SHA-256 哈希。
+// Scopes 为空格分隔的 scope 列表（如 "filesync:read filesync:write"）。
+// SpaceID / PathPrefix 提供令牌级沙箱边界；QuotaBytes 提供令牌级写入配额。
+type APIToken struct {
+	ID         string     `json:"id"`
+	UserID     string     `json:"user_id"`
+	Username   string     `json:"username,omitempty"` // 冗余存储，便于审计
+	Name       string     `json:"name"`               // 用户可读名称（如 "claude-desktop"）
+	TokenHash  string     `json:"-"`                  // SHA-256 hex，不序列化
+	Scopes     string     `json:"scopes"`             // 空格分隔
+	SpaceID    string     `json:"space_id,omitempty"` // 限定单空间；空=不限定
+	PathPrefix string     `json:"path_prefix,omitempty"` // 限定目录前缀；空=不限定
+	QuotaBytes int64      `json:"quota_bytes"`        // 单 token 写入配额；0=不限制
+	QuotaUsed  int64      `json:"quota_used"`         // 已用写入字节
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"` // nil=不过期
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"` // 非 nil=已吊销
 }
 
 // TrashItem 表示回收站中的文件项（已软删除，可恢复或永久删除）。
@@ -266,4 +306,15 @@ type TrashItem struct {
 	DeletedAt   string `json:"deleted_at"`   // 移入回收站时间（ISO 8601）
 	ExpiresAt   string `json:"expires_at"`   // 过期时间（超过此时间将被自动清理，ISO 8601）
 	IsExpired   bool   `json:"is_expired"`   // 是否已过期（当前时间 > expires_at）
+}
+
+// UploadEvent 表示一次上传事件记录（MCP / 外部上传，供传输中心历史回溯）。
+type UploadEvent struct {
+	ID        int64  `json:"id"`
+	Username  string `json:"username"`
+	Filename  string `json:"filename"`
+	Size      int64  `json:"size"`
+	SpaceID   string `json:"space_id,omitempty"`
+	Tool      string `json:"tool,omitempty"` // fs_write / fs_upload / ...
+	CreatedAt string `json:"created_at"`     // ISO 8601
 }

@@ -4,9 +4,8 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"os"
-	"strings"
 
+	"filesync/internal/authutil"
 	"filesync/internal/jwks"
 )
 
@@ -15,14 +14,6 @@ import (
 // 默认 AUTH_MODE=jwt：校验 AuthSvc Access Token（JWKS 验签）
 // AUTH_MODE=dev：仅本机联调，信任 X-Auth-User-ID
 // ============================================================
-
-func authMode() string {
-	m := strings.ToLower(strings.TrimSpace(os.Getenv("AUTH_MODE")))
-	if m == "" {
-		return "jwt"
-	}
-	return m
-}
 
 type ownerCtxKey struct{}
 
@@ -37,20 +28,9 @@ func OwnerFromContext(ctx context.Context) (string, bool) {
 	return uid, ok
 }
 
-func bearerToken(r *http.Request) string {
-	h := r.Header.Get("Authorization")
-	if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
-		return strings.TrimSpace(h[7:])
-	}
-	if c, err := r.Cookie("fs_access_token"); err == nil && c.Value != "" {
-		return c.Value
-	}
-	return ""
-}
-
 // AuthMiddleware 工作台认证中间件
 func AuthMiddleware(validator *jwks.Validator) func(http.Handler) http.Handler {
-	devMode := authMode() == "dev"
+	devMode := authutil.DevAuthMode()
 	if devMode {
 		log.Println("[WARN] Workbench AUTH_MODE=dev：信任客户端 X-Auth-User-ID，仅限本机联调")
 	}
@@ -72,7 +52,7 @@ func AuthMiddleware(validator *jwks.Validator) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(WithOwner(r.Context(), uid)))
 				return
 			}
-			claims, err := validator.Verify(bearerToken(r))
+			claims, err := validator.Verify(authutil.BearerToken(r))
 			if err != nil || claims.UserID == "" {
 				writeErr(w, http.StatusUnauthorized, "unauthorized", "invalid or missing access token")
 				return

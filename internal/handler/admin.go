@@ -127,8 +127,8 @@ func (h *AdminHandler) listUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"users":  result,
-		"total":  len(result),
+		"users": result,
+		"total": len(result),
 	})
 }
 

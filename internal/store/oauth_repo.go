@@ -36,6 +36,7 @@ func (db *DB) EnsureOAuthClientsTables() error {
 				name VARCHAR(128) NOT NULL,
 				redirect_uris TEXT NOT NULL,
 				allowed_scopes VARCHAR(512) NOT NULL DEFAULT 'filesync:read filesync:write',
+				owner_username VARCHAR(64) NOT NULL DEFAULT '',
 				is_public TINYINT(1) NOT NULL DEFAULT 0,
 				created_at DATETIME NOT NULL
 			) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
@@ -90,6 +91,7 @@ func (db *DB) EnsureOAuthClientsTables() error {
 				name TEXT NOT NULL,
 				redirect_uris TEXT NOT NULL,
 				allowed_scopes TEXT NOT NULL DEFAULT 'filesync:read filesync:write',
+				owner_username TEXT NOT NULL DEFAULT '',
 				is_public INTEGER NOT NULL DEFAULT 0,
 				created_at TEXT NOT NULL
 			)`,
@@ -139,6 +141,75 @@ func (db *DB) EnsureOAuthClientsTables() error {
 	}
 }
 
+// migrateOAuthClientsAddOwner 为已存在的 oauth_clients 表追加 owner_username 列（旧库升级路径）。
+// 用于 client_credentials grant：client 绑定一个 FileSync 用户作为令牌身份。
+func (db *DB) migrateOAuthClientsAddOwner() error {
+	// oauth_clients 表可能由 EnsureOAuthClientsTables() 在 migrate() 之后创建
+	// （新表 CREATE 语句已含 owner_username 列）。此处表不存在则跳过。
+	var exists int
+	var err error
+	if db.dialect == "mysql" {
+		err = db.conn.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'oauth_clients'`).Scan(&exists)
+	} else {
+		err = db.conn.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='oauth_clients'`).Scan(&exists)
+	}
+	if err != nil || exists == 0 {
+		return nil // 表不存在，等待后续创建（新表已含该列）
+	}
+
+	var columns []string
+	switch db.dialect {
+	case "mysql":
+		rows, err := db.conn.Query(
+			`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+			 WHERE TABLE_NAME = 'oauth_clients' AND TABLE_SCHEMA = DATABASE()`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(c))
+		}
+		rows.Close()
+	default:
+		rows, err := db.conn.Query(`PRAGMA table_info(oauth_clients)`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt interface{}
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+				rows.Close()
+				return err
+			}
+			columns = append(columns, strings.ToLower(name))
+		}
+		rows.Close()
+	}
+	for _, c := range columns {
+		if c == "owner_username" {
+			return nil // 已存在
+		}
+	}
+	var stmt string
+	if db.dialect == "mysql" {
+		stmt = `ALTER TABLE oauth_clients ADD COLUMN owner_username VARCHAR(64) NOT NULL DEFAULT ''`
+	} else {
+		stmt = `ALTER TABLE oauth_clients ADD COLUMN owner_username TEXT NOT NULL DEFAULT ''`
+	}
+	if _, err := db.conn.Exec(stmt); err != nil {
+		return fmt.Errorf("add oauth_clients.owner_username column: %w", err)
+	}
+	return nil
+}
+
 // execOneByOne 逐条执行 SQL（MySQL 不支持单 Exec 多语句）
 func (db *DB) execOneByOne(stmts []string) error {
 	for _, s := range stmts {
@@ -153,7 +224,12 @@ func (db *DB) execOneByOne(stmts []string) error {
 	return nil
 }
 
-func min(a, b int) int { if a < b { return a }; return b }
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // ---------------- 初始客户端导入 ----------------
 
@@ -178,9 +254,13 @@ func (db *DB) BootstrapOAuthClients(clientsStr string) error {
 		urisRaw := strings.TrimSpace(parts[3])
 		scope := strings.TrimSpace(parts[4])
 		isPublic := false
+		owner := ""
 		if len(parts) >= 6 {
 			t := strings.TrimSpace(parts[5])
 			isPublic = t == "1" || strings.EqualFold(t, "true")
+		}
+		if len(parts) >= 7 {
+			owner = strings.TrimSpace(parts[6])
 		}
 		if clientID == "" || secretPlain == "" {
 			continue
@@ -201,9 +281,9 @@ func (db *DB) BootstrapOAuthClients(clientsStr string) error {
 		urisJSON, _ := json.Marshal(uris)
 		nowStr := formatDBTime(time.Now(), db.dialect)
 		_, err = db.conn.Exec(
-			`INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, allowed_scopes, is_public, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			clientID, string(hash), name, string(urisJSON), scope, boolToInt(isPublic), nowStr,
+			`INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, allowed_scopes, owner_username, is_public, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			clientID, string(hash), name, string(urisJSON), scope, owner, boolToInt(isPublic), nowStr,
 		)
 		if err != nil {
 			return fmt.Errorf("insert oauth client %s: %w", clientID, err)
@@ -215,13 +295,14 @@ func (db *DB) BootstrapOAuthClients(clientsStr string) error {
 // ---------------- OAuthClientStore 接口实现 ----------------
 
 // GetByID 实现 auth.OAuthClientStore.GetByID
-func (db *DB) GetByID(clientID string) (secretHash string, name string, redirectURIs []string, allowedScopes []string, isPublic bool, err error) {
+func (db *DB) GetByID(clientID string) (secretHash string, name string, redirectURIs []string, allowedScopes []string, ownerUsername string, isPublic bool, err error) {
 	var urisJSON, scopeStr string
+	var ownerStr sql.NullString
 	var isPubInt int
 	err = db.conn.QueryRow(
-		`SELECT client_secret_hash, name, redirect_uris, allowed_scopes, is_public
+		`SELECT client_secret_hash, name, redirect_uris, allowed_scopes, owner_username, is_public
 		 FROM oauth_clients WHERE client_id = ?`, clientID,
-	).Scan(&secretHash, &name, &urisJSON, &scopeStr, &isPubInt)
+	).Scan(&secretHash, &name, &urisJSON, &scopeStr, &ownerStr, &isPubInt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			err = auth.ErrInvalidClient
@@ -229,6 +310,7 @@ func (db *DB) GetByID(clientID string) (secretHash string, name string, redirect
 		return
 	}
 	isPublic = isPubInt != 0
+	ownerUsername = ownerStr.String
 	if urisJSON != "" {
 		_ = json.Unmarshal([]byte(urisJSON), &redirectURIs)
 	}
@@ -261,17 +343,18 @@ func (db *DB) SaveAuthCode(code, clientID, userID, redirectURI, scope, state, no
 }
 
 // GetAndMarkUsed 实现 auth.AuthCodeStore.GetAndMarkUsed
-func (db *DB) GetAndMarkUsed(code, clientID, redirectURI string) (userID, scope, state, challenge, storedRedirect string, err error) {
+func (db *DB) GetAndMarkUsed(code, clientID, redirectURI string) (userID, scope, state, challenge, method, storedRedirect string, err error) {
 	var usedInt int
 	var expiresAt any
 	var codeChallenge sql.NullString
+	var codeMethod sql.NullString
 	var storedRedirectURI sql.NullString
 	var stateStr sql.NullString
 	err = db.conn.QueryRow(
-		`SELECT user_id, scope, state, redirect_uri, code_challenge, expires_at, used
+		`SELECT user_id, scope, state, redirect_uri, code_challenge, code_challenge_method, expires_at, used
 		 FROM oauth_codes WHERE code = ? AND client_id = ?`,
 		code, clientID,
-	).Scan(&userID, &scope, &stateStr, &storedRedirectURI, &codeChallenge, &expiresAt, &usedInt)
+	).Scan(&userID, &scope, &stateStr, &storedRedirectURI, &codeChallenge, &codeMethod, &expiresAt, &usedInt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			err = auth.ErrInvalidClient
@@ -288,6 +371,7 @@ func (db *DB) GetAndMarkUsed(code, clientID, redirectURI string) (userID, scope,
 		return
 	}
 	challenge = codeChallenge.String
+	method = codeMethod.String
 	storedRedirect = storedRedirectURI.String
 	state = stateStr.String
 	// 原子标记已使用
@@ -491,7 +575,12 @@ func (db *DB) IsBlacklisted(jti string) (bool, error) {
 // ---------------- 工具函数 ----------------
 
 // boolToInt 转换 bool → int（SQL 兼容）
-func boolToInt(b bool) int { if b { return 1 }; return 0 }
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
 
 // splitAndTrim 按分隔符切分并去空格、去空串
 func splitAndTrim(s, sep string) []string {

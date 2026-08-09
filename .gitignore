@@ -95,3 +95,6 @@ _tmp_server_linux
 filesync_server_linux
 server_linux_new
 
+
+# Windows 设备名文件（nul 无法被 git 索引）
+nul

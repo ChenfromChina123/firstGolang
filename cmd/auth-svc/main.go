@@ -8,12 +8,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"filesync/internal/auth"
+	"filesync/internal/cmdutil"
 	"filesync/internal/email"
 	"filesync/internal/handler"
 	"filesync/internal/middleware"
@@ -34,26 +33,26 @@ func main() {
 	log.Println("========================================")
 
 	// --- 读取环境变量 ---
-	port := getEnvInt("PORT", 8081)
-	dataDir := getEnv("DATA_DIR", "./data_auth")
-	mysqlDSN := getEnv("MYSQL_DSN", "")
-	accessTTL := time.Duration(getEnvInt("JWT_ACCESS_TTL", 900)) * time.Second
-	refreshTTL := time.Duration(getEnvInt("JWT_REFRESH_TTL", 604800)) * time.Second
-	ssoTTL := time.Duration(getEnvInt("SSO_SESSION_TTL", 86400)) * time.Second
-	cookieDomain := getEnv("COOKIE_DOMAIN", "")
-	cookieSecure := getEnvBool("COOKIE_SECURE", false)
-	bootstrapClients := getEnv("OAUTH_BOOTSTRAP_CLIENTS", "")
-	loginPage := getEnv("LOGIN_PAGE_URL", "/web/login.html")
-	baseURL := getEnv("BASE_URL", fmt.Sprintf("http://localhost:%d", port))
+	port := cmdutil.GetEnvInt("PORT", 8081)
+	dataDir := cmdutil.GetEnv("DATA_DIR", "./data_auth")
+	mysqlDSN := cmdutil.GetEnv("MYSQL_DSN", "")
+	accessTTL := time.Duration(cmdutil.GetEnvInt("JWT_ACCESS_TTL", 900)) * time.Second
+	refreshTTL := time.Duration(cmdutil.GetEnvInt("JWT_REFRESH_TTL", 604800)) * time.Second
+	ssoTTL := time.Duration(cmdutil.GetEnvInt("SSO_SESSION_TTL", 86400)) * time.Second
+	cookieDomain := cmdutil.GetEnv("COOKIE_DOMAIN", "")
+	cookieSecure := cmdutil.GetEnvBool("COOKIE_SECURE", false)
+	bootstrapClients := cmdutil.GetEnv("OAUTH_BOOTSTRAP_CLIENTS", "")
+	loginPage := cmdutil.GetEnv("LOGIN_PAGE_URL", "/web/login.html")
+	baseURL := cmdutil.GetEnv("BASE_URL", fmt.Sprintf("http://localhost:%d", port))
 	// SMTP 配置
-	smtpHost := getEnv("SMTP_HOST", "")
-	smtpPort := getEnvInt("SMTP_PORT", 587)
-	smtpUser := getEnv("SMTP_USER", "")
-	smtpPass := getEnv("SMTP_PASS", "")
-	smtpFrom := getEnv("SMTP_FROM", "")
+	smtpHost := cmdutil.GetEnv("SMTP_HOST", "")
+	smtpPort := cmdutil.GetEnvInt("SMTP_PORT", 587)
+	smtpUser := cmdutil.GetEnv("SMTP_USER", "")
+	smtpPass := cmdutil.GetEnv("SMTP_PASS", "")
+	smtpFrom := cmdutil.GetEnv("SMTP_FROM", "")
 	// 默认管理员
-	adminUser := getEnv("ADMIN_USERNAME", "")
-	adminPass := getEnv("ADMIN_PASSWORD", "")
+	adminUser := cmdutil.GetEnv("ADMIN_USERNAME", "")
+	adminPass := cmdutil.GetEnv("ADMIN_PASSWORD", "")
 
 	// 确保数据目录
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
@@ -64,7 +63,7 @@ func main() {
 	var db *store.DB
 	var err error
 	if mysqlDSN != "" {
-		log.Printf("[Init] 使用 MySQL: %s", maskDSN(mysqlDSN))
+		log.Printf("[Init] 使用 MySQL: %s", cmdutil.MaskDSN(mysqlDSN))
 		db, err = store.NewMySQL(mysqlDSN)
 	} else {
 		sqlitePath := filepath.Join(dataDir, "auth.db")
@@ -95,7 +94,12 @@ func main() {
 	}
 
 	// --- 3. 加载/生成 RSA 密钥对（JWT RS256 签名）---
+	// 认证唯一化：与 server 单体共享密钥时配置 JWT_RSA_KEY_FILE（指向同一私钥文件），
+	// 保证 server 签发的 Access Token 能被本服务的 JWKS 公钥验证（下游服务透传验签闭环）。
 	rsaPath := filepath.Join(dataDir, "jwt_key.pem")
+	if v := cmdutil.GetEnv("JWT_RSA_KEY_FILE", ""); v != "" {
+		rsaPath = v
+	}
 	var rsaKeys *auth.RSAKeys
 	rsaKeys, err = auth.LoadOrGenerateKeys(rsaPath)
 	if err != nil {
@@ -115,7 +119,9 @@ func main() {
 	).WithTTL(accessTTL, refreshTTL)
 
 	var ssoMgr *auth.SSOSessionManager
-	ssoMgr = auth.NewSSOSessionManager(ssoStoreAdapter{db: db}, cookieDomain, cookieSecure).WithTTL(ssoTTL)
+	ssoMgr = auth.NewSSOSessionManager(
+		service.SSOStoreAdapter{DB: db}, cookieDomain, cookieSecure,
+	).WithTTL(ssoTTL)
 
 	// --- 5. 邮件服务（可选）---
 	var mailer *email.SMTPMailer
@@ -144,26 +150,27 @@ func main() {
 	mux.HandleFunc("/health", authHandler.Health)
 	mux.HandleFunc("/.well-known/jwks.json", authHandler.JWKS)
 	mux.HandleFunc("/.well-known/openid-configuration", authHandler.OpenIDConfig)
-	mux.HandleFunc("/auth/login", method("POST", rateLimit(authHandler.Login, 5, time.Minute)))
-	mux.HandleFunc("/auth/register", method("POST", rateLimit(authHandler.Register, 3, time.Hour)))
-	mux.HandleFunc("/auth/activate", method("GET", authHandler.Activate))
-	mux.HandleFunc("/auth/password/forgot", method("POST", rateLimit(authHandler.ForgotPassword, 5, time.Minute)))
-	mux.HandleFunc("/auth/password/reset", method("POST", rateLimit(authHandler.ResetPassword, 5, time.Minute)))
-	mux.HandleFunc("/oauth/authorize", method("GET", authHandler.Authorize))
-	mux.HandleFunc("/oauth/token", method("POST", rateLimit(authHandler.Token, 30, time.Minute)))
+	mux.HandleFunc("/auth/login", cmdutil.Method("POST", rateLimit(authHandler.Login, 5, time.Minute)))
+	mux.HandleFunc("/auth/register", cmdutil.Method("POST", rateLimit(authHandler.Register, 3, time.Hour)))
+	mux.HandleFunc("/auth/activate", cmdutil.Method("GET", authHandler.Activate))
+	mux.HandleFunc("/auth/resend-activation", cmdutil.Method("POST", rateLimit(authHandler.ResendActivation, 3, time.Hour)))
+	mux.HandleFunc("/auth/password/forgot", cmdutil.Method("POST", rateLimit(authHandler.ForgotPassword, 5, time.Minute)))
+	mux.HandleFunc("/auth/password/reset", cmdutil.Method("POST", rateLimit(authHandler.ResetPassword, 5, time.Minute)))
+	mux.HandleFunc("/oauth/authorize", cmdutil.Method("GET", authHandler.Authorize))
+	mux.HandleFunc("/oauth/token", cmdutil.Method("POST", rateLimit(authHandler.Token, 30, time.Minute)))
 
 	// 带认证的端点
 	jwtAuth := middleware.NewJWTAuthMiddleware(tokens)
-	mux.HandleFunc("/auth/me", method("GET", jwtAuth.Wrap(authHandler.Me)))
-	mux.HandleFunc("/auth/logout", method("POST", jwtAuth.WrapOptional(authHandler.Logout)))
-	mux.HandleFunc("/auth/token/refresh", method("POST", authHandler.RefreshToken))
-	mux.HandleFunc("/auth/admin/users", method("GET", jwtAuth.Wrap(authHandler.ListUsers)))
+	mux.HandleFunc("/auth/me", cmdutil.Method("GET", jwtAuth.Wrap(authHandler.Me)))
+	mux.HandleFunc("/auth/logout", cmdutil.Method("POST", jwtAuth.WrapOptional(authHandler.Logout)))
+	mux.HandleFunc("/auth/token/refresh", cmdutil.Method("POST", authHandler.RefreshToken))
+	mux.HandleFunc("/auth/admin/users", cmdutil.Method("GET", jwtAuth.Wrap(authHandler.ListUsers)))
 
 	// --- 9. 全局中间件包装：CORS + 安全头 + 日志 ---
 	var rootHandler http.Handler = mux
-	rootHandler = corsWrap(rootHandler)
+	rootHandler = cmdutil.CorsWrap(rootHandler)
 	rootHandler = middleware.SecurityHeaders(cookieSecure, rootHandler)
-	rootHandler = logMiddleware(rootHandler)
+	rootHandler = cmdutil.LogMiddleware("HTTP", nil, rootHandler)
 
 	// --- 10. 启动 ---
 	addr := fmt.Sprintf(":%d", port)
@@ -179,60 +186,13 @@ func main() {
 	}
 }
 
-// ===== 辅助函数 =====
+// ===== 辅助函数（公共实现见 internal/cmdutil） =====
 
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
-}
-func getEnvBool(key string, fallback bool) bool {
-	if v := os.Getenv(key); v != "" {
-		return strings.EqualFold(v, "true") || v == "1"
-	}
-	return fallback
-}
-func maskDSN(dsn string) string {
-	parts := strings.SplitN(dsn, "@", 2)
-	if len(parts) != 2 {
-		return dsn
-	}
-	up := strings.SplitN(parts[0], ":", 2)
-	if len(up) != 2 {
-		return dsn
-	}
-	return up[0] + ":***@" + parts[1]
-}
 func rsaPubKey(priv *rsa.PrivateKey) *rsa.PublicKey {
 	if priv == nil {
 		return nil
 	}
 	return &priv.PublicKey
-}
-
-// method 限制 HTTP 方法
-func method(m string, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if !strings.EqualFold(r.Method, m) {
-			w.Header().Set("Allow", m)
-			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
-			return
-		}
-		next(w, r)
-	}
 }
 
 // rateLimit 简易速率限制（单进程内存实现）
@@ -260,57 +220,6 @@ func rateLimit(next http.HandlerFunc, n int, window time.Duration) http.HandlerF
 		e.count++
 		next(w, r)
 	}
-}
-
-// logMiddleware 简易请求日志
-func logMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		lrw := &logResponseWriter{ResponseWriter: w, status: 200}
-		next.ServeHTTP(lrw, r)
-		log.Printf("[HTTP] %s %s -> %d (%s)  UA=%s",
-			r.Method, r.URL.Path, lrw.status, time.Since(start), r.UserAgent())
-	})
-}
-
-type logResponseWriter struct {
-	http.ResponseWriter
-	status int
-}
-func (l *logResponseWriter) WriteHeader(s int) { l.status = s; l.ResponseWriter.WriteHeader(s) }
-
-// ssoStoreAdapter 适配 *store.DB，提供 Save 方法名（如果 auth.SSOSessionStore 接口仍是旧 Save 名）
-// 和 SaveSession 方法名（如果已升级到新名），两种命名都满足。
-type ssoStoreAdapter struct{ db *store.DB }
-
-func (a ssoStoreAdapter) Save(sessionID, userID, ip, ua string, expiresAt time.Time) error {
-	return a.db.SaveSession(sessionID, userID, ip, ua, expiresAt)
-}
-func (a ssoStoreAdapter) SaveSession(sessionID, userID, ip, ua string, expiresAt time.Time) error {
-	return a.db.SaveSession(sessionID, userID, ip, ua, expiresAt)
-}
-func (a ssoStoreAdapter) GetBySessionID(sessionID string) (string, error) {
-	return a.db.GetBySessionID(sessionID)
-}
-func (a ssoStoreAdapter) Delete(sessionID string) error { return a.db.Delete(sessionID) }
-func (a ssoStoreAdapter) DeleteByUser(userID string) error { return a.db.DeleteByUser(userID) }
-
-// corsWrap 内联 CORS 处理（因 middleware 包未提供类型化 CORS）
-func corsWrap(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin == "" { origin = "*" }
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Auth-User-ID, X-Auth-Username, X-Auth-Role, X-Auth-Scope")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Max-Age", "86400")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // 避免未使用的 flag 包报错

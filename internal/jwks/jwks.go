@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"filesync/internal/config"
 )
 
 // Claims 与 AuthSvc AccessClaims（uid/un/rl/scp）保持一致
@@ -51,7 +53,7 @@ type Validator struct {
 // New 创建 JWKS 校验器
 func New(authSvcURL string) *Validator {
 	if authSvcURL == "" {
-		authSvcURL = "http://localhost:8081"
+		authSvcURL = config.AuthSvcURL()
 	}
 	return &Validator{
 		authSvcURL: strings.TrimSuffix(authSvcURL, "/"),

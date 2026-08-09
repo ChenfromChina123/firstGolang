@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#2563EB">
+    <script src="/web/v2/theme.js"></script>
+    <title>FileSync · 文件同步控制台</title>
+    <link rel="icon" href="/web/img/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/web/img/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/v2/style.css?v=20260809o">
+</head>
+<body>
+
+<div class="v2-layout">
+
+    <!-- 顶部状态栏：Logo + 服务健康状态 -->
+    <header class="v2-topbar">
+        <div style="display:flex;align-items:center;gap:8px">
+            <span class="brand-mark" style="width:30px;height:30px;border-radius:8px">
+                <img src="/web/img/logo.svg" width="18" height="18" alt="FileSync logo">
+            </span>
+            <strong style="font-size:15px">FileSync</strong>
+            <span style="font-size:11px;color:var(--color-text-3);background:var(--color-muted);padding:2px 8px;border-radius:999px;font-weight:600">v2</span>
+        </div>
+        <div class="health" id="health-badge">
+            <span class="dot" id="health-dot"></span>
+            <span class="health-text" id="health-text">检测中</span>
+            <span class="health-meta" id="health-meta"></span>
+        </div>
+        <div class="user-info" id="user-info" hidden>
+            <span class="dot"></span>
+            <span class="name" id="user-name">—</span>
+            <span class="role" id="user-role">user</span>
+            <span class="storage" id="user-storage" hidden>已用 0 B</span>
+            <a href="/web/admin.html" class="admin-link" id="admin-link" hidden>管理后台</a>
+        </div>
+        <button class="logout-btn" id="logout-btn" hidden>登出</button>
+        <a href="/web/index.html" title="切换到经典界面" style="display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:var(--color-text-2);text-decoration:none;border:1px solid var(--color-border);border-radius:8px;padding:7px 12px;transition:all .15s" onmouseover="this.style.borderColor='var(--color-primary)';this.style.color='var(--color-primary)'" onmouseout="this.style.borderColor='';this.style.color='var(--color-text-2)'">切换到经典版 →</a>
+    </header>
+
+    <!-- 左侧功能栏 -->
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="brand-mark" aria-hidden="true">
+                <img src="/web/img/logo.svg" width="20" height="20" alt="FileSync logo">
+            </div>
+            <div class="brand-text">
+                <h1>FileSync</h1>
+                <span class="brand-sub">SECURE FILE SYNC</span>
+            </div>
+        </div>
+        <nav class="sidebar-nav">
+            <div class="sidebar-group">
+                <div class="sidebar-group-label">空间</div>
+                <select class="space-select" id="space-select" title="切换空间（不同空间的文件树相互隔离，相当于多个独立磁盘）"></select>
+                <button class="sidebar-btn" id="space-manage-btn" title="管理空间（新建 / 删除）">空间管理</button>
+            </div>
+            <div class="sidebar-group">
+                <div class="sidebar-group-label">文件</div>
+                <button class="sidebar-btn" id="refresh-files">刷新</button>
+                <button class="sidebar-btn" id="select-mode-btn">多选</button>
+            </div>
+            <div class="sidebar-group">
+                <div class="sidebar-group-label">工具</div>
+                <button class="sidebar-btn" id="transfer-btn">传输中心<span class="transfer-badge" id="transfer-badge" hidden></span></button>
+                <button class="sidebar-btn" id="share-manage-btn">分享管理</button>
+                <button class="sidebar-btn" id="trash-btn">回收站</button>
+            </div>
+            <div class="sidebar-group">
+                <div class="sidebar-group-label">系统</div>
+                <button class="sidebar-btn" id="settings-btn">设置</button>
+            </div>
+        </nav>
+    </aside>
+
+    <!-- 主内容区 -->
+    <main class="v2-main">
+        <div id="view-files">
+        <!-- 上传区域 -->
+        <section class="panel upload-panel">
+            <div class="panel-head">
+                <h2><span class="idx">01</span> 上传文件</h2>
+                <div class="upload-controls">
+                    <label class="target-dir">
+                        上传到
+                        <span id="target-dir" class="target-dir-display">根目录</span>
+                    </label>
+                    <button class="config-summary" id="config-summary" title="点击修改上传配置">512KB · 5并发 · 本地</button>
+                    <div class="upload-dropdown" id="upload-dropdown">
+                        <label class="pick-btn upload-trigger" title="上传文件或文件夹">＋ 上传 ▾</label>
+                        <div class="upload-menu">
+                            <label class="upload-menu-item" id="pick-btn" title="选择文件上传">
+                                <svg class="upload-menu-icon" width="14" height="14"><use href="#icon-file"/></svg>
+                                选择文件
+                            </label>
+                            <label class="upload-menu-item" id="folder-pick-btn" title="选择文件夹上传（保留目录结构）">
+                                <svg class="upload-menu-icon" width="14" height="14"><use href="#icon-folder"/></svg>
+                                上传文件夹
+                            </label>
+                        </div>
+                        <input type="file" id="file-input" multiple hidden>
+                        <input type="file" id="folder-input" webkitdirectory multiple hidden>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 上传队列 -->
+            <div class="queue" id="queue" hidden>
+                <div class="queue-head">
+                    <span>上传队列</span>
+                    <button class="ghost-btn" id="clear-done">清除已完成</button>
+                </div>
+                <ul class="queue-list" id="queue-list"></ul>
+            </div>
+        </section>
+
+        <!-- 文件列表（路径枚举方案） -->
+        <section class="panel files-panel">
+            <div class="panel-head">
+                <h2><span class="idx">02</span> 文件库</h2>
+                <div class="files-head-ops">
+                    <div class="selection-ops" id="selection-ops" hidden>
+                        <span class="selection-count" id="selection-count">已选 0 项</span>
+                        <button class="ghost-btn" id="sel-all">全选</button>
+                        <button class="ghost-btn" id="sel-download" hidden>下载</button>
+                        <button class="ghost-btn" id="sel-zip" hidden>ZIP 下载</button>
+                        <button class="ghost-btn" id="sel-share" hidden>分享</button>
+                        <button class="ghost-btn" id="sel-rename" hidden>重命名</button>
+                        <button class="ghost-btn" id="sel-move" hidden>移动</button>
+                        <button class="danger-btn" id="sel-delete">删除</button>
+                        <button class="ghost-btn" id="sel-cancel">取消选择</button>
+                    </div>
+                </div>
+            </div>
+            <div class="files-tree-wrap">
+                <nav class="breadcrumb" id="breadcrumb" aria-label="文件路径导航"></nav>
+                <div class="file-tree" id="file-tree">
+                    <div class="tree-empty">加载中…</div>
+                </div>
+            </div>
+        </section>
+        </div><!-- /#view-files -->
+
+        <!-- 传输中心页面视图 -->
+        <section class="panel transfer-view" id="view-transfer" hidden>
+            <div class="panel-head">
+                <h2><span class="idx">03</span> 传输中心</h2>
+                <div class="transfer-summary" id="transfer-summary">进行中 0 · 速度 0 B/s</div>
+                <div class="transfer-tools">
+                    <button class="tf-tool-btn" id="transfer-pause-all">全部暂停</button>
+                    <button class="tf-tool-btn" id="transfer-resume-all">全部继续</button>
+                    <button class="tf-tool-btn" id="transfer-clear-done">清除已完成</button>
+                    <button class="ghost-btn" id="transfer-close">← 返回文件</button>
+                </div>
+            </div>
+            <div class="transfer-list" id="transfer-list">
+                <div class="transfer-empty">暂无传输任务</div>
+            </div>
+            <div class="transfer-mcp">
+                <div class="transfer-mcp-head">
+                    <span>MCP / 外部上传记录</span>
+                    <span class="transfer-mcp-live" id="mcp-live-dot"></span>
+                    <button class="tf-tool-btn" id="mcp-clear-btn" title="清空历史上传记录" style="margin-left:auto;padding:4px 10px;font-size:12px">清空</button>
+                </div>
+                <div class="transfer-mcp-list" id="mcp-upload-list">
+                    <div class="transfer-empty">暂无 MCP 上传记录</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 分享管理页面视图 -->
+        <section class="panel share-view" id="view-share" hidden>
+            <div class="panel-head">
+                <h2><span class="idx">04</span> 分享管理</h2>
+                <p class="modal-desc" style="margin-bottom:0">管理已创建的分享链接，可复制链接、修改密码或删除。</p>
+                <div class="transfer-tools">
+                    <button class="ghost-btn" id="share-manage-close-btn">← 返回文件</button>
+                </div>
+            </div>
+            <div class="share-manage-list" id="share-manage-list"></div>
+        </section>
+
+        <!-- 回收站页面视图 -->
+        <section class="panel share-view" id="view-trash" hidden>
+            <div class="panel-head">
+                <h2><span class="idx">05</span> 回收站 <span class="modal-tag" id="trash-count-tag">—</span></h2>
+                <p class="modal-desc" id="trash-desc" style="margin-bottom:0">文件删除后移入回收站，保留 30 天可恢复。过期后自动永久删除。</p>
+                <div class="transfer-tools">
+                    <button class="danger-btn" id="trash-empty-btn">清空回收站</button>
+                    <button class="ghost-btn" id="trash-close-btn">← 返回文件</button>
+                </div>
+            </div>
+            <div class="share-manage-list" id="trash-list"></div>
+        </section>
+    </main>
+
+    <!-- 冲突处理对话框 -->
+    <div class="modal" id="conflict-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>文件名冲突</h3>
+                <span class="modal-tag" id="conflict-name">—</span>
+            </div>
+            <p class="modal-desc">该文件已存在，请选择处理方式：</p>
+            <div class="modal-opts">
+                <button class="opt-btn" data-strategy="skip">
+                    <strong>跳过</strong>
+                    <span>取消本次上传</span>
+                </button>
+                <button class="opt-btn" data-strategy="overwrite">
+                    <strong>覆盖</strong>
+                    <span>覆盖原文件（?force=true）</span>
+                </button>
+                <button class="opt-btn" data-strategy="rename">
+                    <strong>重命名</strong>
+                    <span>自动重命名上传（?rename=true）</span>
+                </button>
+            </div>
+            <div class="modal-foot">
+                <label class="apply-all"><input type="checkbox" id="apply-all"> 应用到后续所有冲突</label>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建目录对话框 -->
+    <div class="modal" id="mkdir-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>新建目录</h3>
+            </div>
+            <p class="modal-desc">输入目录路径，支持多级（如 docs/sub/）。</p>
+            <div class="modal-input-wrap">
+                <input type="text" id="mkdir-input" class="modal-input" placeholder="docs/" autocomplete="off" />
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="mkdir-cancel">取消</button>
+                <button class="primary-btn" id="mkdir-confirm">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 文件编辑器对话框 -->
+    <div class="modal" id="editor-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card" style="max-width:900px;width:94vw">
+            <div class="modal-head">
+                <h3 id="editor-title">新建文件</h3>
+            </div>
+            <div class="editor-type-row" id="editor-type-row">
+                <label class="editor-type-item">
+                    文件类型
+                    <select id="editor-filetype">
+                        <option value="txt">文本 (.txt)</option>
+                        <option value="md">Markdown (.md)</option>
+                        <option value="code">代码文件</option>
+                        <option value="json">JSON (.json)</option>
+                        <option value="html">HTML (.html)</option>
+                        <option value="custom">自定义后缀</option>
+                    </select>
+                </label>
+                <label class="editor-type-item" id="editor-code-lang-wrap" hidden>
+                    语言
+                    <select id="editor-code-lang">
+                        <option value="js">JavaScript (.js)</option>
+                        <option value="ts">TypeScript (.ts)</option>
+                        <option value="go">Go (.go)</option>
+                        <option value="py">Python (.py)</option>
+                        <option value="java">Java (.java)</option>
+                        <option value="c">C (.c)</option>
+                        <option value="cpp">C++ (.cpp)</option>
+                        <option value="rs">Rust (.rs)</option>
+                        <option value="rb">Ruby (.rb)</option>
+                        <option value="php">PHP (.php)</option>
+                        <option value="sh">Shell (.sh)</option>
+                        <option value="sql">SQL (.sql)</option>
+                        <option value="yaml">YAML (.yaml)</option>
+                    </select>
+                </label>
+                <label class="editor-type-item" id="editor-custom-ext-wrap" hidden>
+                    后缀
+                    <input type="text" id="editor-custom-ext" class="modal-input" placeholder="txt" maxlength="16" autocomplete="off" />
+                </label>
+            </div>
+            <div class="modal-input-wrap">
+                <label class="modal-input-label">文件名 <span id="editor-location" style="font-weight:400;color:var(--color-text-2);font-family:var(--font-mono);font-size:12px"></span></label>
+                <input type="text" id="editor-filename" class="modal-input" placeholder="untitled.txt（可含路径如 docs/notes.md）" autocomplete="off" />
+            </div>
+            <div id="editor-container" style="border:1px solid var(--color-border);border-radius:8px;overflow:hidden;height:50vh;min-height:300px;background:var(--color-surface);margin-bottom:12px"></div>
+            <div class="modal-foot modal-foot-right">
+                <span id="editor-status" style="margin-right:auto;color:var(--color-text-2);font-size:13px"></span>
+                <button class="ghost-btn" id="editor-cancel">取消</button>
+                <button class="primary-btn" id="editor-save">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 重命名/移动对话框 -->
+    <div class="modal" id="rename-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>重命名 / 移动</h3>
+            </div>
+            <p class="modal-desc">输入新的完整路径（含文件名）。可用 / 移动到其他目录。</p>
+            <div class="modal-input-wrap">
+                <input type="text" id="rename-input" class="modal-input" autocomplete="off" />
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="rename-cancel">取消</button>
+                <button class="primary-btn" id="rename-confirm">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 移动目录对话框 -->
+    <div class="modal" id="move-dir-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>移动目录</h3>
+                <span class="modal-tag" id="move-dir-name">—</span>
+            </div>
+            <p class="modal-desc">输入新的目录路径（如 docs/）。目录下所有文件将一并移动。</p>
+            <div class="modal-input-wrap">
+                <input type="text" id="move-dir-input" class="modal-input" autocomplete="off" />
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="move-dir-cancel">取消</button>
+                <button class="primary-btn" id="move-dir-confirm">确认移动</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 通用确认对话框 -->
+    <div class="modal" id="confirm-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>确认操作</h3>
+            </div>
+            <p class="modal-desc" id="confirm-message">—</p>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="confirm-cancel">取消</button>
+                <button class="danger-btn" id="confirm-ok">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 分享创建对话框 -->
+    <div class="modal" id="share-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>创建分享</h3>
+                <span class="modal-tag" id="share-name">—</span>
+            </div>
+            <p class="modal-desc">选择分享有效期，生成后可复制链接分享给他人。</p>
+            <div class="modal-input-wrap">
+                <label class="modal-input-label">
+                    有效期
+                    <select id="share-expiry" class="modal-input" style="margin-top:6px">
+                        <option value="0">永久</option>
+                        <option value="604800">7 天</option>
+                        <option value="2592000">30 天</option>
+                    </select>
+                </label>
+            </div>
+            <div class="modal-input-wrap">
+                <label class="modal-input-label">
+                    访问密码（可选）
+                    <input type="text" id="share-password" class="modal-input" placeholder="留空表示无密码，最多 64 字符" maxlength="64" autocomplete="off" style="margin-top:6px">
+                </label>
+            </div>
+            <div class="share-result" id="share-result" hidden>
+                <div class="share-link-wrap">
+                    <input type="text" id="share-link" class="modal-input" readonly placeholder="分享链接将显示在这里">
+                    <button class="primary-btn" id="share-copy-btn">复制</button>
+                </div>
+                <p class="share-hint">访客无需登录即可查看和下载，同一访客重复下载不增加计数。</p>
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="share-close-btn">关闭</button>
+                <button class="primary-btn" id="share-create-btn">创建分享</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 修改分享密码对话框 -->
+    <div class="modal" id="share-password-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3 id="share-password-title">修改访问密码</h3>
+            </div>
+            <p class="modal-desc">输入新密码（1-64 字符），留空可清除密码保护。</p>
+            <div class="modal-input-wrap">
+                <label class="modal-input-label">
+                    新密码
+                    <input type="text" id="share-password-input" class="modal-input" placeholder="留空清除密码，最多 64 字符" maxlength="64" autocomplete="off" style="margin-top:6px">
+                </label>
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="share-password-cancel-btn">取消</button>
+                <button class="primary-btn" id="share-password-confirm-btn">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 空间管理对话框 -->
+    <div class="modal" id="space-manage-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card share-manage-card">
+            <div class="modal-head">
+                <h3>空间管理</h3>
+                <span class="modal-tag">新建 / 删除空间</span>
+            </div>
+            <p class="modal-desc">每个空间是独立的文件树（相当于多个磁盘）。删除空间为永久操作，仅空空间可删。</p>
+            <div class="share-manage-list" id="space-manage-list"></div>
+            <div class="modal-foot">
+                <button class="primary-btn" id="space-manage-create-btn">＋ 新建空间</button>
+                <button class="ghost-btn" id="space-manage-close-btn">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 文件预览对话框 -->
+    <div class="modal preview-modal" id="preview-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="preview-head">
+                <span class="preview-name" id="preview-name">—</span>
+                <div class="preview-toolbar">
+                    <select id="preview-quality" hidden>
+                        <option value="small">小</option>
+                        <option value="medium" selected>中</option>
+                        <option value="large">大</option>
+                    </select>
+                    <button class="ghost-btn" id="preview-download">下载</button>
+                    <button class="ghost-btn" id="preview-close">关闭</button>
+                </div>
+            </div>
+            <div class="preview-body" id="preview-body"></div>
+        </div>
+    </div>
+
+    <!-- 上传设置对话框 -->
+    <div class="modal" id="settings-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head"><h3>上传设置</h3></div>
+            <p class="modal-desc">配置分片上传参数。管理员修改后会同步到服务器。</p>
+            <div class="settings-row">
+                <label class="settings-label" for="chunk-size">分片大小</label>
+                <select id="chunk-size">
+                    <option value="262144">256 KB</option>
+                    <option value="524288" selected>512 KB</option>
+                    <option value="1048576">1 MB</option>
+                    <option value="4194304">4 MB</option>
+                </select>
+            </div>
+            <div class="settings-row">
+                <label class="settings-label" for="concurrency">并发数</label>
+                <select id="concurrency">
+                    <option value="3">3</option>
+                    <option value="5" selected>5</option>
+                    <option value="8">8</option>
+                    <option value="12">12</option>
+                </select>
+            </div>
+            <div class="settings-row">
+                <label class="settings-label" for="storage-type">存储位置</label>
+                <select id="storage-type">
+                    <option value="local" selected>本地磁盘</option>
+                    <option value="s3" disabled>阿里云 OSS（暂不可用）</option>
+                </select>
+            </div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="settings-close-btn">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 提示 -->
+    <div class="toast-wrap" id="toast-wrap"></div>
+
+    <!-- SVG 图标 sprite -->
+    <svg style="display:none" aria-hidden="true">
+        <symbol id="icon-folder" viewBox="0 0 16 16">
+            <path d="M1.5 3.5h4l1.5 2h7.5v7a1 1 0 0 1-1 1H2.5a1 1 0 0 1-1-1V3.5z"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </symbol>
+        <symbol id="icon-image" viewBox="0 0 16 16">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <circle cx="5" cy="6" r="1.2" fill="currentColor"/>
+            <path d="M2 12l3.5-3.5 2.5 2.5 3-3L14 11" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </symbol>
+        <symbol id="icon-video" viewBox="0 0 16 16">
+            <rect x="1.5" y="3" width="9" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M10.5 6.5l4-2.5v8l-4-2.5z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </symbol>
+        <symbol id="icon-audio" viewBox="0 0 16 16">
+            <path d="M3 12V4l9-2v9" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <circle cx="3" cy="12" r="1.8" fill="currentColor"/>
+            <circle cx="12" cy="11" r="1.8" fill="currentColor"/>
+            <path d="M4.8 12V4.4l7.2-1.6v8.2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        </symbol>
+        <symbol id="icon-pdf" viewBox="0 0 16 16">
+            <path d="M3 1.5h7l3 3V14a.5.5 0 0 1-.5.5h-9.5A.5.5 0 0 1 2.5 14V2.5A1 1 0 0 1 3 1.5z"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <path d="M10 1.5V4.5h3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <text x="8" y="11.5" font-size="3" font-family="monospace" font-weight="700"
+                  text-anchor="middle" fill="currentColor">PDF</text>
+        </symbol>
+        <symbol id="icon-code" viewBox="0 0 16 16">
+            <path d="M5 4L1 8l4 4M11 4l4 4-4 4M9.5 2.5L6.5 13.5"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </symbol>
+        <symbol id="icon-text" viewBox="0 0 16 16">
+            <path d="M3 1.5h7l3 3V14a.5.5 0 0 1-.5.5h-9.5A.5.5 0 0 1 2.5 14V2.5A1 1 0 0 1 3 1.5z"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <path d="M10 1.5V4.5h3M5 8h6M5 10.5h6M5 5.5h2"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </symbol>
+        <symbol id="icon-archive" viewBox="0 0 16 16">
+            <rect x="2" y="3" width="12" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <rect x="2" y="3" width="12" height="3.5" fill="currentColor" opacity="0.3"/>
+            <path d="M6 3v3.5M8 3v3.5M10 3v3.5" stroke="currentColor" stroke-width="0.8"/>
+            <path d="M8 8v3M6.5 9.5h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </symbol>
+        <symbol id="icon-file" viewBox="0 0 16 16">
+            <path d="M3 1.5h7l3 3V14a.5.5 0 0 1-.5.5h-9.5A.5.5 0 0 1 2.5 14V2.5A1 1 0 0 1 3 1.5z"
+                  fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <path d="M10 1.5V4.5h3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </symbol>
+    </svg>
+
+    <!-- 上下文菜单容器 -->
+    <div class="ctx-menu" id="ctx-menu" hidden></div>
+
+    <script src="/web/lib/codemirror/codemirror.bundle.js"></script>
+    <script src="/web/lib/prism/prism.min.js"></script>
+    <script src="/web/lib/marked/marked.min.js"></script>
+    <script src="/web/lib/hls/hls.min.js"></script>
+    <script src="/web/v2/v2-config.js"></script>
+    <script src="/web/app.js?v=20260809o"></script>
+</body>
+</html>

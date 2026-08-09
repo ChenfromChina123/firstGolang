@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#2563EB">
+    <script src="/web/v2/theme.js"></script>
+    <title>FileSync · 分享</title>
+    <link rel="icon" href="/web/img/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/web/img/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/v2/style.css?v=20260809-dark">
+    <style>
+        /* ===== v2 分享页专属样式（浅色瑞士极简） ===== */
+        .share-topbar{
+            position:sticky;top:0;z-index:40;display:flex;align-items:center;
+            background:var(--color-glass);backdrop-filter:blur(10px);
+            border-bottom:1px solid var(--color-border);padding:14px 28px;
+        }
+        .share-layout{max-width:760px;margin:0 auto;padding:40px 20px 80px}
+        .share-panel{background:var(--color-surface);border:1px solid var(--color-border);border-radius:16px;box-shadow:var(--shadow-md);padding:40px 44px;text-align:center}
+        .share-state{padding:12px 0}
+        .share-spinner{width:34px;height:34px;border:3px solid var(--c-blue-15);border-top-color:var(--color-primary);border-radius:50%;margin:0 auto 16px;animation:spin .8s linear infinite}
+        .share-state-text{font-size:14px;color:var(--color-text-2)}
+        .share-error-icon{width:56px;height:56px;border-radius:50%;background:var(--c-red-10);color:var(--color-destructive);font-size:26px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 16px}
+        .share-error-title,.share-lock-title{font-size:20px;font-weight:700;margin-bottom:8px}
+        .share-error-msg,.share-lock-msg{font-size:14px;color:var(--color-text-2);margin-bottom:20px}
+        .share-lock-icon{color:var(--color-primary);margin-bottom:14px}
+        .share-lock-form{max-width:340px;margin:0 auto;display:flex;flex-direction:column;gap:10px}
+        .share-lock-error{color:var(--color-destructive);font-size:13px;margin-top:10px}
+        .share-content{text-align:left}
+        .share-info-head{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+        .share-type-badge{font-size:12px;font-weight:600;padding:4px 12px;border-radius:999px;background:var(--c-blue-10);color:var(--color-primary)}
+        .share-name{font-size:24px;font-weight:700;word-break:break-all}
+        .share-meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:24px}
+        .share-meta-item{background:var(--color-muted);border-radius:12px;padding:14px 16px;text-align:left}
+        .share-meta-label{display:block;font-size:12px;color:var(--color-text-2);margin-bottom:4px}
+        .share-meta-value{font-size:15px;font-weight:600;font-family:var(--font-mono)}
+        .share-actions{display:flex;gap:12px;margin-bottom:14px}
+        .share-hint{font-size:12px;color:var(--color-text-3)}
+        /* 目录浏览 */
+        .share-browser{text-align:left}
+        .share-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+        .share-select-all{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;cursor:pointer}
+        .share-select-all input{accent-color:var(--color-primary);width:15px;height:15px}
+        .share-toolbar-actions{display:flex;gap:8px}
+        .share-breadcrumb{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:14px;font-size:13px}
+        .share-filelist{display:flex;flex-direction:column;gap:6px;border:1px solid var(--color-border);border-radius:12px;padding:10px}
+        .tree-dir,.tree-file{
+            display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;cursor:pointer;transition:background .12s;
+            font-size:14px;font-weight:500;
+        }
+        .tree-dir:hover,.tree-file:hover{background:var(--color-muted)}
+        .tree-dir{color:var(--color-primary)}
+        .tree-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px}
+        .tree-dir .tree-icon{background:var(--c-blue-10);color:var(--color-primary)}
+        .tree-file .tree-icon{background:var(--c-amber-10);color:var(--color-accent)}
+        .tree-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .tree-meta{font-size:12px;color:var(--color-text-2);font-family:var(--font-mono);flex-shrink:0}
+        .tree-cb{accent-color:var(--color-primary);width:15px;height:15px;cursor:pointer;flex-shrink:0}
+        .tree-preview-btn,.tree-download-btn{
+            border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface);font-size:12px;
+            padding:4px 10px;cursor:pointer;transition:all .15s;flex-shrink:0;font-family:var(--font-body);
+        }
+        .tree-preview-btn:hover{border-color:var(--color-primary);color:var(--color-primary)}
+        .tree-download-btn:hover{border-color:var(--color-accent);color:var(--color-accent)}
+        .share-browser-loading,.share-browser-error,.share-browser-empty{padding:28px;text-align:center;color:var(--color-text-3);font-size:14px}
+        /* 分享页预览 modal */
+        .share-preview-card{width:min(860px,94vw);max-width:none}
+        .share-preview-head{display:flex;justify-content:space-between;align-items:center}
+        .modal-close{background:none;border:none;font-size:22px;color:var(--color-text-3);cursor:pointer;transition:color .15s}
+        .modal-close:hover{color:var(--color-destructive)}
+        .share-preview-body{min-height:200px;max-height:65vh;overflow:auto;padding:16px;line-height:1.7}
+        .share-preview-body img{max-width:100%;border-radius:10px}
+        .share-preview-body iframe{width:100%;height:58vh;border:none;border-radius:10px}
+        .share-preview-text{font-size:15px;white-space:pre-wrap;word-break:break-word}
+        .share-preview-truncated{color:var(--color-warning);font-size:13px;margin-top:10px;padding:10px;border:1px dashed var(--c-amber-b40);border-radius:8px}
+        .share-preview-loading{text-align:center;padding:40px;color:var(--color-text-3)}
+        .share-preview-error{text-align:center;padding:40px;color:var(--color-destructive)}
+        .share-preview-loading-overlay,.share-preview-error-overlay{position:absolute;inset:0;background:var(--color-glass);display:flex;align-items:center;justify-content:center;border-radius:10px;color:var(--color-text-2);font-size:14px;z-index:5}
+        .share-preview-spinner{width:26px;height:26px;border:3px solid var(--c-blue-15);border-top-color:var(--color-primary);border-radius:50%;animation:spin .8s linear infinite;margin-right:10px}
+        .share-preview-media-wrap{position:relative}
+        .share-preview-media-wrap video{width:100%;max-height:58vh;border-radius:10px;background:#000}
+        .share-preview-media-wrap audio{width:100%}
+        /* 转存 modal */
+        .modal-result{padding:12px 14px;border-radius:10px;font-size:13px;margin-top:12px}
+        .modal-result-loading{background:var(--color-muted);color:var(--color-text-2)}
+        .modal-result-error{background:var(--c-red-06);border:1px solid var(--c-red-b35);color:var(--color-destructive)}
+        .modal-result-success{background:var(--c-green-08);border:1px solid var(--c-green-b25);color:var(--color-success)}
+        .modal-label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+        @media(max-width:640px){
+            .share-panel{padding:24px 20px}
+            .share-meta-grid{grid-template-columns:1fr 1fr}
+        }
+    </style>
+</head>
+<body>
+    <!-- 顶部品牌栏 -->
+    <header class="share-topbar">
+        <div class="brand" style="padding:0">
+            <div class="brand-mark" aria-hidden="true" style="width:32px;height:32px;border-radius:8px">
+                <img src="/web/img/logo.svg" width="18" height="18" alt="FileSync logo">
+            </div>
+            <div class="brand-text">
+                <h1 style="font-size:16px">FileSync</h1>
+                <span class="brand-sub">SECURE FILE SHARE</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- 分享内容卡片 -->
+    <main class="share-layout">
+        <section class="panel share-panel" id="share-panel">
+            <!-- 加载中状态 -->
+            <div class="share-state" id="share-loading">
+                <div class="share-spinner" aria-hidden="true"></div>
+                <p class="share-state-text">正在加载分享内容…</p>
+            </div>
+            <!-- 错误状态 -->
+            <div class="share-state share-error" id="share-error" hidden>
+                <div class="share-error-icon" aria-hidden="true">!</div>
+                <h2 class="share-error-title" id="share-error-title">分享不可用</h2>
+                <p class="share-error-msg" id="share-error-msg">该分享链接无效或已被删除。</p>
+            </div>
+            <!-- 密码门状态 -->
+            <div class="share-state share-lock" id="share-lock" hidden>
+                <div class="share-lock-icon" aria-hidden="true">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="4" y="11" width="16" height="10" rx="2"/>
+                        <path d="M8 11V7a4 4 0 1 1 8 0v4"/>
+                    </svg>
+                </div>
+                <h2 class="share-lock-title">需要访问密码</h2>
+                <p class="share-lock-msg">此分享已设置访问密码，请输入密码后查看。</p>
+                <form class="share-lock-form" id="share-lock-form" method="POST" action="/api/s/">
+                    <input type="password" id="share-lock-password" class="modal-input" placeholder="请输入访问密码" autocomplete="off" maxlength="64">
+                    <button type="submit" class="primary-btn" id="share-lock-submit">验证</button>
+                </form>
+                <p class="share-lock-error" id="share-lock-error" hidden></p>
+            </div>
+            <!-- 正常状态：分享信息 + 下载按钮 -->
+            <div class="share-content" id="share-content" hidden>
+                <div class="share-info-head">
+                    <div class="share-type-badge" id="share-type-badge">文件</div>
+                    <h2 class="share-name" id="share-name">—</h2>
+                </div>
+                <div class="share-meta-grid">
+                    <div class="share-meta-item">
+                        <span class="share-meta-label">大小</span>
+                        <span class="share-meta-value" id="share-size">—</span>
+                    </div>
+                    <div class="share-meta-item" id="share-count-item" hidden>
+                        <span class="share-meta-label">文件数</span>
+                        <span class="share-meta-value" id="share-count">—</span>
+                    </div>
+                    <div class="share-meta-item">
+                        <span class="share-meta-label">下载次数</span>
+                        <span class="share-meta-value" id="share-downloads">0</span>
+                    </div>
+                    <div class="share-meta-item" id="share-expiry-item">
+                        <span class="share-meta-label">有效期至</span>
+                        <span class="share-meta-value" id="share-expiry">永久</span>
+                    </div>
+                </div>
+                <div class="share-actions">
+                    <button class="ghost-btn share-preview-btn" id="share-preview-btn" type="button" hidden>预览</button>
+                    <button class="primary-btn share-download-btn" id="share-download-btn" type="button">下载</button>
+                </div>
+                <p class="share-hint">同一访客重复下载不会增加下载次数。</p>
+            </div>
+
+            <!-- 目录浏览区域 -->
+            <div class="share-browser" id="share-browser" hidden>
+                <div class="share-toolbar">
+                    <label class="share-select-all">
+                        <input type="checkbox" id="select-all-cb"> 全选
+                    </label>
+                    <div class="share-toolbar-actions">
+                        <button class="ghost-btn" id="batch-download-btn" type="button" disabled>批量下载</button>
+                        <button class="ghost-btn" id="save-to-my-files-btn" type="button" hidden>转存到我的文件</button>
+                    </div>
+                </div>
+                <nav class="share-breadcrumb" id="share-breadcrumb" aria-label="目录路径"></nav>
+                <div class="share-filelist" id="share-filelist">
+                    <div class="share-browser-loading">加载中…</div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 预览对话框 -->
+    <div class="modal share-preview-modal" id="preview-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card share-preview-card">
+            <div class="modal-head share-preview-head">
+                <h3 id="preview-title">预览</h3>
+                <button class="modal-close" id="preview-close" type="button" aria-label="关闭预览">×</button>
+            </div>
+            <div class="share-preview-body" id="preview-body">
+                <!-- 预览内容动态注入 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 转存对话框 -->
+    <div class="modal" id="save-modal" hidden>
+        <div class="modal-backdrop"></div>
+        <div class="modal-card">
+            <div class="modal-head">
+                <h3>转存到我的文件</h3>
+            </div>
+            <p class="modal-desc">将选中的文件转存到你的文件中心。可指定目标目录，留空则转存到根目录。</p>
+            <label class="modal-label">目标目录</label>
+            <input type="text" class="modal-input" id="save-target-dir" placeholder="如 docs/ （留空为根目录）" inputmode="text" spellcheck="false" autocomplete="off">
+            <div class="modal-result" id="save-result" hidden></div>
+            <div class="modal-foot modal-foot-right">
+                <button class="ghost-btn" id="save-cancel-btn" type="button">取消</button>
+                <button class="primary-btn" id="save-confirm-btn" type="button">确认转存</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/web/share.js?v=20260803"></script>
+</body>
+</html>

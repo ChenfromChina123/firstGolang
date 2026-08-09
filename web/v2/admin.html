@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#2563EB">
+    <script src="/web/v2/theme.js"></script>
+    <title>FileSync · 管理后台</title>
+    <link rel="icon" href="/web/img/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/web/img/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/v2/style.css?v=20260809-dark">
+    <style>
+        /* ===== v2 管理后台专属样式（Light Swiss） ===== */
+        .admin-topbar{
+            position:sticky;top:0;z-index:40;display:flex;align-items:center;justify-content:space-between;
+            padding:14px 28px;background:var(--color-glass);backdrop-filter:blur(10px);
+            border-bottom:1px solid var(--color-border);
+        }
+        .admin-topbar .left{display:flex;align-items:center;gap:14px}
+        .admin-topbar h1{font-size:18px;font-weight:700;font-family:var(--font-heading)}
+        .admin-topbar .badge{
+            padding:3px 10px;background:var(--color-primary);color:#fff;border-radius:999px;
+            font-size:11px;font-weight:600;letter-spacing:1px;
+        }
+        .back-link{
+            color:var(--color-primary);text-decoration:none;font-size:13px;font-weight:500;
+            display:inline-flex;align-items:center;gap:6px;padding:7px 12px;
+            border:1px solid var(--color-border);border-radius:8px;transition:all .15s;
+        }
+        .back-link:hover{border-color:var(--color-primary);background:var(--c-blue-05)}
+        .tab-nav{display:flex;gap:24px;padding:0 28px;border-bottom:1px solid var(--color-border);background:var(--color-surface)}
+        .tab-btn{
+            padding:14px 4px;background:none;border:none;color:var(--color-text-2);cursor:pointer;
+            font-size:14px;font-weight:600;font-family:var(--font-body);
+            border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s;
+        }
+        .tab-btn:hover{color:var(--color-foreground)}
+        .tab-btn.active{color:var(--color-primary);border-bottom-color:var(--color-primary)}
+        .tab-content{padding:28px;max-width:1400px;margin:0 auto}
+        .tab-pane{display:none}
+        .tab-pane.active{display:block}
+        .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px;margin-bottom:24px}
+        .stat-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:12px;padding:22px 24px;box-shadow:var(--shadow-sm);transition:box-shadow .2s,transform .2s}
+        .stat-card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
+        .stat-card .label{font-size:12px;color:var(--color-text-2);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;font-weight:600}
+        .stat-card .value{font-size:28px;font-weight:700;color:var(--color-primary);font-family:var(--font-mono)}
+        .stat-card .sub{font-size:12px;color:var(--color-text-2);margin-top:4px}
+        .table-wrap{background:var(--color-surface);border:1px solid var(--color-border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-sm)}
+        .data-table{width:100%;border-collapse:collapse;font-size:13px}
+        .data-table th{
+            text-align:left;padding:12px 16px;color:var(--color-text-2);font-weight:600;
+            background:var(--color-muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px;
+        }
+        .data-table td{padding:12px 16px;border-top:1px solid var(--color-border);color:var(--color-foreground)}
+        .data-table tr:hover td{background:var(--color-muted)}
+        .status-tag{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600}
+        .status-active{background:var(--c-green-10);color:var(--color-success)}
+        .status-disabled{background:var(--c-red-10);color:var(--color-destructive)}
+        .status-pending{background:var(--c-amber-12);color:var(--color-accent)}
+        .btn{
+            padding:6px 12px;border:1px solid var(--color-border);background:var(--color-surface);
+            color:var(--color-text-2);border-radius:6px;cursor:pointer;font-size:12px;font-family:var(--font-body);
+            transition:all .15s;margin-right:4px;font-weight:500;
+        }
+        .btn:hover{border-color:var(--color-primary);color:var(--color-primary)}
+        .btn-danger{border-color:var(--c-red-b35);color:var(--color-destructive)}
+        .btn-danger:hover{background:var(--c-red-06)}
+        .btn-primary{border-color:var(--color-primary);color:var(--color-primary)}
+        .btn-primary:hover{background:var(--c-blue-06)}
+        .toolbar-row{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+        .toolbar-row .hint{color:var(--color-text-2);font-size:13px}
+        .modal-overlay{
+            position:fixed;inset:0;background:var(--color-scrim);backdrop-filter:blur(3px);
+            display:none;align-items:center;justify-content:center;z-index:1000;
+        }
+        .modal-overlay.show{display:flex}
+        .modal{background:var(--color-surface);border-radius:16px;padding:28px;min-width:380px;max-width:90vw;box-shadow:var(--shadow-xl)}
+        .modal h3{margin:0 0 16px;font-size:17px;font-weight:700;font-family:var(--font-heading)}
+        .modal p{color:var(--color-text-2);font-size:13px;margin:0 0 14px}
+        .modal input{
+            width:100%;padding:11px 14px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;
+            color:var(--color-foreground);font-family:var(--font-body);font-size:14px;margin-bottom:14px;box-sizing:border-box;
+            transition:border-color .15s,box-shadow .15s;
+        }
+        .modal input:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px var(--c-blue-13)}
+        .modal-actions{display:flex;gap:8px;justify-content:flex-end}
+        .toast{
+            position:fixed;bottom:24px;right:24px;padding:12px 20px;background:var(--color-surface);
+            border:1px solid var(--color-border);border-radius:10px;box-shadow:var(--shadow-lg);
+            color:var(--color-foreground);font-size:14px;z-index:2000;border-left:4px solid var(--color-primary);
+            opacity:0;transition:opacity .3s;pointer-events:none;
+        }
+        .toast.show{opacity:1}
+        .toast.success{border-left-color:var(--color-success)}
+        .toast.error{border-left-color:var(--color-destructive)}
+        .loading{text-align:center;padding:40px;color:var(--color-text-3);font-size:14px}
+        .empty-state{text-align:center;padding:40px;color:var(--color-text-3);font-size:14px}
+        @media(max-width:640px){
+            .tab-nav{overflow-x:auto;gap:16px}
+            .tab-btn{white-space:nowrap;padding:12px 2px}
+            .tab-content{padding:16px}
+            .modal{min-width:0;width:92vw}
+        }
+    </style>
+</head>
+<body>
+    <header class="admin-topbar">
+        <div class="left">
+            <a href="/web/v2/index.html" class="back-link">← 返回控制台</a>
+            <div class="brand-mark" aria-hidden="true" style="width:32px;height:32px;border-radius:8px">
+                <img src="/web/img/logo.svg" width="18" height="18" alt="FileSync logo">
+            </div>
+            <h1>管理后台</h1>
+            <span class="badge">ADMIN</span>
+        </div>
+        <div class="user-info" id="admin-user-info">—</div>
+    </header>
+
+    <nav class="tab-nav">
+        <button class="tab-btn active" data-tab="stats">系统总览</button>
+        <button class="tab-btn" data-tab="users">用户管理</button>
+        <button class="tab-btn" data-tab="files">文件管理</button>
+        <button class="tab-btn" data-tab="shares">分享管理</button>
+    </nav>
+
+    <div class="tab-content">
+        <!-- 系统总览 -->
+        <div class="tab-pane active" id="pane-stats">
+            <div class="stats-grid" id="stats-grid">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 用户管理 -->
+        <div class="tab-pane" id="pane-users">
+            <div class="toolbar-row">
+                <button class="btn btn-primary" id="btn-refresh-users" type="button">刷新</button>
+            </div>
+            <div class="table-wrap" id="users-table-wrapper">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 文件管理 -->
+        <div class="tab-pane" id="pane-files">
+            <div class="toolbar-row">
+                <button class="btn btn-primary" id="btn-refresh-files" type="button">刷新</button>
+                <span class="hint">显示所有用户的文件</span>
+            </div>
+            <div class="table-wrap" id="files-table-wrapper">
+                <div class="loading">点击"刷新"加载文件列表</div>
+            </div>
+        </div>
+
+        <!-- 分享管理 -->
+        <div class="tab-pane" id="pane-shares">
+            <div class="toolbar-row">
+                <button class="btn btn-primary" id="btn-refresh-shares" type="button">刷新</button>
+            </div>
+            <div class="table-wrap" id="shares-table-wrapper">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 重置密码弹窗 -->
+    <div class="modal-overlay" id="reset-pwd-modal">
+        <div class="modal">
+            <h3>重置用户密码</h3>
+            <p>用户：<span id="reset-pwd-username" style="color:var(--color-primary);font-weight:600"></span></p>
+            <input type="password" id="reset-pwd-input" placeholder="输入新密码（至少 8 位，含大小写和数字）">
+            <div class="modal-actions">
+                <button class="btn" id="btn-cancel-reset-pwd" type="button">取消</button>
+                <button class="btn btn-primary" id="btn-confirm-reset-pwd" type="button">确认重置</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="/web/js/lib/jsencrypt.min.js"></script>
+    <script src="/web/js/crypto.js?v=20260803"></script>
+    <script src="/web/admin.js?v=20260803"></script>
+</body>
+</html>

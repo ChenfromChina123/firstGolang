@@ -28,8 +28,12 @@ func (db *DB) UpdateUserRole(id, role string) error {
 
 // ListUsersPaged 分页查询用户列表（管理后台）
 func (db *DB) ListUsersPaged(page, pageSize int, keyword string) ([]*model.User, int64, error) {
-	if page < 1 { page = 1 }
-	if pageSize < 1 || pageSize > 100 { pageSize = 20 }
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
 	offset := (page - 1) * pageSize
 	countSQL := "SELECT COUNT(*) FROM users"
 	args := []interface{}{}
@@ -52,7 +56,9 @@ func (db *DB) ListUsersPaged(page, pageSize int, keyword string) ([]*model.User,
 	querySQL += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
 	qArgs = append(qArgs, pageSize, offset)
 	rows, err := db.conn.Query(querySQL, qArgs...)
-	if err != nil { return nil, 0, err }
+	if err != nil {
+		return nil, 0, err
+	}
 	defer rows.Close()
 	users := make([]*model.User, 0, pageSize)
 	for rows.Next() {
@@ -64,14 +70,18 @@ func (db *DB) ListUsersPaged(page, pageSize int, keyword string) ([]*model.User,
 		u.Email = email.String
 		users = append(users, u)
 	}
-	if err := rows.Err(); err != nil { return nil, 0, err }
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
 	return users, count, nil
 }
 
 // DeleteUserByID 删除用户 + 清理关联数据
 func (db *DB) DeleteUserByID(id string) error {
 	tx, err := db.conn.Begin()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer tx.Rollback()
 	for _, q := range []string{
 		"DELETE FROM user_activation_tokens WHERE user_id = ?",
@@ -80,7 +90,9 @@ func (db *DB) DeleteUserByID(id string) error {
 		"DELETE FROM sso_sessions WHERE user_id = ?",
 		"DELETE FROM users WHERE id = ?",
 	} {
-		if _, err := tx.Exec(q, id); err != nil { return err }
+		if _, err := tx.Exec(q, id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -92,7 +104,6 @@ func (db *DB) CountUsersByStatus() (total, active, pending int64, err error) {
 	_ = db.conn.QueryRow("SELECT COUNT(*) FROM users WHERE status = 'pending'").Scan(&pending)
 	return
 }
-
 
 // CreatePasswordResetCode 创建密码重置验证码记录
 // 最小实现：写入 password_reset_codes 表，表不存在时忽略错误返回 nil

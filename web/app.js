@@ -6,6 +6,7 @@
 
 (function () {
     'use strict';
+var __FS_LOGIN_URL = window.__FS_LOGIN_URL || '/web/login.html';
 
     // === 配置 ===
     const API = {
@@ -33,6 +34,7 @@
         storageUsage: '/api/storage-usage', // 存储用量查询
         filesCreate: '/api/files/create', // 在线新建文本文件
         filesContent: '/api/files', // /api/files/{id}/content（前缀，拼接用）
+        spaces: '/api/spaces', // 空间管理（列出/创建/详情/删除）
     };
 
     // === 认证：路由守卫 + 401 拦截 ===
@@ -43,7 +45,7 @@
      */
     function redirectToLogin(reason) {
         const current = window.location.pathname + window.location.search;
-        const url = '/web/login.html?redirect=' + encodeURIComponent(current);
+        const url = __FS_LOGIN_URL + '?redirect=' + encodeURIComponent(current);
         window.location.href = url;
     }
 
@@ -115,7 +117,7 @@
         } catch (e) {
             // 忽略网络错误，仍然跳转登录页
         }
-        window.location.href = '/web/login.html';
+        window.location.href = __FS_LOGIN_URL;
     }
 
     /**
@@ -184,7 +186,7 @@
         return new Promise((resolve, reject) => {
             let worker;
             try {
-                worker = new Worker('/web/sha256.worker.js');
+                worker = new Worker('/web/sha256.worker.js?v=20260803');
             } catch (e) {
                 reject(new Error('Worker 创建失败: ' + e.message));
                 return;
@@ -215,7 +217,7 @@
                 worker.terminate();
                 reject(new Error('Worker 错误: ' + (e.message || 'unknown')));
             };
-            worker.postMessage({ type: 'hash', file: file, chunkSize: chunkSize }, [file]);
+            worker.postMessage({ type: 'hash', file: file, chunkSize: chunkSize });
         });
     }
 
@@ -226,10 +228,8 @@
         el.textContent = msg;
         wrap.appendChild(el);
         setTimeout(() => {
-            el.style.opacity = '0';
-            el.style.transform = 'translateX(20px)';
-            el.style.transition = 'all 0.25s';
-            setTimeout(() => el.remove(), 250);
+            el.classList.add('leaving'); // 出场动画交给 CSS（toastOut）
+            setTimeout(() => el.remove(), 280);
         }, 3000);
     }
 
@@ -262,6 +262,322 @@
         }
     }
 
+    // === 传输中心（全屏面板：实时进度/速度/剩余时间/暂停恢复/批量控制） ===
+    let transferTaskSeq = 0;
+    const transferTasks = new Map(); // task.id → { task }
+    let transferRenderTimer = null;
+
+    /** 注册上传任务到传输中心注册表 */
+    function registerTransferTask(task) {
+        transferTasks.set(task.id, { task });
+    }
+
+    /** 任务状态/进度变化通知：300ms 节流渲染传输中心面板 + 更新侧栏 badge */
+    function notifyTransferChange() {
+        if (transferRenderTimer) return;
+        transferRenderTimer = setTimeout(() => {
+            transferRenderTimer = null;
+            renderTransferPanel();
+            updateTransferBadge();
+        }, 300);
+    }
+
+    /** 传输中心面板当前是否打开（v2 页面视图 / 经典版 modal 兼容） */
+    function isTransferOpen() {
+        const view = document.getElementById('view-transfer');
+        if (view) return !view.hidden;
+        const modal = document.getElementById('transfer-modal');
+        return modal && !modal.hidden;
+    }
+
+    /** 渲染传输中心面板（全量重绘，任务数通常 < 100） */
+    function renderTransferPanel() {
+        const list = document.getElementById('transfer-list');
+        if (!list || !isTransferOpen()) return;
+        let active = 0, paused = 0, done = 0, error = 0;
+        let totalSpeed = 0;
+        const rows = [];
+        for (const { task } of transferTasks.values()) {
+            switch (task.status) {
+                case 'uploading': active++; totalSpeed += task.speed; break;
+                case 'paused': paused++; break;
+                case 'done': done++; break;
+                case 'error': error++; break;
+            }
+            rows.push(transferRowHTML(task));
+        }
+        const summary = document.getElementById('transfer-summary');
+        if (summary) {
+            summary.textContent =
+                `进行中 ${active} · 已暂停 ${paused} · 完成 ${done} · 失败 ${error} · 总速度 ${fmtSpeed(totalSpeed)}`;
+        }
+        if (rows.length === 0) {
+            list.innerHTML = `<div class="transfer-empty">暂无传输任务</div>`;
+            return;
+        }
+        list.innerHTML = rows.join('');
+    }
+
+    /** 传输中心单行 HTML */
+    function transferRowHTML(task) {
+        const pct = task.file.size > 0 ? Math.min(100, task.uploaded / task.file.size * 100) : 0;
+        const statusMap = {
+            pending: '排队中', uploading: '上传中', paused: '已暂停',
+            done: '完成', error: '失败', cancelled: '已取消',
+        };
+        const statusClass = task.status;
+        const speedText = (task.status === 'uploading' && task.speed > 0) ? fmtSpeed(task.speed) : '--';
+        const etaText = (task.status === 'uploading' && task.eta > 0) ? `剩余 ${fmtDuration(task.eta)}` : '--';
+        // 速度曲线（最近 24 个采样点，CSS 柱状 sparkline；无采样时留空）
+        let spark = '';
+        if (task.status === 'uploading' && task.speedHistory && task.speedHistory.length > 0) {
+            const max = Math.max(...task.speedHistory, 1);
+            spark = `<div class="tf-spark" title="实时速度曲线（最近 ${task.speedHistory.length} 秒）">` +
+                task.speedHistory.map(s => {
+                    const h = Math.max(8, Math.round(s / max * 100));
+                    return `<span style="height:${h}%"></span>`;
+                }).join('') + `</div>`;
+        }
+        let actions = '';
+        if (task.status === 'uploading') {
+            actions = `<button data-act="pause" data-id="${task.id}">暂停</button><button data-act="cancel" data-id="${task.id}">取消</button>`;
+        } else if (task.status === 'paused') {
+            actions = `<button data-act="resume" data-id="${task.id}">继续</button><button data-act="cancel" data-id="${task.id}">取消</button>`;
+        } else if (task.status === 'error') {
+            actions = `<button data-act="retry" data-id="${task.id}">重试</button><button data-act="remove" data-id="${task.id}">移除</button>`;
+        } else if (task.status === 'done' || task.status === 'cancelled') {
+            actions = `<button data-act="remove" data-id="${task.id}">移除</button>`;
+        }
+        return `
+            <div class="tf-row">
+                <div class="tf-info">
+                    <div class="tf-name" title="${escapeHtml(task.getDisplayName())}">${escapeHtml(task.getDisplayName())}</div>
+                    <div class="tf-progress"><div class="tf-fill ${statusClass}" style="width:${pct.toFixed(1)}%"></div></div>
+                </div>
+                <div class="tf-meta">
+                    <span class="tf-status ${statusClass}">${statusMap[task.status] || task.status}</span>
+                    <span class="tf-speed">${speedText}</span>
+                    <span class="tf-eta">${etaText}</span>
+                    <span class="tf-pct">${pct.toFixed(0)}%</span>
+                </div>
+                ${spark}
+                <div class="tf-actions">${actions}</div>
+            </div>`;
+    }
+
+    /** 更新侧栏传输中心按钮上的进行中任务数 badge */
+    function updateTransferBadge() {
+        const badge = document.getElementById('transfer-badge');
+        if (!badge) return;
+        let active = 0;
+        for (const { task } of transferTasks.values()) {
+            if (task.status === 'uploading' || task.status === 'paused') active++;
+        }
+        badge.textContent = active > 0 ? String(active) : '';
+        badge.hidden = active === 0;
+    }
+
+    /** 打开传输中心（v2 页面视图切换；经典版回退 modal） */
+    /** 统一视图切换：隐藏全部主内容区视图，只显示目标视图（v2 页面模式）。
+     *  target: 'view-files' | 'view-transfer' | 'view-share' | 'view-trash'
+     *  修复：之前各打开函数只隐藏 view-files，导致切换模块时上一视图未隐藏（叠加显示）。 */
+    function switchView(target) {
+        const views = ['view-files', 'view-transfer', 'view-share', 'view-trash'];
+        for (const id of views) {
+            const el = document.getElementById(id);
+            if (el) el.hidden = (id !== target);
+        }
+    }
+
+    function openTransferCenter() {
+        const view = document.getElementById('view-transfer');
+        const modal = document.getElementById('transfer-modal');
+        if (view) {
+            switchView('view-transfer'); // v2：统一切换，隐藏其他所有视图
+        } else {
+            // 经典版：无 view-transfer 结构，回退旧 modal
+            if (!modal) return;
+            modal.hidden = false;
+        }
+        rememberLastView('transfer'); // 持久化：最后视图 = 传输中心
+        renderTransferPanel();
+    }
+
+    /** 关闭传输中心（v2 返回文件视图；经典版隐藏 modal） */
+    function closeTransferCenter() {
+        const view = document.getElementById('view-transfer');
+        const modal = document.getElementById('transfer-modal');
+        if (view) {
+            switchView('view-files'); // v2：回到文件视图（隐藏其他所有）
+        } else {
+            if (modal) modal.hidden = true;
+        }
+        rememberLastView('files'); // 持久化：最后视图 = 文件
+    }
+
+    /** 清空已完成的传输任务记录 */
+    function clearTransferDone() {
+        for (const [id, { task }] of transferTasks) {
+            if (task.status === 'done' || task.status === 'cancelled') transferTasks.delete(id);
+        }
+        renderTransferPanel();
+        updateTransferBadge();
+    }
+
+    // === MCP / 外部上传实时记录（WebSocket 事件推送） ===
+    const mcpUploads = []; // {filename, size, username, tool, time}
+    const MCP_UPLOAD_MAX = 30; // 最多保留 30 条
+    let mcpWs = null;
+    let mcpWsRetry = null;
+
+    /** 渲染 MCP 上传记录到传输中心页面 */
+    function renderMcpUploads() {
+        const listEl = document.getElementById('mcp-upload-list');
+        if (!listEl) return;
+        if (mcpUploads.length === 0) {
+            listEl.innerHTML = '<div class="transfer-empty">暂无 MCP 上传记录</div>';
+            return;
+        }
+        listEl.innerHTML = [...mcpUploads].reverse().map(r => {
+            const size = fmtSize(r.size);
+            const tool = r.tool ? `<span class="mcp-tool">${escapeHtml(r.tool)}</span>` : '';
+            const by = r.username ? `<span class="mcp-user">${escapeHtml(r.username)}</span>` : '';
+            const t = r.time ? `<span class="mcp-time">${escapeHtml(r.time.replace('T', ' ').slice(0, 19))}</span>` : '';
+            const spaceAttr = r.space_id ? `data-space="${escapeHtml(r.space_id)}"` : '';
+            const fnAttr = r.filename ? `data-filename="${escapeHtml(r.filename)}"` : '';
+            return `<div class="mcp-row" ${spaceAttr} ${fnAttr} title="点击定位到文件位置">
+                <span class="mcp-name">${escapeHtml(r.filename)}</span>
+                <span class="mcp-size">${size}</span>
+                ${tool}${by}${t}
+            </div>`;
+        }).join('');
+        // 绑定记录点击：路由到对应文件位置
+        listEl.querySelectorAll('.mcp-row').forEach(row => {
+            row.addEventListener('click', () => routeToUpload(row.dataset.space, row.dataset.filename));
+        });
+    }
+
+    // 待高亮文件（路由后定位）：loadFiles 渲染完成时处理
+    let pendingHighlight = null;
+
+    /** 点击 MCP 上传记录 → 切换到文件视图并定位到该文件 */
+    function routeToUpload(spaceID, filename) {
+        if (!filename || !document.getElementById('view-files')) return; // 经典版无视图结构
+        // 1) 切回文件视图（统一切换，隐藏其他所有视图）
+        switchView('view-files');
+        // 2) 切换空间（若不同）：更新 currentSpaceID + 下拉框 + 持久化 + 清缓存
+        if (spaceID && spaceID !== currentSpaceID) {
+            currentSpaceID = spaceID;
+            const sel = document.getElementById('space-select');
+            if (sel) sel.value = spaceID;
+            persistSpace();
+            invalidateCache();
+        }
+        // 3) 定位目录：filename 去掉最后一段（文件），保留目录前缀
+        const idx = filename.lastIndexOf('/');
+        currentPath = idx >= 0 ? filename.slice(0, idx + 1) : '';
+        persistPath();
+        // 4) 标记待高亮文件，刷新文件列表后定位
+        pendingHighlight = filename;
+        rememberLastView('files'); // 持久化：路由回文件视图
+        loadFiles();
+    }
+
+    /** 记录一条 MCP 上传事件（实时推送或历史加载共用） */
+    function pushMcpUpload(ev) {
+        mcpUploads.push({
+            filename: ev.filename || ev.name || '未知文件',
+            size: ev.size || 0,
+            username: ev.username || '',
+            tool: ev.tool || '',
+            time: ev.time || ev.created_at || new Date().toISOString(),
+        });
+        if (mcpUploads.length > MCP_UPLOAD_MAX) mcpUploads.shift();
+        renderMcpUploads();
+    }
+
+    /** 加载历史上传记录（打开传输中心 / 页面初始化时回填） */
+    async function loadMcpHistory() {
+        try {
+            const res = await apiFetch('/api/upload-events');
+            if (!res.ok) return;
+            const data = await res.json();
+            const events = data.events || [];
+            mcpUploads.length = 0;
+            for (const ev of events) pushMcpUpload(ev);
+        } catch (_) { /* 历史加载失败不阻塞 */ }
+    }
+
+    /** 清空历史上传记录 */
+    async function clearMcpHistory() {
+        try {
+            const res = await apiFetch('/api/upload-events', { method: 'DELETE' });
+            if (res.ok) {
+                mcpUploads.length = 0;
+                renderMcpUploads();
+                toast('已清空 MCP 上传记录', 'ok');
+            }
+        } catch (_) { toast('清空失败', 'err'); }
+    }
+
+    /** 初始化 WebSocket 事件订阅（登录后调用，断线自动重连） */
+    function initMcpEventStream() {
+        if (mcpWs) return; // 已连接
+        const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const url = proto + location.host + '/api/ws/events';
+        try {
+            mcpWs = new WebSocket(url); // 同源连接自动携带登录 Cookie
+        } catch (e) { return; }
+        mcpWs.onopen = () => {
+            const dot = document.getElementById('mcp-live-dot');
+            if (dot) dot.className = 'transfer-mcp-live on';
+        };
+        mcpWs.onmessage = (e) => {
+            try {
+                const ev = JSON.parse(e.data);
+                if (ev && ev.type === 'upload') pushMcpUpload(ev);
+            } catch (_) { /* 忽略无法解析的消息 */ }
+        };
+        mcpWs.onclose = () => {
+            const dot = document.getElementById('mcp-live-dot');
+            if (dot) dot.className = 'transfer-mcp-live';
+            mcpWs = null;
+            // 3 秒后重连（避免登录态短暂失效时风暴）
+            clearTimeout(mcpWsRetry);
+            mcpWsRetry = setTimeout(initMcpEventStream, 3000);
+        };
+        mcpWs.onerror = () => { try { mcpWs.close(); } catch (_) {} };
+    }
+
+    /** 传输中心批量控制：全部暂停 */
+    function pauseAllTransfers() {
+        for (const { task } of transferTasks.values()) {
+            if (task.status === 'uploading') task.pause();
+        }
+    }
+
+    /** 传输中心批量控制：全部继续 */
+    function resumeAllTransfers() {
+        for (const { task } of transferTasks.values()) {
+            if (task.status === 'paused') task.resume();
+        }
+    }
+
+    /** 速度格式化（字节/秒 → 可读字符串） */
+    function fmtSpeed(bytesPerSec) {
+        if (bytesPerSec < 1024) return bytesPerSec.toFixed(0) + ' B/s';
+        if (bytesPerSec < 1024 * 1024) return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+        if (bytesPerSec < 1024 * 1024 * 1024) return (bytesPerSec / 1024 / 1024).toFixed(1) + ' MB/s';
+        return (bytesPerSec / 1024 / 1024 / 1024).toFixed(2) + ' GB/s';
+    }
+
+    /** 剩余时间格式化（秒 → 可读字符串） */
+    function fmtDuration(sec) {
+        if (sec < 60) return Math.max(1, Math.round(sec)) + 's';
+        if (sec < 3600) return Math.floor(sec / 60) + 'm ' + Math.round(sec % 60) + 's';
+        return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+    }
+
     // === 上传管理 ===
 
     /**
@@ -288,6 +604,15 @@
             this.fullHash = null; // 完整文件 SHA256（秒传检查用，null=未计算）
             this.presigned = null; // presigned 直连信息（InitUpload 返回，null=走中转模式）
             this.isPresigned = false; // 是否走 presigned 直连 OSS
+            // === 传输中心（实时进度/速度/暂停恢复）扩展字段 ===
+            this.id = 'task-' + (++transferTaskSeq);
+            this.speed = 0; // 实时上传速度（字节/秒，EMA 平滑后）
+            this.eta = 0; // 剩余时间（秒，估算）
+            this.lastSpeedTs = 0; // 上次速度采样时间戳
+            this.lastSpeedBytes = 0; // 上次速度采样字节数
+            this.speedHistory = []; // 速度历史采样（最近 24 个点，用于速度曲线）
+            this.paused = false; // 暂停标志
+            this._running = false; // run() 是否在运行（resume 时判断是否需要重新进入）
         }
 
         /** 构造上传到后端的完整文件名（含目录前缀）
@@ -319,6 +644,7 @@
                     filename: uploadName,
                     file_size: this.file.size,
                     file_hash: this.fullHash,
+                    space_id: currentSpaceID,
                 }),
             });
             // 409 表示目标文件名已存在（非秒传源文件冲突），降级为正常上传让 init 处理冲突
@@ -345,6 +671,9 @@
 
             // 文件元信息通过 JSON body 传递（后端 InitUploadRequest 解析）
             const uploadName = this.getUploadFilename();
+            // OSS 暂不可用：历史选择过 s3 也强制降级 local，防止新上传失败
+            const savedStorage = localStorage.getItem('filesync:storage');
+            const uploadStorage = savedStorage === 's3' ? 'local' : (savedStorage || 'local');
             const res = await apiFetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -352,8 +681,9 @@
                     filename: uploadName,
                     file_size: this.file.size,
                     chunk_size: this.chunkSize,
-                    storage: localStorage.getItem('filesync:storage') || 'local',
+                    storage: uploadStorage,
                     file_hash: fileHash,
+                    space_id: currentSpaceID,
                 }),
             });
             if (res.status === 409) {
@@ -440,9 +770,15 @@
             const worker = async () => {
                 while (cursor < missing.length) {
                     if (this.cancelled) return; // 用户已取消，停止 worker
+                    // 暂停支持：暂停时挂起等待，直到恢复或取消（传输中心控制）
+                    while (this.paused && !this.cancelled) {
+                        await new Promise(res => setTimeout(res, 150));
+                    }
+                    if (this.cancelled) return;
                     const idx = missing[cursor++];
                     try {
                         await this.uploadChunk(idx);
+                        this._updateSpeed(); // 每个 chunk 成功后采样速度（节流）
                     } catch (e) {
                         if (this.cancelled || e.name === 'AbortError') return; // 取消导致的失败，不记录
                         failed.push(idx);
@@ -461,11 +797,17 @@
             // 重试失败的 chunks（最多 2 次，串行重试避免并发压力）
             for (let retry = 0; retry < 2 && failed.length > 0; retry++) {
                 if (this.cancelled) return; // 取消则停止重试
+                // 暂停支持：重试阶段同样可被暂停挂起
+                while (this.paused && !this.cancelled) {
+                    await new Promise(res => setTimeout(res, 150));
+                }
+                if (this.cancelled) return;
                 const stillFailed = [];
                 for (const idx of failed) {
                     if (this.received.has(idx)) continue; // 可能被其他 worker 重试成功了
                     try {
                         await this.uploadChunk(idx);
+                        this._updateSpeed();
                     } catch (e) {
                         if (this.cancelled || e.name === 'AbortError') return; // 取消导致的失败
                         stillFailed.push(idx);
@@ -684,6 +1026,9 @@
                     toast(`「${this.getDisplayName()}」上传失败: ${e.message}`, 'err');
                 }
                 this.updateDom();
+            } finally {
+                this._running = false;
+                notifyTransferChange(); // 终态通知传输中心
             }
         }
 
@@ -698,6 +1043,76 @@
             this.status = 'cancelled';
             this.error = '已取消';
             this.updateDom();
+            notifyTransferChange();
+        }
+
+        /** 暂停上传（传输中心） */
+        pause() {
+            if (this.status !== 'uploading' || this.paused) return;
+            this.paused = true;
+            this.status = 'paused';
+            this.speed = 0;
+            this.updateDom();
+            notifyTransferChange();
+        }
+
+        /** 恢复上传（传输中心） */
+        async resume() {
+            if (!this.paused) return;
+            this.paused = false;
+            this.status = 'uploading';
+            this.updateDom();
+            notifyTransferChange();
+            // 若上传循环已退出（如暂停发生在 run 结束后），重新进入
+            if (!this._running) {
+                this.run().catch(() => {});
+            }
+        }
+
+        /** 失败后重试（重新走完整上传流程） */
+        retry() {
+            if (this.status !== 'error') return;
+            this.error = null;
+            this.status = 'pending';
+            this.cancelled = false;
+            this.uploaded = 0;
+            this.sessionId = null;
+            this.received = new Set();
+            this.speed = 0;
+            this.eta = 0;
+            this.updateDom();
+            notifyTransferChange();
+            this.run().catch(() => {});
+        }
+
+        /** 速度采样：每个 chunk 成功后调用，每 ≥0.5s 计算一次实时速度与剩余时间。
+         *  行业级平滑：EMA（指数移动平均）滤除瞬时抖动，速度/ETA 显示稳定。
+         *  采样间隔 0.5s：上传 1 秒内即可积累曲线点，小文件也能看到速度曲线。 */
+        _updateSpeed() {
+            if (this.status !== 'uploading') return;
+            const now = Date.now();
+            if (!this.lastSpeedTs) {
+                this.lastSpeedTs = now;
+                this.lastSpeedBytes = this.uploaded;
+                // 启动即记录首个采样点（0 速度），让曲线从一开始就有柱
+                this.speedHistory.push(0);
+                if (this.speedHistory.length > 24) this.speedHistory.shift();
+                return;
+            }
+            const dt = (now - this.lastSpeedTs) / 1000;
+            if (dt >= 0.5) {
+                const inst = (this.uploaded - this.lastSpeedBytes) / dt;
+                // EMA 平滑：首次直接采用瞬时值，之后 70% 旧值 + 30% 新值
+                this.speed = this.speed > 0 ? this.speed * 0.7 + inst * 0.3 : inst;
+                this.lastSpeedTs = now;
+                this.lastSpeedBytes = this.uploaded;
+                // 速度历史（曲线）：保留最近 24 个采样点
+                this.speedHistory.push(this.speed);
+                if (this.speedHistory.length > 24) this.speedHistory.shift();
+                const remain = this.file.size - this.uploaded;
+                this.eta = this.speed > 0 ? remain / this.speed : 0;
+                notifyTransferChange();
+            }
         }
 
         /** 创建队列 DOM 节点 */
@@ -801,6 +1216,231 @@
         });
     }
 
+    // === 多空间（用户级存储空间，空间间文件树隔离） ===
+
+    // 当前激活空间 ID（'' = 默认空间）；切换空间即切换文件列表根
+    let currentSpaceID = '';
+    let spaceList = []; // 当前用户的空间列表 [{id,name,storage_type,file_count}]
+
+    // === 用户行为持久化（localStorage：空间 + 路径，刷新后恢复） ===
+    const LS_SPACE_KEY = 'filesync:lastSpace';
+    const LS_PATH_KEY  = 'filesync:lastPath';
+
+    /** 保存当前所在空间到 localStorage */
+    function persistSpace() {
+        try { localStorage.setItem(LS_SPACE_KEY, currentSpaceID || ''); } catch (e) { /* 隐私模式忽略 */ }
+    }
+
+    /** 保存当前所在路径到 localStorage */
+    function persistPath() {
+        try { localStorage.setItem(LS_PATH_KEY, currentPath || ''); } catch (e) { /* 隐私模式忽略 */ }
+    }
+
+    /** 恢复上次所在空间（localStorage），若已失效返回 null */
+    function restoreSpace() {
+        try { return localStorage.getItem(LS_SPACE_KEY) || ''; } catch (e) { return ''; }
+    }
+
+    /** 恢复上次所在路径（localStorage），若已失效返回 '' */
+    function restorePath() {
+        try { return localStorage.getItem(LS_PATH_KEY) || ''; } catch (e) { return ''; }
+    }
+
+    // === 更多用户行为特征持久化（localStorage） ===
+    const LS_RECENT_UPLOADS = 'filesync:recentUploads'; // 最近上传历史（最多 10 条）
+    const LS_LAST_VIEW     = 'filesync:lastView';       // 最后打开的视图
+    const LS_RECENT_SPACES = 'filesync:recentSpaces';   // 最近访问空间（{id: 时间戳}）
+
+    /** 读取 JSON 型 localStorage（失败回退默认值） */
+    function readJSON(key, fallback) {
+        try {
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : fallback;
+        } catch (e) { return fallback; }
+    }
+
+    /** 写入 JSON 型 localStorage */
+    function writeJSON(key, val) {
+        try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* 隐私模式忽略 */ }
+    }
+
+    /** 记录最近上传（去重，保留最近 10 条） */
+    function addRecentUpload(filename) {
+        if (!filename) return;
+        const list = readJSON(LS_RECENT_UPLOADS, []);
+        const dedup = list.filter(n => n !== filename);
+        dedup.unshift(filename);
+        writeJSON(LS_RECENT_UPLOADS, dedup.slice(0, 10));
+    }
+
+    /** 读取最近上传历史 */
+    function getRecentUploads() {
+        return readJSON(LS_RECENT_UPLOADS, []);
+    }
+
+    /** 记住最后打开的视图（files / transfer / share） */
+    function rememberLastView(view) {
+        try { localStorage.setItem(LS_LAST_VIEW, view || 'files'); } catch (e) { /* 忽略 */ }
+    }
+
+    /** 读取最后打开的视图 */
+    function getLastView() {
+        try { return localStorage.getItem(LS_LAST_VIEW) || 'files'; } catch (e) { return 'files'; }
+    }
+
+    /** 记录空间访问时间（用于「最近访问空间」排序） */
+    function touchRecentSpace(spaceID) {
+        if (!spaceID) return;
+        const map = readJSON(LS_RECENT_SPACES, {});
+        map[spaceID] = Date.now();
+        // 只保留最近 20 个空间，防无限增长
+        const entries = Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, 20);
+        writeJSON(LS_RECENT_SPACES, Object.fromEntries(entries));
+    }
+
+    /** 按最近访问时间排序空间列表（最近使用的在前） */
+    function sortSpacesByRecent(list) {
+        const map = readJSON(LS_RECENT_SPACES, {});
+        return [...list].sort((a, b) => (map[b.id] || 0) - (map[a.id] || 0));
+    }
+
+    /** 从后端拉取空间列表并渲染到选择器 */
+    async function loadSpaces() {
+        try {
+            const res = await apiFetch(API.spaces);
+            if (!res.ok) return;
+            const data = await res.json();
+            spaceList = data.spaces || [];
+            // 行为特征：按最近访问时间排序（最近使用的空间排在前面）
+            const sorted = sortSpacesByRecent(spaceList);
+            const sel = document.getElementById('space-select');
+            if (!sel) return;
+            sel.innerHTML = sorted.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)}</option>`).join('');
+            // 恢复上次所在空间（若仍在用户空间列表中）
+            const saved = restoreSpace();
+            if (saved && spaceList.some(s => s.id === saved)) {
+                currentSpaceID = saved;
+            }
+            // 当前空间已被删除 → 回退默认空间
+            if (currentSpaceID && !spaceList.some(s => s.id === currentSpaceID)) {
+                currentSpaceID = '';
+            }
+            // 前端默认空间语义：'' 等价于空间列表中的「我的空间」(default-<username>)，
+            // 映射为实际空间 ID，保证下拉框选中与后续请求（space_id）一致
+            if (currentSpaceID === '') {
+                const def = spaceList.find(s => s.id.startsWith('default-'));
+                if (def) currentSpaceID = def.id;
+            }
+            sel.value = currentSpaceID;
+            persistSpace();
+        } catch (e) { /* 空间加载失败不阻塞页面 */ }
+    }
+
+    /** 切换空间：重置目录到根并刷新 */
+    function switchSpace(spaceID) {
+        if (spaceID === currentSpaceID) return;
+        currentSpaceID = spaceID;
+        currentPath = '';
+        persistSpace();
+        persistPath();
+        touchRecentSpace(spaceID); // 持久化：记录空间访问时间
+        refreshAfterModify();
+    }
+
+    /** 创建新空间（默认 local 存储） */
+    async function createSpace() {
+        const name = prompt('请输入空间名称（如：工作、个人资料）');
+        if (name === null) return;
+        const trimmed = name.trim();
+        if (!trimmed) { toast('空间名称不能为空', 'err'); return; }
+        try {
+            const res = await apiFetch(API.spaces, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: trimmed, storage_type: 'local' }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.message || 'HTTP ' + res.status);
+            }
+            const space = await res.json();
+            toast(`空间「${space.name}」创建成功`, 'ok');
+            await loadSpaces();
+            switchSpace(space.id); // 切换到新空间
+        } catch (e) {
+            toast(`创建空间失败：${e.message}`, 'err');
+        }
+    }
+
+    /** 删除空间（仅空空间可删，默认空间不可删） */
+    async function deleteSpace(spaceID) {
+        const space = spaceList.find(s => s.id === spaceID);
+        if (!space) return;
+        if (space.id.startsWith('default-')) {
+            toast('默认空间不可删除', 'err');
+            return;
+        }
+        if (!confirm(`确定删除空间「${space.name}」？仅空空间可删除（空间内文件需先移出或删除）。`)) return;
+        try {
+            const res = await apiFetch(`${API.spaces}/${encodeURIComponent(spaceID)}`, { method: 'DELETE' });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.message || 'HTTP ' + res.status);
+            }
+            toast(`空间「${space.name}」已删除`, 'ok');
+            if (currentSpaceID === spaceID) currentSpaceID = '';
+            await loadSpaces();
+            refreshAfterModify();
+            renderSpaceManageList(); // 刷新管理对话框列表
+        } catch (e) {
+            toast(`删除空间失败：${e.message}`, 'err');
+        }
+    }
+
+    /** 打开空间管理对话框 */
+    async function openSpaceManager() {
+        const modal = document.getElementById('space-manage-modal');
+        if (!modal) return;
+        modal.hidden = false;
+        await loadSpaces(); // 确保 spaceList 最新
+        renderSpaceManageList();
+    }
+
+    /** 渲染空间管理对话框列表（名称/文件数/类型 + 删除按钮） */
+    function renderSpaceManageList() {
+        const listEl = document.getElementById('space-manage-list');
+        if (!listEl) return;
+        if (spaceList.length === 0) {
+            listEl.innerHTML = '<div class="empty">暂无空间</div>';
+            return;
+        }
+        listEl.innerHTML = spaceList.map(s => {
+            const isDefault = s.id.startsWith('default-');
+            const isCurrent = s.id === currentSpaceID;
+            const typeLabel = s.storage_type === 's3' ? 'OSS' : '本地';
+            const badge = isCurrent ? '<span class="share-status active">当前</span>' : '';
+            const del = isDefault
+                ? '<button class="op-btn" disabled title="默认空间不可删除">不可删</button>'
+                : `<button class="op-btn danger delete-space" data-id="${escapeHtml(s.id)}" title="删除空间（仅空空间）">删除</button>`;
+            return `<div class="share-item" data-id="${escapeHtml(s.id)}">
+                <div class="share-item-head">
+                    <span class="share-item-name">${escapeHtml(s.name)}</span>
+                    <span class="share-item-type">${typeLabel}</span>
+                    ${badge}
+                </div>
+                <div class="share-item-meta">
+                    <span>文件 ${s.file_count ?? 0} 个</span>
+                    <span>ID ${escapeHtml(s.id.slice(0, 8))}…</span>
+                </div>
+                <div class="share-ops">${del}</div>
+            </div>`;
+        }).join('');
+        // 绑定删除按钮
+        listEl.querySelectorAll('.delete-space').forEach(btn => {
+            btn.addEventListener('click', () => deleteSpace(btn.dataset.id));
+        });
+    }
+
     // === 文件列表（树形：路径枚举方案） ===
 
     // 当前所在目录路径（末尾带 /，空字符串表示根目录）
@@ -827,6 +1467,25 @@
     function refreshAfterModify() {
         invalidateCache();
         loadFiles();
+    }
+
+    // 节流刷新：合并连续的修改触发（多文件并发上传完成/批量删除等），
+    // 避免每个文件完成都全量重建一次 DOM 造成的界面闪烁。
+    let _refreshTimer = null;
+    function scheduleRefresh(delay) {
+        if (_refreshTimer) return;
+        _refreshTimer = setTimeout(() => {
+            _refreshTimer = null;
+            refreshAfterModify();
+        }, delay || 300);
+    }
+
+    // 树签名：用于静默刷新时判断内容是否变化，未变化则跳过 DOM 重建
+    let _treeSig = '';
+    function treeSignature(dirs, files) {
+        const d = [...dirs].map(([n, c]) => n + ':' + c).join(',');
+        const f = files.map(x => x.id + ':' + x.size + ':' + x.filename).join(',');
+        return d + '|' + f;
     }
 
     // === 选择状态管理 ===
@@ -911,6 +1570,7 @@
         bc.querySelectorAll('.crumb').forEach(el => {
             el.addEventListener('click', () => {
                 currentPath = el.dataset.path || '';
+                persistPath();
                 loadFiles();
             });
         });
@@ -918,7 +1578,8 @@
 
     /** 加载并渲染当前目录的子项（目录 + 文件）。
      *  使用 stale-while-revalidate 缓存策略：命中缓存立即渲染，后台异步刷新。 */
-    async function loadFiles() {
+    async function loadFiles(opts) {
+        const silent = !!(opts && opts.silent); // 静默刷新：不显示骨架屏、内容未变不重建 DOM
         const tree = document.getElementById('file-tree');
         const reqPath = currentPath; // 捕获请求时的路径，防止后台刷新完成时用户已切换目录
         renderBreadcrumb();
@@ -933,7 +1594,7 @@
         // 命中缓存：立即渲染（消除停顿感）
         if (cached) {
             renderTree(cached.dirs, cached.files);
-        } else {
+        } else if (!silent) {
             // 骨架屏：shimmer 动画替代纯文字「加载中」，视觉连续性更好
             tree.innerHTML = Array.from({ length: 6 }, (_, i) =>
                 `<div class="tree-skeleton" style="animation-delay:${i * 0.08}s">
@@ -951,9 +1612,11 @@
         // 后台刷新（stale-while-revalidate：即使有旧缓存也拉取最新数据）
         try {
             // shallow=1：后端分层返回当前目录直接子项（dirs+files），不递归子目录
+            // space_id：空间隔离（切换空间后缓存已由 refreshAfterModify 清空）
+            const spaceParam = currentSpaceID ? `&space_id=${encodeURIComponent(currentSpaceID)}` : '';
             const url = reqPath
-                ? `${API.files}?prefix=${encodeURIComponent(reqPath)}&shallow=1`
-                : `${API.files}?shallow=1`;
+                ? `${API.files}?prefix=${encodeURIComponent(reqPath)}&shallow=1${spaceParam}`
+                : `${API.files}?shallow=1${spaceParam}`;
             const res = await apiFetch(url);
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
@@ -964,8 +1627,16 @@
                     tree.innerHTML = `<div class="tree-empty">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
                         <div class="tree-empty-text">${currentPath ? '此目录为空' : '暂无文件'}</div>
-                        <div class="tree-empty-hint">点击上方「+ 上传」按钮添加文件</div>
+                        <div class="tree-empty-hint">点击上方「+ 上传」按钮添加文件，或：</div>
+                        <div class="tree-empty-actions">
+                            <button class="ghost-btn" id="empty-new-file">＋ 新建文件</button>
+                            <button class="ghost-btn" id="empty-new-dir">＋ 新建目录</button>
+                        </div>
                     </div>`;
+                    const ef = document.getElementById('empty-new-file');
+                    if (ef) ef.addEventListener('click', openNewFileEditor);
+                    const ed = document.getElementById('empty-new-dir');
+                    if (ed) ed.addEventListener('click', mkdir);
                 }
                 return;
             }
@@ -975,10 +1646,13 @@
             dirCache.set(reqPath, { dirs, files: fileList, ts: Date.now() });
             // 仅当用户仍在同一目录时才更新渲染
             if (currentPath === reqPath) {
+                // 静默刷新：内容未变化则跳过 DOM 重建，避免界面闪烁与选中状态丢失
+                if (silent && treeSignature(dirs, fileList) === _treeSig) return;
+                _treeSig = treeSignature(dirs, fileList);
                 renderTree(dirs, fileList);
             }
         } catch (e) {
-            if (!cached && currentPath === reqPath) {
+            if (!cached && currentPath === reqPath && !silent) {
                 tree.innerHTML = `<div class="tree-empty" style="color:var(--err)">加载失败: ${escapeHtml(e.message)}</div>`;
             }
         }
@@ -1026,6 +1700,20 @@
         clearSelection();
         // 绑定行事件：click/contextmenu/touch（统一处理）
         tree.querySelectorAll('.tree-row').forEach(row => bindRowEvents(row));
+        // 路由定位：高亮待定位文件（来自 MCP 记录点击）
+        if (pendingHighlight) {
+            const target = pendingHighlight;
+            pendingHighlight = null;
+            const hit = [...tree.querySelectorAll('.tree-row.file')].find(
+                row => row.dataset.filename === target);
+            if (hit) {
+                hit.classList.add('flash');
+                hit.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                setTimeout(() => hit.classList.remove('flash'), 2600);
+            } else {
+                toast('文件不在当前目录中', 'err');
+            }
+        }
     }
 
     // === 选择管理 ===
@@ -1300,6 +1988,7 @@
             // 普通点击：目录行进入子目录，文件行打开预览
             if (row.dataset.type === 'dir') {
                 currentPath += row.dataset.name + '/';
+                persistPath();
                 loadFiles();
             } else {
                 // 文件行单击：打开预览（非多选模式下不再误触选中）
@@ -1344,6 +2033,7 @@
                     toggleSelection(row, true);
                 } else if (row.dataset.type === 'dir') {
                     currentPath += row.dataset.name + '/';
+                    persistPath();
                     loadFiles();
                 } else {
                     previewFile(row.dataset.id, row.dataset.filename);
@@ -1502,6 +2192,10 @@
         const files = items.filter(it => it.type === 'file');
         const dirs = items.filter(it => it.type === 'dir');
         const menu = [];
+        // 文件列表上下文操作：新建文件 / 新建目录（创建在当前目录），不依赖选中
+        menu.push({ label: '新建文件', action: () => openNewFileEditor() });
+        menu.push({ label: '新建目录', action: () => mkdir() });
+        menu.push({ separator: true });
         if (n === 1) {
             // 单选：根据类型显示完整操作
             const it = items[0];
@@ -2498,7 +3192,7 @@
                         const res = await apiFetch(API.filesMoveDir, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ old_prefix: it.prefix, new_prefix: newPrefix }),
+                            body: JSON.stringify({ old_prefix: it.prefix, new_prefix: newPrefix, space_id: currentSpaceID }),
                         });
                         if (res.ok) success++; else fail++;
                     }
@@ -2603,12 +3297,19 @@
         newCopyBtn.addEventListener('click', onCopy);
     }
 
-    /** 打开分享管理对话框：列出当前用户的所有分享 */
+    /** 打开分享管理对话框：列出当前用户的所有分享（v2 视图 / 经典版 modal 兼容） */
     async function openShareManageDialog() {
+        const view = document.getElementById('view-share');
         const modal = document.getElementById('share-manage-modal');
         const listEl = document.getElementById('share-manage-list');
-        modal.hidden = false;
-        listEl.innerHTML = '<div class="loading">加载中...</div>';
+        if (view) {
+            switchView('view-share'); // v2：统一切换，隐藏其他所有视图
+        } else if (modal) {
+            // 经典版：回退旧 modal
+            modal.hidden = false;
+        }
+        if (listEl) listEl.innerHTML = '<div class="loading">加载中...</div>';
+        rememberLastView('share'); // 持久化：最后视图 = 分享管理
 
         try {
             const res = await apiFetch(API.share);
@@ -2733,12 +3434,19 @@
 
     /** 打开回收站对话框并加载回收站文件列表 */
     async function openTrashDialog() {
+        const view = document.getElementById('view-trash');
         const modal = document.getElementById('trash-modal');
         const listEl = document.getElementById('trash-list');
         const countTag = document.getElementById('trash-count-tag');
-        modal.hidden = false;
-        listEl.innerHTML = '<div class="loading">加载中...</div>';
-        countTag.textContent = '—';
+        if (view) {
+            switchView('view-trash'); // v2：统一切换，隐藏其他所有视图
+        } else if (modal) {
+            // 经典版：回退旧 modal
+            modal.hidden = false;
+        }
+        if (listEl) listEl.innerHTML = '<div class="loading">加载中...</div>';
+        if (countTag) countTag.textContent = '—';
+        rememberLastView('trash'); // 持久化：最后视图 = 回收站
 
         try {
             const res = await apiFetch(API.trash);
@@ -2861,11 +3569,13 @@
     function confirmDeleteDir(prefix, dirName) {
         openConfirmDialog(`确认删除目录「${dirName}」及其所有内容？文件将移入回收站，30 天内可恢复。`, async () => {
             try {
-                const res = await apiFetch(`${API.files}?prefix=${encodeURIComponent(prefix)}`, { method: 'DELETE' });
+                const spaceParam = currentSpaceID ? `&space_id=${encodeURIComponent(currentSpaceID)}` : '';
+                const res = await apiFetch(`${API.files}?prefix=${encodeURIComponent(prefix)}${spaceParam}`, { method: 'DELETE' });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json().catch(() => ({}));
                 toast(`目录「${dirName}」已移入回收站（${data.files_deleted || 0} 个文件）`, 'ok');
-                loadFiles();
+                // 必须清空目录缓存：否则 30s TTL 内刷新仍显示旧目录，表现为「删除失败」
+                refreshAfterModify();
             } catch (e) {
                 toast(`删除目录失败: ${e.message}`, 'err');
             }
@@ -2942,22 +3652,33 @@
     async function mkdir() {
         const modal = document.getElementById('mkdir-modal');
         const input = document.getElementById('mkdir-input');
-        input.value = currentPath; // 默认当前目录
+        // 修复：只让用户输入目录名，不预填路径。前端自动拼接 currentPath，
+        // 避免用户误操作路径格式（如多余空格、斜杠等）。
+        const hint = document.getElementById('mkdir-hint');
+        if (hint) {
+            hint.textContent = `将在「${currentPath || '根目录'}」下创建`;
+            hint.style.display = '';
+        }
+        input.value = '';
+        input.placeholder = '输入目录名';
         modal.hidden = false;
         input.focus();
-        // 选中末尾，方便用户在当前目录下追加子目录名
-        input.setSelectionRange(input.value.length, input.value.length);
 
         const confirmBtn = document.getElementById('mkdir-confirm');
         const cancelBtn = document.getElementById('mkdir-cancel');
         const submit = async () => {
-            const rawPath = input.value.trim();
-            if (!rawPath) { toast('目录名不能为空', 'err'); return; }
+            const rawName = input.value.trim();
+            if (!rawName) { toast('目录名不能为空', 'err'); return; }
+            // 修复：每个路径段 trim，防止前导/尾随空格创建出诡异目录名
+            // 如 "软件/ code" → "软件/code"
+            const cleanName = rawName.split('/').map(s => s.trim()).filter(Boolean).join('/');
+            if (!cleanName) { toast('目录名不能为空', 'err'); return; }
+            const fullPath = currentPath + cleanName;
             try {
                 const res = await apiFetch(API.filesMkdir, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path: rawPath }),
+                    body: JSON.stringify({ path: fullPath, space_id: currentSpaceID }),
                 });
                 if (res.status === 409) { toast('目录已存在', 'err'); return; }
                 if (res.status === 400) {
@@ -2965,7 +3686,7 @@
                     toast(`目录名非法: ${txt}`, 'err'); return;
                 }
                 if (!res.ok) throw new Error('HTTP ' + res.status);
-                toast(`目录「${rawPath}」已创建`, 'ok');
+                toast(`目录「${fullPath}」已创建`, 'ok');
                 cleanup();
                 refreshAfterModify();
             } catch (e) {
@@ -2991,6 +3712,69 @@
     let cmEditor = null; // CodeMirror 编辑器实例
     let editingFileId = null; // 当前编辑的文件 ID（null 表示新建文件）
 
+    // 新建文件预设类型：类型 → 默认扩展名（不含点）
+    const FILE_PRESETS = {
+        txt:  { ext: 'txt' },
+        md:   { ext: 'md' },
+        json: { ext: 'json' },
+        html: { ext: 'html' },
+        code: { ext: 'js' },   // 具体扩展名由 editor-code-lang 决定
+        custom: { ext: '' },   // 由 editor-custom-ext 决定
+    };
+    // 代码文件语言 → 扩展名（自动补全文件名 + CodeMirror 按扩展名推断语法高亮）
+    const CODE_LANGS = {
+        js: 'js', ts: 'ts', go: 'go', py: 'py', java: 'java',
+        c: 'c', cpp: 'cpp', rs: 'rs', rb: 'rb', php: 'php',
+        sh: 'sh', sql: 'sql', yaml: 'yaml',
+    };
+    let lastAutoExt = 'txt'; // 上一次自动填入的扩展名（用于判断用户是否已手动改名）
+
+    /** 根据当前新建文件类型选择计算默认扩展名（不含点） */
+    function getNewFileExt() {
+        const type = document.getElementById('editor-filetype').value;
+        if (type === 'code') {
+            const codeLang = document.getElementById('editor-code-lang').value;
+            return CODE_LANGS[codeLang] || 'js';
+        }
+        if (type === 'custom') {
+            const custom = document.getElementById('editor-custom-ext').value.trim().replace(/^\./, '');
+            return custom || 'txt';
+        }
+        return FILE_PRESETS[type].ext;
+    }
+
+    /** 类型/语言/自定义后缀联动：用户未手动改名时自动填充 currentPath + untitled.<ext> */
+    function syncNewFileName(force) {
+        const input = document.getElementById('editor-filename');
+        const base = currentPath || '';
+        const ext = getNewFileExt();
+        const prevAuto = base + 'untitled.' + lastAutoExt;
+        if (force || !input.value || input.value === base || input.value === prevAuto) {
+            input.value = base + 'untitled.' + ext;
+        }
+        lastAutoExt = ext;
+    }
+
+    /** 绑定新建文件类型选择联动事件（只绑定一次） */
+    function bindNewFileTypeEvents() {
+        const typeEl = document.getElementById('editor-filetype');
+        if (!typeEl || typeEl.dataset.bound) return;
+        typeEl.dataset.bound = '1';
+        const codeLangWrap = document.getElementById('editor-code-lang-wrap');
+        const customExtWrap = document.getElementById('editor-custom-ext-wrap');
+        const codeLangEl = document.getElementById('editor-code-lang');
+        const customExtEl = document.getElementById('editor-custom-ext');
+        const refresh = () => {
+            const type = typeEl.value;
+            codeLangWrap.hidden = type !== 'code';
+            customExtWrap.hidden = type !== 'custom';
+            syncNewFileName(false);
+        };
+        typeEl.addEventListener('change', refresh);
+        codeLangEl.addEventListener('change', () => syncNewFileName(false));
+        customExtEl.addEventListener('input', () => syncNewFileName(false));
+    }
+
     /**
      * 打开新建文件编辑器。
      * 创建一个空的 CodeMirror 编辑器，用户输入文件名和内容后保存。
@@ -3004,15 +3788,22 @@
 
         editingFileId = null;
         title.textContent = '新建文件';
-        filenameInput.value = currentPath; // 默认当前目录前缀
+        // 新建模式：显示文件类型选择，文件名为「当前目录 + 默认类型文件名」
+        document.getElementById('editor-type-row').hidden = false;
+        bindNewFileTypeEvents();
+        // 显示创建位置（当前目录），文件名输入框自动带目录前缀
+        const locEl = document.getElementById('editor-location');
+        if (locEl) locEl.textContent = currentPath ? `· 将创建于 ${currentPath}` : '· 将创建于根目录';
+        filenameInput.value = '';
         filenameInput.disabled = false;
+        syncNewFileName(true); // 强制按所选类型填充 untitled.<ext>
         status.textContent = '';
 
-        // 创建 CodeMirror 编辑器实例
+        // 创建 CodeMirror 编辑器实例（language 传文件名，让 bundle 按扩展名推断语法高亮）
         container.innerHTML = '';
         cmEditor = CodeMirrorEditor.createEditor(container, {
             content: '',
-            language: 'javascript',
+            language: filenameInput.value, // 如 "untitled.go" → 对应语言高亮
             onChange: (content) => { status.textContent = `${content.length} 字符`; },
         });
 
@@ -3022,8 +3813,16 @@
         const saveBtn = document.getElementById('editor-save');
         const cancelBtn = document.getElementById('editor-cancel');
         const submit = async () => {
-            const filename = filenameInput.value.trim();
+            let filename = filenameInput.value.trim();
             if (!filename) { toast('文件名不能为空', 'err'); return; }
+            // 新建模式：文件名不含扩展名时按所选类型自动补全后缀
+            if (editingFileId === null) {
+                const baseName = filename.slice(filename.lastIndexOf('/') + 1);
+                if (!baseName.includes('.')) {
+                    filename = filename + '.' + getNewFileExt();
+                    filenameInput.value = filename;
+                }
+            }
             const content = cmEditor.state.doc.toString();
             status.textContent = '保存中…';
             try {
@@ -3076,6 +3875,7 @@
 
         editingFileId = fileId;
         title.textContent = `编辑: ${filename}`;
+        document.getElementById('editor-type-row').hidden = true; // 编辑模式隐藏类型选择
         filenameInput.value = filename;
         filenameInput.disabled = true; // 编辑模式不允许改文件名
         status.textContent = '加载中…';
@@ -3175,7 +3975,7 @@
                 const res = await apiFetch(API.filesMoveDir, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ old_prefix: prefix, new_prefix: rawPath }),
+                    body: JSON.stringify({ old_prefix: prefix, new_prefix: rawPath, space_id: currentSpaceID }),
                 });
                 if (res.status === 409) {
                     const txt = await res.text().catch(() => '目标目录已有文件');
@@ -3355,12 +4155,20 @@
         });
 
         // 存储位置选择（静态 HTML 在 settings modal 中），持久化到 localStorage，上传时随 init 请求带上
+        // OSS 暂不可用：历史 s3 选择自动回退本地，change 时同样兜底（s3 选项已 disabled，双保险）
         const storageTypeSelect = document.getElementById('storage-type');
         if (storageTypeSelect) {
             const savedStorage = localStorage.getItem('filesync:storage');
-            if (savedStorage) storageTypeSelect.value = savedStorage;
+            if (savedStorage === 's3') {
+                localStorage.removeItem('filesync:storage');
+                storageTypeSelect.value = 'local';
+            } else if (savedStorage) {
+                storageTypeSelect.value = savedStorage;
+            }
             storageTypeSelect.addEventListener('change', () => {
-                localStorage.setItem('filesync:storage', storageTypeSelect.value);
+                const v = storageTypeSelect.value === 's3' ? 'local' : storageTypeSelect.value;
+                storageTypeSelect.value = v;
+                localStorage.setItem('filesync:storage', v);
                 updateConfigSummary();
             });
         }
@@ -3375,9 +4183,85 @@
         // 刷新文件列表
         document.getElementById('refresh-files').addEventListener('click', loadFiles);
 
+        // === 传输中心（全屏面板）===
+        const transferBtn = document.getElementById('transfer-btn');
+        if (transferBtn) {
+            transferBtn.addEventListener('click', openTransferCenter);
+        }
+        const transferCloseBtn = document.getElementById('transfer-close');
+        if (transferCloseBtn) {
+            transferCloseBtn.addEventListener('click', closeTransferCenter);
+        }
+        const transferBackdrop = document.querySelector('#transfer-modal .transfer-backdrop');
+        if (transferBackdrop) {
+            transferBackdrop.addEventListener('click', closeTransferCenter);
+        }
+        const transferListEl = document.getElementById('transfer-list');
+        if (transferListEl) {
+            // 行内操作委托：暂停/继续/取消/重试/移除
+            transferListEl.addEventListener('click', (e) => {
+                const btn = e.target.closest('button[data-act]');
+                if (!btn) return;
+                const act = btn.dataset.act;
+                const id = btn.dataset.id;
+                const entry = transferTasks.get(id);
+                if (!entry) return;
+                const task = entry.task;
+                if (act === 'pause') task.pause();
+                else if (act === 'resume') task.resume();
+                else if (act === 'cancel') task.abort();
+                else if (act === 'retry') task.retry();
+                else if (act === 'remove') { transferTasks.delete(id); renderTransferPanel(); updateTransferBadge(); }
+            });
+        }
+        const transferPauseAllBtn = document.getElementById('transfer-pause-all');
+        if (transferPauseAllBtn) {
+            transferPauseAllBtn.addEventListener('click', pauseAllTransfers);
+        }
+        const transferResumeAllBtn = document.getElementById('transfer-resume-all');
+        if (transferResumeAllBtn) {
+            transferResumeAllBtn.addEventListener('click', resumeAllTransfers);
+        }
+        const transferClearDoneBtn = document.getElementById('transfer-clear-done');
+        if (transferClearDoneBtn) {
+            transferClearDoneBtn.addEventListener('click', clearTransferDone);
+        }
+        const mcpClearBtn = document.getElementById('mcp-clear-btn');
+        if (mcpClearBtn) {
+            mcpClearBtn.addEventListener('click', clearMcpHistory);
+        }
+
+        // === 空间管理（多空间隔离）===
+        const spaceSelect = document.getElementById('space-select');
+        if (spaceSelect) {
+            spaceSelect.addEventListener('change', (e) => switchSpace(e.target.value));
+        }
+        // 空间管理入口（新建/删除收进对话框，删除不再裸露在侧边栏）
+        const spaceManageBtn = document.getElementById('space-manage-btn');
+        if (spaceManageBtn) {
+            spaceManageBtn.addEventListener('click', openSpaceManager);
+        }
+        const spaceManageCreateBtn = document.getElementById('space-manage-create-btn');
+        if (spaceManageCreateBtn) {
+            spaceManageCreateBtn.addEventListener('click', async () => {
+                await createSpace();
+                renderSpaceManageList(); // 新建后刷新对话框列表
+            });
+        }
+        const spaceManageCloseBtn = document.getElementById('space-manage-close-btn');
+        if (spaceManageCloseBtn) {
+            spaceManageCloseBtn.addEventListener('click', () => {
+                document.getElementById('space-manage-modal').hidden = true;
+            });
+        }
+
         // 新建目录
-        document.getElementById('mkdir-btn').addEventListener('click', mkdir);
-        document.getElementById('new-file-btn').addEventListener('click', openNewFileEditor);
+        // 新建目录 / 新建文件入口已移至文件列表上下文（右键菜单 / 空状态按钮），
+        // 侧边栏按钮已移除；保留防御性绑定以防其他页面引用
+        const mkdirSidebarBtn = document.getElementById('mkdir-btn');
+        if (mkdirSidebarBtn) mkdirSidebarBtn.addEventListener('click', mkdir);
+        const newFileSidebarBtn = document.getElementById('new-file-btn');
+        if (newFileSidebarBtn) newFileSidebarBtn.addEventListener('click', openNewFileEditor);
 
         // 多选模式：进入多选模式，显示 checkbox
         const selectModeBtn = document.getElementById('select-mode-btn');
@@ -3472,7 +4356,13 @@
         const shareManageCloseBtn = document.getElementById('share-manage-close-btn');
         if (shareManageCloseBtn) {
             shareManageCloseBtn.addEventListener('click', () => {
-                document.getElementById('share-manage-modal').hidden = true;
+                const view = document.getElementById('view-share');
+                const modal = document.getElementById('share-manage-modal');
+                if (view) {
+                    switchView('view-files'); // v2：返回文件视图（隐藏其他所有）
+                } else if (modal) {
+                    modal.hidden = true;
+                }
             });
         }
 
@@ -3484,7 +4374,14 @@
         const trashCloseBtn = document.getElementById('trash-close-btn');
         if (trashCloseBtn) {
             trashCloseBtn.addEventListener('click', () => {
-                document.getElementById('trash-modal').hidden = true;
+                const view = document.getElementById('view-trash');
+                const modal = document.getElementById('trash-modal');
+                if (view) {
+                    switchView('view-files'); // v2：返回文件视图（隐藏其他所有）
+                } else if (modal) {
+                    modal.hidden = true;
+                }
+                rememberLastView('files');
             });
         }
         const trashEmptyBtn = document.getElementById('trash-empty-btn');
@@ -3585,9 +4482,22 @@
                 continue;
             }
             const task = new UploadTask(file, { chunkSize, concurrency, targetDir });
-            const dom = task.createDom();
-            list.appendChild(dom);
+            registerTransferTask(task); // 注册到传输中心
             tasks.push(task);
+        }
+
+        // 分批创建任务 DOM（每批 20 个，rAF 让出主线程）：
+        // 大文件夹上传（1000+ 文件）若一次性 appendChild 全部 DOM，
+        // 布局计算 + 重绘会阻塞主线程数百毫秒，表现为明显卡顿。
+        const DOM_BATCH = 20;
+        for (let i = 0; i < tasks.length; i += DOM_BATCH) {
+            const batch = tasks.slice(i, i + DOM_BATCH);
+            for (const task of batch) {
+                list.appendChild(task.createDom());
+            }
+            if (i + DOM_BATCH < tasks.length) {
+                await new Promise(res => requestAnimationFrame(res));
+            }
         }
 
         // 文件级并发控制：MAX_PARALLEL_FILES 个 worker 串行处理任务队列
@@ -3598,7 +4508,18 @@
             while (cursor < tasks.length) {
                 const task = tasks[cursor++];
                 await task.run();
-                if (task.status === 'done') refreshAfterModify();
+                if (task.status === 'done') {
+                    // 持久化：记录最近上传历史（去重，最多 10 条）
+                    addRecentUpload(task.getDisplayName());
+                    // 上传完成后节流刷新：合并多文件并发完成的多次触发，
+                    // 避免每个文件完成都全量重建 DOM 造成界面闪烁。
+                    // 500ms 兜底刷新确保异步写入完成后列表一定是最新（后台静默刷新）。
+                    scheduleRefresh(300);
+                    setTimeout(() => {
+                        invalidateCache();
+                        loadFiles({ silent: true });
+                    }, 500);
+                }
             }
         };
         const workers = [];
@@ -3622,7 +4543,26 @@
         updateConfigSummary();
         checkHealth();
         setInterval(checkHealth, 10000); // 每 10 秒检查一次健康
+        // 恢复上次所在路径（localStorage 持久化用户行为，刷新后回到原目录）
+        currentPath = restorePath();
+        await loadSpaces(); // 加载空间列表（恢复上次空间），完成后用正确空间加载文件
         loadFiles();
+        initMcpEventStream(); // 订阅 MCP/外部上传实时事件（WebSocket，断线自动重连）
+        loadMcpHistory();     // 加载 MCP/外部上传历史记录（回填传输中心）
+        // 行为特征恢复：上次停留在传输中心/分享管理视图时，自动回到该视图
+        const lastView = getLastView();
+        if (lastView === 'transfer' && document.getElementById('view-transfer')) {
+            openTransferCenter();
+        } else if (lastView === 'share' && document.getElementById('view-share')) {
+            openShareManageDialog();
+        }
+        // 修复：添加 30 秒自动刷新文件列表，确保其他端/标签页的变更能及时同步
+        // 使用纯 HTTP 轮询模式（无 WebSocket），轻量级不影响性能
+        // 静默刷新：内容未变化时不重建 DOM，避免周期性界面闪烁
+        setInterval(() => {
+            invalidateCache();
+            loadFiles({ silent: true });
+        }, 30000);
     }
 
     if (document.readyState === 'loading') {

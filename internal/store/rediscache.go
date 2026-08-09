@@ -34,12 +34,12 @@ type RedisSentinelConfig struct {
 //   - Distributed locking via SET NX
 //   - Graceful SQLite fallback when Redis is unreachable
 type RedisCache struct {
-	client      *redis.Client // Sentinel failover client
-	ttl         time.Duration
+	client *redis.Client // Sentinel failover client
+	ttl    time.Duration
 
 	// Watchdog state
-	healthy      atomic.Bool
-	watchdogCtx  context.Context
+	healthy        atomic.Bool
+	watchdogCtx    context.Context
 	watchdogCancel context.CancelFunc
 
 	// Retry / backoff
@@ -313,9 +313,9 @@ func (r *RedisCache) WatchdogStats() map[string]interface{} {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return map[string]interface{}{
-		"healthy":      r.healthy.Load(),
-		"fail_count":   r.failCount,
-		"max_retries":  r.maxRetries,
+		"healthy":       r.healthy.Load(),
+		"fail_count":    r.failCount,
+		"max_retries":   r.maxRetries,
 		"ping_interval": r.interval.String(),
 	}
 }

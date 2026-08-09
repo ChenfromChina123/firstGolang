@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"time"
@@ -30,14 +31,15 @@ type AuthCodeStore interface {
 	// Save 保存授权码（含 state / nonce / PKCE 等扩展字段）
 	Save(code, clientID, userID, redirectURI, scope, state, nonce, codeChallenge, codeChallengeMethod string, expiresAt time.Time) error
 	// GetAndMarkUsed 原子获取并标记为已使用（防重放）
-	// 返回：userID, scope, state, codeChallenge, redirectURI, error
-	GetAndMarkUsed(code, clientID, redirectURI string) (userID, scope, state, challenge, storedRedirect string, err error)
+	// 返回：userID, scope, state, codeChallenge, codeChallengeMethod, redirectURI, error
+	GetAndMarkUsed(code, clientID, redirectURI string) (userID, scope, state, challenge, method, storedRedirect string, err error)
 }
 
 // OAuthClientStore 客户端仓储接口（预注册的接入应用）
 type OAuthClientStore interface {
 	// GetByID 根据 client_id 查找客户端
-	GetByID(clientID string) (secretHash string, name string, redirectURIs []string, allowedScopes []string, isPublic bool, err error)
+	// 返回：secretHash, name, redirectURIs, allowedScopes, ownerUsername, isPublic, error
+	GetByID(clientID string) (secretHash string, name string, redirectURIs []string, allowedScopes []string, ownerUsername string, isPublic bool, err error)
 	// VerifySecret 校验 client_secret（bcrypt 哈希比对）
 	VerifySecret(secretHash, plainSecret string) bool
 }
@@ -57,19 +59,23 @@ func GenerateAuthCode(clientID, userID, redirectURI, scope, state string) (strin
 }
 
 // ValidateAuthCode 校验授权码（一次性，调用后标记已使用）
-// 校验项：存在、未过期、未使用、clientID 匹配、redirectURI 精确匹配
+// 校验项：存在、未过期、未使用、clientID 匹配、redirectURI 精确匹配、PKCE（如启用）
 // 返回：userID, scope, state, error
-func ValidateAuthCode(store AuthCodeStore, code, clientID, redirectURI string) (string, string, string, error) {
+func ValidateAuthCode(store AuthCodeStore, code, clientID, redirectURI, codeVerifier string) (string, string, string, error) {
 	if store == nil {
 		return "", "", "", errors.New("auth code store not configured")
 	}
-	userID, scope, state, _, storedRedirect, err := store.GetAndMarkUsed(code, clientID, redirectURI)
+	userID, scope, state, challenge, method, storedRedirect, err := store.GetAndMarkUsed(code, clientID, redirectURI)
 	if err != nil {
 		return "", "", "", err
 	}
 	// redirect_uri 必须精确匹配（OAuth2 规范要求）
 	if storedRedirect != redirectURI {
 		return "", "", "", ErrRedirectMismatch
+	}
+	// PKCE 校验（RFC 7636）：授权时若带 code_challenge，换 token 时必须带 code_verifier
+	if err := VerifyPKCE(challenge, method, codeVerifier); err != nil {
+		return "", "", "", err
 	}
 	return userID, scope, state, nil
 }
@@ -82,7 +88,7 @@ func ValidateClientRedirectURI(clientStore OAuthClientStore, clientID, redirectU
 	if clientStore == nil {
 		return errors.New("client store not configured")
 	}
-	_, _, allowedURIs, _, _, err := clientStore.GetByID(clientID)
+	_, _, allowedURIs, _, _, _, err := clientStore.GetByID(clientID)
 	if err != nil {
 		return ErrInvalidClient
 	}
@@ -99,7 +105,7 @@ func ValidateClientSecret(clientStore OAuthClientStore, clientID, plainSecret st
 	if clientStore == nil {
 		return errors.New("client store not configured")
 	}
-	secretHash, _, _, _, isPublic, err := clientStore.GetByID(clientID)
+	secretHash, _, _, _, _, isPublic, err := clientStore.GetByID(clientID)
 	if err != nil {
 		return ErrInvalidClient
 	}
@@ -161,6 +167,7 @@ func ValidateScope(allowedScopes []string, requestedScopes string) (string, erro
 
 // VerifyPKCE 校验 code_verifier 与 code_challenge 是否匹配
 // method: "S256" (推荐) | "plain" (仅允许 https 且 debug 模式)
+// 修复：S256 必须用 Base64URL 无填充编码（RFC 7636 第 4.2 节），此前误用 hex。
 func VerifyPKCE(challenge, method, verifier string) error {
 	if challenge == "" || verifier == "" {
 		return nil // 未使用 PKCE，跳过
@@ -169,8 +176,7 @@ func VerifyPKCE(challenge, method, verifier string) error {
 	switch method {
 	case "S256", "":
 		h := sha256.Sum256([]byte(verifier))
-		// Base64URL 无填充（RFC 7636）：这里简化用 hex，客户端也要一致
-		computed = hex.EncodeToString(h[:])
+		computed = base64.RawURLEncoding.EncodeToString(h[:])
 	case "plain":
 		computed = verifier
 	default:

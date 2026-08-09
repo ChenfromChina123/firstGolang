@@ -41,6 +41,8 @@ func SecurityHeaders(enableHSTS bool, next http.Handler) http.Handler {
 		// img-src data: blob:：缩略图使用 data URL，预览使用 blob URL
 		// font-src data: fonts.gstatic.com：Google Fonts 字体文件在 gstatic.com
 		// connect-src：fetch/XHR 同源 + OSS presigned 直连（上传 PUT / 下载 GET）
+		//   + wss:// 同源 WebSocket（传输中心 MCP 上传实时事件推送）
+		//   + 同端口升级（http->ws 由同一源自动匹配，无需额外声明）
 		// media-src：video/audio 同源 + blob URL（hls.js 通过 MediaSource 创建 blob 播放 HLS 流）
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; "+
@@ -48,7 +50,7 @@ func SecurityHeaders(enableHSTS bool, next http.Handler) http.Handler {
 				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
 				"img-src 'self' data: blob:; "+
 				"font-src 'self' data: https://fonts.gstatic.com; "+
-				"connect-src 'self' https://aistudy-filesync.oss-cn-shenzhen.aliyuncs.com; "+
+				"connect-src 'self' wss://aistudy.icu https://aistudy-filesync.oss-cn-shenzhen.aliyuncs.com; "+
 				"media-src 'self' blob:; "+
 				"frame-ancestors 'self'; "+
 				"base-uri 'self'; "+

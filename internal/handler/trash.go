@@ -59,13 +59,15 @@ func (h *TrashHandler) ListTrash(w http.ResponseWriter, r *http.Request) {
 	username := auth.UsernameFromContext(r.Context())
 	role := auth.RoleFromContext(r.Context())
 
+	// 空间隔离：通过 space_id query 指定（admin 默认全部空间，普通用户默认「我的空间」）
+	spaceID := resolveSpaceID(spaceIDFromRequest(r, role), username, role)
 	// admin 可查看所有；普通用户仅自己的
 	owner := username
 	if role == "admin" && r.URL.Query().Get("all") == "true" {
 		owner = ""
 	}
 
-	files, err := h.db.ListTrashedFiles(owner)
+	files, err := h.db.ListTrashedFiles(spaceID, owner)
 	if err != nil {
 		log.Printf("[Trash] list error: %v", err)
 		http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
@@ -125,7 +127,8 @@ func (h *TrashHandler) RestoreFile(w http.ResponseWriter, r *http.Request) {
 
 	// 检查恢复后是否会文件名冲突
 	// 先获取回收站文件信息（需要绕过 deleted_at IS NULL 过滤）
-	trashedFiles, err := h.db.ListTrashedFiles(owner)
+	// 空间隔离：admin 默认全部空间，普通用户按「我的空间」过滤
+	trashedFiles, err := h.db.ListTrashedFiles(resolveSpaceID(spaceIDFromRequest(r, role), username, role), owner)
 	if err != nil {
 		log.Printf("[Trash] restore: list trashed error: %v", err)
 		http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)
@@ -143,8 +146,8 @@ func (h *TrashHandler) RestoreFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 检查文件名冲突（正常文件中是否有同名）
-	existing, _ := h.db.FindFileByName(targetFile.Filename, owner)
+	// 检查文件名冲突（正常文件中是否有同名，限定在恢复目标空间内）
+	existing, _ := h.db.FindFileByName(targetFile.SpaceID, targetFile.Filename, owner)
 	if existing != nil {
 		http.Error(w, `{"error":"filename_conflict","message":"恢复失败：同名文件已存在，请先重命名现有文件"}`, http.StatusConflict)
 		return
@@ -241,8 +244,9 @@ func (h *TrashHandler) EmptyTrash(w http.ResponseWriter, r *http.Request) {
 		owner = ""
 	}
 
+	// 空间隔离：admin 默认全部空间，普通用户按「我的空间」过滤
 	// 获取回收站所有文件
-	files, err := h.db.ListTrashedFiles(owner)
+	files, err := h.db.ListTrashedFiles(resolveSpaceID(spaceIDFromRequest(r, role), username, role), owner)
 	if err != nil {
 		log.Printf("[Trash] empty: list error: %v", err)
 		http.Error(w, `{"error":"internal_error"}`, http.StatusInternalServerError)

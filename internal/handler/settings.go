@@ -80,7 +80,7 @@ func (h *SettingsHandler) getSettings(w http.ResponseWriter, r *http.Request, us
 	resp := settingsResponse{
 		Username:    username,
 		ChunkSize:   512 * 1024, // 默认 512KB（与前端 select 默认选中项一致）
-		Concurrency: 3,           // 默认 3
+		Concurrency: 3,          // 默认 3
 	}
 	if s != nil {
 		resp.ChunkSize = s.ChunkSize

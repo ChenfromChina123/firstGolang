@@ -1,10 +1,11 @@
 # FileSync API 文档
 
-> **版本**: 1.0.0  
+> **版本**: 1.1.0  
 > **协议**: HTTP/1.1  
 > **数据格式**: JSON (请求/响应) + multipart/form-data (分片上传)  
 > **基础 URL**: `http://<host>:<port>` 或 `https://<domain>`  
-> **最后更新**: 2026-07-06
+> **最后更新**: 2026-08-02  
+> **新增**: 多空间管理（7.7）、文件 API `space_id` 隔离、新建文件类型选择、传输中心
 
 ---
 
@@ -33,6 +34,7 @@
   - [7.4 重命名/移动文件](#74-重命名移动文件)
   - [7.5 删除文件](#75-删除文件)
   - [7.6 删除目录](#76-删除目录)
+  - [7.7 空间管理 API](#77-空间管理-api)
 - [8. 数据模型](#8-数据模型)
 - [9. 错误码](#9-错误码)
 - [10. 环境变量配置](#10-环境变量配置)
@@ -724,11 +726,14 @@ ZIP 内文件路径为相对路径（去掉 `prefix` 前缀），保留虚拟目
 
 ### 7.1 文件列表
 
-列出所有已完成文件，支持按虚拟目录前缀过滤。
+列出所有已完成文件，支持按虚拟目录前缀过滤与多空间隔离。
 
 ```
 GET /api/files
 GET /api/files?prefix=<prefix>
+GET /api/files?shallow=1
+GET /api/files?prefix=docs/&shallow=1
+GET /api/files?space_id=<space_id>
 ```
 
 #### 查询参数
@@ -736,6 +741,8 @@ GET /api/files?prefix=<prefix>
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `prefix` | string | 否 | 虚拟目录路径前缀（递归匹配子目录） |
+| `shallow` | string | 否 | `1` 时分层返回当前目录直接子项（`{dirs, files}`，不递归子目录） |
+| `space_id` | string | 否 | 空间隔离：普通用户不传=「我的空间」（后端归一化为 `default-<username>`），传 ID=指定空间；admin 不传或 `all`=全部空间 |
 
 #### 请求示例
 
@@ -1025,6 +1032,141 @@ DELETE http://localhost:8080/api/files?prefix=docs/
 
 ---
 
+### 7.7 空间管理 API
+
+多空间文件树隔离：每个用户可创建多个独立空间（相当于多个"磁盘"），空间间文件树完全隔离。首次使用自动创建「我的空间」（`id="default-<username>"`，历史文件归入其中，不可删除）。升级启动时自动执行数据迁移，把历史文件（`space_id=''`）归入所属用户的「我的空间」，保证旧数据在默认空间完整可见。
+
+#### 7.7.1 列出空间
+
+```
+GET /api/spaces
+```
+
+普通用户返回自己的空间列表；admin 返回全部。
+
+#### 响应（200 OK）
+
+```json
+{
+  "spaces": [
+    {
+      "id": "default-alice",
+      "name": "我的空间",
+      "owner": "alice",
+      "storage_type": "local",
+      "file_count": 42,
+      "created_at": "2026-08-02T10:00:00+08:00",
+      "updated_at": "2026-08-02T10:00:00+08:00"
+    }
+  ],
+  "total": 1
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 空间 ID（`default-<username>` 为「我的空间」） |
+| `name` | string | 空间名称 |
+| `owner` | string | 归属用户名（admin 创建为空白/全局） |
+| `storage_type` | string | 存储后端: `local` / `s3` |
+| `file_count` | integer | 空间内文件数（含 `.keep` 占位，动态统计） |
+
+#### 7.7.2 创建空间
+
+```
+POST /api/spaces
+Content-Type: application/json
+```
+
+#### 请求体
+
+```json
+{
+  "name": "工作",
+  "storage_type": "local"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | string | 是 | 空间名称（1~64 字符） |
+| `storage_type` | string | 否 | 存储后端: `local` / `s3`，默认 `local` |
+
+#### 响应（201 Created）
+
+```json
+{
+  "id": "a1b2c3d4...",
+  "name": "工作",
+  "owner": "alice",
+  "storage_type": "local",
+  "file_count": 0,
+  "created_at": "2026-08-02T10:00:00+08:00",
+  "updated_at": "2026-08-02T10:00:00+08:00"
+}
+```
+
+#### 响应（400 Bad Request）
+
+```json
+{
+  "error": "name_required",
+  "message": "空间名称不能为空"
+}
+```
+
+#### 7.7.3 空间详情
+
+```
+GET /api/spaces/{id}
+```
+
+#### 响应（200 OK）
+
+返回单个空间对象（含动态 `file_count`）。
+
+#### 7.7.4 删除空间
+
+```
+DELETE /api/spaces/{id}
+```
+
+仅空空间可删除（空间内文件数 > 0 返回 409）；「我的空间」（`id` 以 `default-` 开头）不可删除。
+
+#### 响应（200 OK）
+
+```json
+{
+  "deleted": true,
+  "id": "a1b2c3d4..."
+}
+```
+
+#### 响应（409 Conflict）
+
+```json
+{
+  "error": "space_not_empty",
+  "message": "空间内还有 N 个文件，请先清空空间"
+}
+```
+
+```json
+{
+  "error": "default_space_not_deletable",
+  "message": "我的空间不可删除"
+}
+```
+
+#### 空间隔离语义
+
+- 普通用户：文件 API 不传 `space_id` =「我的空间」（后端归一化为 `default-<username>`）；传具体 ID = 指定空间。
+- admin：不传或传 `all` = 全部空间（全局视图）。
+- 上传（init/check）、新建文件、建目录、移动目录、删除目录、回收站、分享均按 `space_id` 隔离。
+- 分享记录 `shares.space_id` 关联创建时所在空间（旧分享为空，公开访问不过滤，兼容）。
+
+---
+
 ## 8. 数据模型
 
 ### 8.1 UploadSession（上传会话）
@@ -1054,8 +1196,22 @@ DELETE http://localhost:8080/api/files?prefix=docs/
 | `chunk_size` | int64 | 上传时的分片大小 |
 | `total_chunks` | int | 总分片数 |
 | `status` | string | 状态: `completed` / `failed` |
+| `owner` | string | 文件归属用户名（空=历史/公共） |
+| `space_id` | string | 所属空间 ID（''=历史遗留，启动迁移归入「我的空间」） |
 
-### 8.3 User（用户）
+### 8.3 Space（空间）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 空间 ID（`default-<username>` 为「我的空间」） |
+| `name` | string | 空间名称 |
+| `owner` | string | 归属用户名（admin 创建为空=全局） |
+| `storage_type` | string | 存储后端: `local` / `s3` |
+| `file_count` | int64 | 空间内文件数（含 `.keep`，动态统计） |
+| `created_at` | time.Time | 创建时间 |
+| `updated_at` | time.Time | 更新时间 |
+
+### 8.4 User（用户）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -1064,7 +1220,7 @@ DELETE http://localhost:8080/api/files?prefix=docs/
 | `role` | string | 角色: `admin` / `user` |
 | `created_at` | time.Time | 创建时间 |
 
-### 8.4 通用错误响应
+### 8.5 通用错误响应
 
 ```json
 {

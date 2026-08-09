@@ -27,6 +27,7 @@
             </div>
         </div>
         <div class="topbar-right">
+            <a href="/web/v2/index.html" class="v2-switch" title="切换至新版界面（浅色瑞士极简风格）">新版界面</a>
             <a href="/web/intro.html" title="查看 FileSync 功能介绍" style="margin-right:16px;color:var(--fg-1);text-decoration:none;opacity:.82;font-size:13px;font-weight:500;white-space:nowrap;transition:opacity .15s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.82">功能介绍</a>
             <div class="health" id="health-badge">
                 <span class="dot" id="health-dot"></span>
@@ -54,6 +55,14 @@
         <aside class="sidebar">
             <nav class="sidebar-nav">
                 <div class="sidebar-group">
+                    <div class="sidebar-group-label">空间</div>
+                    <select class="space-select" id="space-select" title="切换空间（不同空间的文件树相互隔离，相当于多个独立磁盘）"></select>
+                    <div class="space-actions">
+                        <button class="sidebar-btn" id="space-create-btn" title="新建空间">+ 新建</button>
+                        <button class="sidebar-btn" id="space-delete-btn" title="删除当前空间（仅空空间）">删除</button>
+                    </div>
+                </div>
+                <div class="sidebar-group">
                     <div class="sidebar-group-label">文件</div>
                     <button class="sidebar-btn" id="refresh-files">刷新</button>
                     <button class="sidebar-btn" id="mkdir-btn">新建目录</button>
@@ -62,8 +71,10 @@
                 </div>
                 <div class="sidebar-group">
                     <div class="sidebar-group-label">工具</div>
+                    <button class="sidebar-btn" id="transfer-btn">传输中心<span class="transfer-badge" id="transfer-badge" hidden></span></button>
                     <button class="sidebar-btn" id="share-manage-btn">分享管理</button>
                     <button class="sidebar-btn" id="trash-btn">回收站</button>
+                    <a class="sidebar-btn" href="/web/tokens.html" style="text-decoration:none;text-align:left;">访问令牌</a>
                 </div>
                 <div class="sidebar-group">
                     <div class="sidebar-group-label">系统</div>
@@ -197,8 +208,44 @@
             <div class="modal-head">
                 <h3 id="editor-title">新建文件</h3>
             </div>
+            <!-- 新建模式：文件类型选择（编辑模式隐藏） -->
+            <div class="editor-type-row" id="editor-type-row">
+                <label class="editor-type-item">
+                    文件类型
+                    <select id="editor-filetype">
+                        <option value="txt">文本 (.txt)</option>
+                        <option value="md">Markdown (.md)</option>
+                        <option value="code">代码文件</option>
+                        <option value="json">JSON (.json)</option>
+                        <option value="html">HTML (.html)</option>
+                        <option value="custom">自定义后缀</option>
+                    </select>
+                </label>
+                <label class="editor-type-item" id="editor-code-lang-wrap" hidden>
+                    语言
+                    <select id="editor-code-lang">
+                        <option value="js">JavaScript (.js)</option>
+                        <option value="ts">TypeScript (.ts)</option>
+                        <option value="go">Go (.go)</option>
+                        <option value="py">Python (.py)</option>
+                        <option value="java">Java (.java)</option>
+                        <option value="c">C (.c)</option>
+                        <option value="cpp">C++ (.cpp)</option>
+                        <option value="rs">Rust (.rs)</option>
+                        <option value="rb">Ruby (.rb)</option>
+                        <option value="php">PHP (.php)</option>
+                        <option value="sh">Shell (.sh)</option>
+                        <option value="sql">SQL (.sql)</option>
+                        <option value="yaml">YAML (.yaml)</option>
+                    </select>
+                </label>
+                <label class="editor-type-item" id="editor-custom-ext-wrap" hidden>
+                    后缀
+                    <input type="text" id="editor-custom-ext" class="modal-input" placeholder="txt" maxlength="16" autocomplete="off" />
+                </label>
+            </div>
             <div class="modal-input-wrap">
-                <input type="text" id="editor-filename" class="modal-input" placeholder="notes.txt（可含路径如 docs/notes.md）" autocomplete="off" />
+                <input type="text" id="editor-filename" class="modal-input" placeholder="untitled.txt（可含路径如 docs/notes.md）" autocomplete="off" />
             </div>
             <div id="editor-container" style="border:1px solid rgba(255,255,255,.12);border-radius:8px;overflow:hidden;height:50vh;min-height:300px;background:#0d1117"></div>
             <div class="modal-foot modal-foot-right">
@@ -400,8 +447,8 @@
             <div class="settings-row">
                 <label class="settings-label" for="storage-type">存储位置</label>
                 <select id="storage-type">
-                    <option value="local">本地磁盘</option>
-                    <option value="s3">阿里云 OSS</option>
+                    <option value="local" selected>本地磁盘</option>
+                    <option value="s3" disabled>阿里云 OSS（暂不可用）</option>
                 </select>
             </div>
             <div class="modal-foot modal-foot-right">
@@ -476,6 +523,26 @@
     <!-- 上下文菜单容器（右键菜单动态填充） -->
     <div class="ctx-menu" id="ctx-menu" hidden></div>
 
+    <!-- 传输中心：全屏独立面板（实时进度/速度/剩余时间/暂停恢复/批量控制） -->
+    <div class="transfer-modal" id="transfer-modal" hidden>
+        <div class="transfer-backdrop"></div>
+        <div class="transfer-panel">
+            <div class="transfer-head">
+                <h2>传输中心</h2>
+                <div class="transfer-summary" id="transfer-summary">进行中 0 · 速度 0 B/s</div>
+                <div class="transfer-tools">
+                    <button class="tf-tool-btn" id="transfer-pause-all">全部暂停</button>
+                    <button class="tf-tool-btn" id="transfer-resume-all">全部继续</button>
+                    <button class="tf-tool-btn" id="transfer-clear-done">清除已完成</button>
+                    <button class="tf-tool-btn" id="transfer-close">关闭</button>
+                </div>
+            </div>
+            <div class="transfer-list" id="transfer-list">
+                <div class="transfer-empty">暂无传输任务</div>
+            </div>
+        </div>
+    </div>
+
     <!-- Prism.js 代码高亮（按需加载语言包在 app.js 中动态注入） -->
     <script src="/web/lib/codemirror/codemirror.bundle.js"></script>
     <script src="/web/lib/prism/prism.min.js"></script>
@@ -483,6 +550,6 @@
     <script src="/web/lib/marked/marked.min.js"></script>
     <!-- hls.js HLS 流式播放（视频转码边转边播） -->
     <script src="/web/lib/hls/hls.min.js"></script>
-    <script src="/web/app.js?v=20260716"></script>
+    <script src="/web/app.js?v=20260809o"></script>
 </body>
 </html>

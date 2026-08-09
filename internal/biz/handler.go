@@ -26,6 +26,7 @@ type authCtx struct {
 	Username string
 	Role     string
 	Scope    string
+	Token    string // 原始 Access Token（JWT 模式），用于服务间调用透传
 }
 
 // resolveAuth 从请求解析用户身份：优先使用中间件已校验的上下文（JWT 模式），

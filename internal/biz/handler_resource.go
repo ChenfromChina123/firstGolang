@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
+
+	"filesync/internal/authutil"
+	"filesync/internal/config"
 )
 
 // ============================================================
@@ -239,7 +241,7 @@ func (h *Handler) resourceAccess(w http.ResponseWriter, r *http.Request, ac auth
 	res, _ := h.store.GetResource(req.ResourceID)
 	out := map[string]any{"success": true, "downloads": res.Downloads}
 	if res.FileID != "" {
-		url, err := createFileShare(res.FileID, ac.UserID, ac.Username)
+		url, err := createFileShare(res.FileID, ac)
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, "share_failed", err.Error())
 			return
@@ -252,20 +254,27 @@ func (h *Handler) resourceAccess(w http.ResponseWriter, r *http.Request, ac auth
 }
 
 // createFileShare 调用 FileSvc 创建 30 分钟有效期文件分享，返回下载地址
-func createFileShare(fileID, userID, username string) (string, error) {
-	base := strings.TrimSuffix(os.Getenv("FILE_SVC_URL"), "/")
-	if base == "" {
-		base = "http://localhost:8082"
-	}
+// 安全修复：不再伪造 X-Auth-User-ID 头；JWT 模式透传用户真实 Access Token 供 FileSvc JWKS 验签，
+// dev 模式（AUTH_MODE=dev）才回退透传头（与本机联调约定一致）。
+func createFileShare(fileID string, ac authCtx) (string, error) {
+	base := config.FileSvcURL()
 	payload, _ := json.Marshal(map[string]any{"file_id": fileID, "share_type": "file", "expires_in": 1800})
 	req, err := http.NewRequest(http.MethodPost, base+"/api/shares", bytes.NewReader(payload))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Auth-User-ID", userID)
-	if username != "" {
-		req.Header.Set("X-Auth-Username", username)
+	if ac.Token != "" {
+		// JWT 模式：透传用户本人的 Access Token（FileSvc 用 JWKS 验签）
+		req.Header.Set("Authorization", "Bearer "+ac.Token)
+	} else if authutil.DevAuthMode() {
+		// dev 联调模式：FileSvc 同模式信任透传头
+		req.Header.Set("X-Auth-User-ID", ac.UserID)
+		if ac.Username != "" {
+			req.Header.Set("X-Auth-Username", ac.Username)
+		}
+	} else {
+		return "", errors.New("missing user access token for file-svc call")
 	}
 	client := &http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Do(req)
@@ -286,7 +295,7 @@ func createFileShare(fileID, userID, username string) (string, error) {
 	if out.ID == "" {
 		return "", errors.New("filesvc share returned empty id")
 	}
-	return base + "/s/" + out.ID, nil
+	return base + "/api/s/" + out.ID, nil
 }
 
 // indexOf 返回子串位置，未找到返回 -1

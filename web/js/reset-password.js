@@ -71,7 +71,7 @@
 
             if (resp.ok && data.success) {
                 successBox.innerHTML = (data.message || '密码已重置') + '<br><br>' +
-                    '<a href="/web/login.html?reset=1">前往登录 →</a>';
+                    '<a href="' + (window.__FS_LOGIN_URL || '/web/login.html') + '?reset=1">前往登录 →</a>';
                 successBox.classList.add('show');
                 form.style.display = 'none';
             } else {

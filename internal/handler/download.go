@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"filesync/internal/auth"
-	"filesync/internal/store"
 	"filesync/internal/storage"
+	"filesync/internal/store"
 )
 
 // DownloadHandler handles file downloads with resume support
@@ -195,8 +195,10 @@ func (h *DownloadHandler) DownloadDir(w http.ResponseWriter, r *http.Request) {
 	if role == "admin" {
 		owner = ""
 	}
+	// 空间隔离：与文件列表同源，通过 space_id query 指定（普通用户默认「我的空间」）
+	spaceID := resolveSpaceID(spaceIDFromRequest(r, role), username, role)
 
-	files, err := h.db.ListFiles(prefix, owner)
+	files, err := h.db.ListFiles(spaceID, prefix, owner)
 	if err != nil {
 		log.Printf("list files for zip error: %v", err)
 		http.Error(w, "failed to list files", http.StatusInternalServerError)

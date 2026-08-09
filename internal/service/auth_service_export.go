@@ -7,8 +7,3 @@ import "filesync/internal/model"
 func (s *AuthService) ListUsersExport() ([]*model.User, error) {
 	return s.db.ListUsers()
 }
-
-// DB 间接访问（供 admin handler 特殊使用）
-func (s *AuthService) DB() interface{} {
-	return s.db
-}

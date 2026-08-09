@@ -27,6 +27,10 @@
 - **管理员后台**：独立的管理后台页面（`/web/admin.html`），4 个 Tab 模块：①系统总览（用户/文件/存储/分享/回收站统计卡片）；②用户管理（列表/禁用启用/重置密码，防止管理员禁用自己或修改其他 admin）；③文件管理（所有用户文件列表，含 owner 列）；④分享管理（所有分享列表/删除分享/查看分享页）。权限守卫：非 admin 访问自动重定向到首页。
 - **品牌视觉系统**：统一 SVG 图标库（`/web/img/`）：①`favicon.svg` 浏览器标签页图标（圆角方形 + 文件图标 + 双向同步箭头，青绿渐变）；②`logo.svg` 顶部导航栏与登录页品牌 logo（与 favicon 同源，56px 登录页带光晕 hover 动画）；③`banner.svg` 首页顶部品牌横幅（网格背景 + 同步光效 + 标语 "分片上传 · 断点续传 · 秒传"）。所有 8 个 HTML 页面添加 favicon link，7 个页面 brand 区域统一引用 logo.svg，首页在 topbar 下方添加 banner 装饰条。SVG 矢量格式无损缩放，符合 CSP `img-src 'self'` 策略。
 - **在线文件编辑（CodeMirror 6）**：支持在线新建和编辑文本文件（txt/md/js/ts/py/json/html/css/go/sql/yml/xml 等 40+ 扩展名）。后端新增 3 个 API（`POST /api/files/create` 创建、`GET /api/files/{id}/content` 读取、`PUT /api/files/{id}/content` 更新），Storage 接口扩展 `WriteFile` 方法（Local/S3/Router 三实现）。前端使用 CodeMirror 6 编辑器（esbuild 本地打包为 642KB IIFE bundle，避免 CDN 依赖，符合 CSP `script-src 'self'`），支持语法高亮、行号、括号匹配、代码折叠、缩进、Ctrl+S 快捷键保存。右键文件 → "编辑" 打开编辑器加载原内容，修改后保存即更新。暗色主题适配终端美学深色配色。
+- **新建文件类型选择**：新建文件对话框提供预设类型（文本 .txt / Markdown .md / 代码文件（JS/TS/Go/Python/Java/C/C++/Rust/Ruby/PHP/Shell/SQL/YAML 多语言下拉） / JSON .json / HTML .html / 自定义后缀），类型/语言联动自动填充文件名（`untitled.<ext>`，保留当前目录前缀），保存时文件名无扩展名自动按所选类型补全后缀，CodeMirror 语法高亮随文件类型自动切换。编辑已有文件时类型选择区隐藏（文件名固定）。
+- **多空间管理（用户级存储空间）**：每个用户可创建多个独立空间（相当于多个"磁盘"，DB 新增 `spaces` 表，`files` 表新增 `space_id` 列），空间间文件树完全隔离：切换空间即切换文件列表根。侧栏新增空间选择器（下拉切换 + 新建 + 删除），首次使用自动创建「我的空间」（`id="default-<username>"`）。**现有数据兼容**：升级启动时自动执行数据迁移，把历史文件（`space_id=''`）归入所属用户的「我的空间」，升级后旧文件在默认空间完整可见、可直接操作（回收站文件一并迁移，恢复后仍在原空间）。文件 API（列表/上传/新建/目录/移动/回收站/分享）全部按 `space_id` 隔离，admin 默认全局视图（`space_id=all`）。删除空间仅限空空间，「我的空间」不可删除。
+- **传输中心（全屏独立面板）**：上传任务实时监控与控制中心，侧栏「传输中心」按钮（带进行中任务数 badge）打开全屏面板：总览统计（进行中/暂停/完成/失败/总速度）、任务列表（文件名/进度条/实时速度 KB/s/剩余时间/百分比）、单任务控制（暂停/继续/取消/重试/移除）、批量控制（全部暂停/全部继续/清除已完成）。速度采样每 ≥1s 计算一次，剩余时间按实时速度估算。
+- **上传性能优化**：①SHA256 计算 Worker 进度上报节流（每 2% 一条，10GB 文件从 2560 条消息降至约 50 条，消除 hash 阶段主线程卡顿）；②大文件夹上传（1000+ 文件）任务 DOM 分批创建（每批 20 个 + rAF 让出主线程），消除一次性创建全部 DOM 导致的布局/重绘阻塞；③进度渲染 requestAnimationFrame 节流（同帧多次调用合并渲染）。
 
 
 ## 项目结构
@@ -151,6 +155,9 @@ filesync 内置一个纯 HTML+CSS+JS 的 Web 控制台（无框架依赖，轻�
 - **压缩包预览**：单击 zip/tar.gz 等压缩包即弹窗显示包内文件树，目录可折叠展开。文件行右侧显示「预览」和「下载」按钮，预览按钮在内嵌 iframe 中加载文件内容（支持图片/PDF/文本/音视频等可预览类型），下载按钮触发附件下载。底部显示文件/目录统计。安全限制：包 ≤2GB / 条目 ≤10000 / 单文件 ≤500MB。
 - **文件夹上传**：点击「+ 上传文件夹」按钮选择整个文件夹（webkitdirectory API），自动保留多级目录结构上传。复用现有 3 文件并发 + 单文件分片并发双层并发控制；冲突处理复用「应用到所有」批量决策；每文件独立进度条 + 失败隔离；空文件夹自动跳过（webkitdirectory 不返回空目录）。
 - **目录重命名**：选中单个目录时工具栏按钮文案动态显示「重命名目录」（多选时显示「移动 N 项」），右键菜单也提供「重命名目录」入口。弹窗标题改为「重命名目录」，输入框默认选中末级目录名（如 `docs/sub/` 选中 `sub`），降低误改父级风险。后端复用 `MoveDir` API 批量更新目录前缀，零改动。
+- **多空间切换**：侧栏顶部空间选择器下拉切换空间（我的空间/自建空间），切换即重置目录到根并刷新；「+ 新建」创建空间（prompt 输入名称）后自动切换到新空间；「删除」移除当前空间（仅空空间，「我的空间」不可删）。空间间文件树、上传目标、回收站、分享互不干扰。
+- **传输中心**：全屏面板实时展示所有上传任务（文件名/进度条/速度/剩余时间/状态），支持单任务暂停/继续/取消/重试/移除与批量控制；进行中的任务数显示在侧栏按钮 badge 上。
+- **新建文件类型选择**：新建文件弹窗顶部提供文件类型/语言/自定义后缀选择，自动补全默认文件名并联动语法高亮。
 
 ### 设计要点
 
@@ -181,7 +188,8 @@ filesync 内置一个纯 HTML+CSS+JS 的 Web 控制台（无框架依赖，轻�
   "filename": "photo.jpg",
   "file_size": 10485760,
   "chunk_size": 524288,
-  "storage": "local"
+  "storage": "local",
+  "space_id": ""           // 可选：目标空间 ID（空=「我的空间」）
 }
 
 // Response 200:
@@ -252,7 +260,8 @@ Response:
 {
   "filename": "docs/report.pdf",
   "file_size": 10485760,
-  "file_hash": "完整文件SHA256（64 hex字符）"
+  "file_hash": "完整文件SHA256（64 hex字符）",
+  "space_id": ""            // 可选：目标空间 ID（空=「我的空间」）
 }
 
 // Response 200（命中秒传）:
@@ -294,13 +303,17 @@ curl -H "Range: bytes=1024-" -o output.file \
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/files` | 列出已完成文件（支持 `?prefix=docs/` 递归过滤，`?shallow=1` 分层返回当前目录直接子项） |
+| `GET` | `/api/files` | 列出已完成文件（支持 `?prefix=docs/` 递归过滤，`?shallow=1` 分层返回当前目录直接子项，`?space_id=xxx` 空间隔离） |
 | `GET` | `/api/files/{fileID}` | 查询文件详情 |
-| `POST` | `/api/files/mkdir` | 新建目录（创建 `.keep` 占位文件） |
+| `POST` | `/api/files/mkdir` | 新建目录（创建 `.keep` 占位文件，body 支持 `space_id`） |
 | `POST` | `/api/files/rename` | 重命名/移动文件 |
+| `POST` | `/api/files/move-dir` | 移动目录（body 支持 `space_id`） |
+| `POST` | `/api/files/create` | 新建文本文件（body 支持 `space_id`，可含任意后缀） |
 | `DELETE` | `/api/files/{fileID}` | 删除单个文件 |
-| `DELETE` | `/api/files?prefix=docs/` | 递归删除目录（删除所有匹配前缀的文件） |
-| `GET` | `/api/download/dir?prefix=docs/` | ZIP 流式打包下载目录（自动过滤 `.keep`） |
+| `DELETE` | `/api/files?prefix=docs/` | 递归删除目录（删除所有匹配前缀的文件，支持 `?space_id=`） |
+| `GET` | `/api/download/dir?prefix=docs/` | ZIP 流式打包下载目录（自动过滤 `.keep`，支持 `?space_id=`） |
+
+> **空间隔离（space_id 语义）**：普通用户不传 =「我的空间」（后端归一化为 `default-<username>`），传具体 ID 查指定空间；admin 不传或传 `all` 显示全部空间。上传/新建/建目录/移动/删除目录/回收站/分享均按 `space_id` 隔离，空间间文件树互不可见。
 
 **按虚拟目录列出文件（路径枚举）：**
 ```bash
@@ -371,6 +384,49 @@ curl -o docs.zip "http://localhost:8080/api/download/dir?prefix=docs/"
 # 自动过滤 .keep 占位文件
 # 响应 404: 目录为空或不存在
 ```
+
+### 空间管理（多空间文件树隔离）
+
+每个用户可创建多个独立空间（相当于多个"磁盘"），空间间文件树完全隔离。首次使用自动创建「我的空间」（`id="default-<username>"`）。**升级数据迁移**：启动时自动把历史文件（`space_id=''`）归入所属用户的「我的空间」，升级后旧文件在默认空间完整可见（详见 [数据库设计](#数据库设计)）。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/spaces` | 列出当前用户的空间（admin 列出全部） |
+| `POST` | `/api/spaces` | 创建空间（body: `{"name":"工作","storage_type":"local"}`） |
+| `GET` | `/api/spaces/{id}` | 空间详情（含动态文件数） |
+| `DELETE` | `/api/spaces/{id}` | 删除空间（仅空空间，「我的空间」不可删） |
+
+**列出空间：**
+```bash
+curl http://localhost:8080/api/spaces -b "token=..."
+# 响应 200:
+{
+  "spaces": [
+    {"id":"default-alice","name":"我的空间","owner":"alice","storage_type":"local","file_count":42,"created_at":"...","updated_at":"..."},
+    {"id":"<space_id>","name":"工作","owner":"alice","storage_type":"local","file_count":7,"created_at":"...","updated_at":"..."}
+  ],
+  "total": 2
+}
+```
+
+**创建空间：**
+```bash
+curl -X POST http://localhost:8080/api/spaces \
+  -H "Content-Type: application/json" -b "token=..." \
+  -d '{"name":"工作","storage_type":"local"}'
+# 响应 201: {"id":"<space_id>","name":"工作","owner":"alice","storage_type":"local","file_count":0,"created_at":"...","updated_at":"..."}
+```
+
+**删除空间：**
+```bash
+curl -X DELETE http://localhost:8080/api/spaces/<space_id> -b "token=..."
+# 响应 200: {"deleted":true,"id":"<space_id>"}
+# 响应 409: 非空空间（{"error":"space_not_empty",...}）或默认空间（{"error":"default_space_not_deletable",...}）
+```
+
+### 传输中心（前端功能）
+
+前端全屏面板，无独立后端 API（复用上传会话接口）。实时展示上传任务进度/速度/剩余时间，支持暂停/继续/取消/重试/批量控制。速度与剩余时间由前端按已上传字节采样计算。
 
 **文件名路径校验规则（路径枚举方案）：**
 - 允许 `/` 作为虚拟目录分隔符（如 `docs/sub/file.txt`）
@@ -1211,13 +1267,28 @@ CREATE TABLE files (
     total_chunks INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'completed',
     owner TEXT NOT NULL DEFAULT '',  -- 文件归属用户名（空=历史数据/公共，仅 admin 可操作）
+    space_id TEXT NOT NULL DEFAULT '', -- 所属空间 ID（''=历史遗留，启动迁移归入「我的空间」）
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX idx_files_owner ON files(owner);
+CREATE INDEX idx_files_space ON files(space_id);
 ```
 
-> **owner 字段说明**：上传时记录发起者用户名（`auth.UsernameFromContext`）。admin 可操作所有文件；普通用户仅能操作 `owner = 自己用户名` 的文件；历史文件 `owner = ''` 仅 admin 可访问。分享链接公开下载时按 `shares.created_by` 过滤，防止同 prefix 下跨用户文件泄露。
+**spaces** — 空间表（多空间文件树隔离，SQLite/MySQL 双方言，迁移自动补建）：
+
+```sql
+CREATE TABLE spaces (
+    id TEXT PRIMARY KEY,             -- 空间 ID（"default-<username>"=我的空间）
+    name TEXT NOT NULL,              -- 空间名称
+    owner TEXT NOT NULL DEFAULT '',  -- 归属用户名（空=历史/公共，admin 可操作）
+    storage_type TEXT NOT NULL DEFAULT 'local', -- local | s3（默认存储后端）
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+```
+
+> **owner/space_id 字段说明**：owner 记录文件归属用户（上传时 `auth.UsernameFromContext`），admin 可操作所有文件；普通用户仅能操作 `owner = 自己用户名` 的文件；历史文件 `owner = ''` 仅 admin 可访问。space_id 实现多空间隔离：普通用户列表/上传/目录/回收站/分享按 `space_id` 过滤（空=默认空间），admin 默认全局视图；分享记录 `shares.space_id` 关联分享创建时所在空间（旧分享为空，公开访问不过滤，兼容）。分享链接公开下载时按 `shares.created_by` 过滤，防止同 prefix 下跨用户文件泄露。
 
 #### 数据模型关系
 

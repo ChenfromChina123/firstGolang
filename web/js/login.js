@@ -9,8 +9,10 @@
     const loginBtn = document.getElementById('login-btn');
 
     // 如果 URL 中有 redirect 参数，登录成功后跳转到该地址
+    // 默认跳转目标：取全局 __FS_LOGIN_URL（v2 页面设置）同目录的 index.html
     const params = new URLSearchParams(window.location.search);
-    const redirect = params.get('redirect') || '/web/index.html';
+    const defaultRedirect = (window.__FS_LOGIN_URL || '/web/login.html').replace(/login\.html$/, '') + 'index.html';
+    const redirect = params.get('redirect') || defaultRedirect;
 
     // URL 参数提示（从注册/激活/重置页面跳转回来时显示）
     const noticeBox = document.getElementById('login-notice');
