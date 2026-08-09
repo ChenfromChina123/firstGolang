@@ -130,7 +130,7 @@
             .then(({ ok, d }) => {
                 if (ok) {
                     lastToken = d.token || '';
-                    document.getElementById('token-plain').value = lastToken;
+                    document.getElementById('token-plain').textContent = lastToken;
                     document.getElementById('modal-result').classList.add('show');
                     loadTokens();
                     document.getElementById('tok-name').value = '';
@@ -142,12 +142,34 @@
     });
 
     // copyToken 复制明文令牌到剪贴板（暴露到 window 供 onclick 调用）
+    // 注意：token-plain 是 span 元素，不支持 select()，需用 Clipboard API + 临时 textarea 降级
     window.copyToken = function () {
-        const el = document.getElementById('token-plain');
-        el.select();
-        try { document.execCommand('copy'); toast('已复制', true); }
-        catch (e) { toast('请手动复制', false); }
+        const text = (document.getElementById('token-plain').textContent || '').trim();
+        if (!text) { toast('令牌为空', false); return; }
+        // 优先使用现代 Clipboard API（HTTPS / localhost 下可用）
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text)
+                .then(() => toast('已复制', true))
+                .catch(() => fallbackCopy(text));
+        } else {
+            fallbackCopy(text);
+        }
     };
+    // fallbackCopy 降级复制方案：临时 textarea + execCommand（兼容非 HTTPS 环境）
+    function fallbackCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '-9999px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.body.removeChild(ta);
+        toast(ok ? '已复制' : '请手动选中复制', ok);
+    }
     // closeResult 关闭令牌明文弹窗（暴露到 window 供 onclick 调用）
     window.closeResult = function () { document.getElementById('modal-result').classList.remove('show'); };
 
