@@ -86,7 +86,7 @@
                         '<td class="mono" style="font-size:11px">' + sandbox + '</td>' +
                         '<td class="mono">' + fmtBytes(t.quota_used) + ' / ' + fmtBytes(t.quota_bytes) + '</td>' +
                         '<td class="mono" style="font-size:11px">' + fmtDate(t.created_at) + '</td>' +
-                        '<td><button class="btn btn-danger" onclick="window.__revoke(\'' + t.id + '\')">吊销</button></td>' +
+                        '<td><button class="btn btn-danger" data-token-id="' + t.id + '">吊销</button></td>' +
                         '</tr>';
                 }).join('');
             })
@@ -170,8 +170,19 @@
         document.body.removeChild(ta);
         toast(ok ? '已复制' : '请手动选中复制', ok);
     }
-    // closeResult 关闭令牌明文弹窗（暴露到 window 供 onclick 调用）
+    // closeResult 关闭令牌明文弹窗
     window.closeResult = function () { document.getElementById('modal-result').classList.remove('show'); };
+
+    // 事件绑定（CSP script-src 'self' 禁止内联 onclick，必须用 addEventListener）
+    document.getElementById('btn-copy-token').addEventListener('click', copyToken);
+    document.getElementById('btn-close-result').addEventListener('click', closeResult);
+    // 吊销按钮是动态生成的，用事件委托：在 tbody 上监听 click，通过 data-token-id 获取令牌 ID
+    document.getElementById('tok-list').addEventListener('click', function (e) {
+        var btn = e.target.closest('.btn-danger');
+        if (!btn) return;
+        var id = btn.getAttribute('data-token-id');
+        if (id) __revoke(id);
+    });
 
     // 页面初始化：先加载空间下拉框，再加载令牌列表
     loadSpaces();
