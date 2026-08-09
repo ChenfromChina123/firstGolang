@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FileSync MCP 接入指南</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d2991d;
+    --red: #f85149;
+    --purple: #a371f7;
+    --code-bg: #1c2129;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  nav {
+    position: fixed; top: 0; left: 0; width: 260px; height: 100vh;
+    background: var(--surface); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 20px 16px; z-index: 10;
+  }
+  nav h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--dim); margin: 20px 0 8px 0; }
+  nav h3:first-child { margin-top: 0; }
+  nav a { display: block; padding: 4px 0; font-size: 14px; color: var(--dim); }
+  nav a:hover, nav a.active { color: var(--accent); text-decoration: none; }
+
+  main { margin-left: 280px; padding: 40px 48px 80px 48px; max-width: 960px; }
+  h1 { font-size: 32px; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  h2 { font-size: 24px; margin: 48px 0 16px 0; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 18px; margin: 32px 0 12px 0; }
+  h4 { font-size: 15px; margin: 20px 0 8px 0; color: var(--accent); }
+  p { margin: 12px 0; }
+  ul, ol { margin: 8px 0 8px 24px; }
+  li { margin: 4px 0; }
+
+  code { font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", monospace; font-size: 13px; background: var(--code-bg); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0; font-size: 13px; line-height: 1.5; }
+  pre code { border: none; padding: 0; background: none; }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }
+  th, td { padding: 8px 12px; border: 1px solid var(--border); text-align: left; }
+  th { background: var(--surface); font-weight: 600; white-space: nowrap; }
+  tr:hover { background: rgba(88,166,255,0.04); }
+
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge-read { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-write { background: rgba(242,136,88,0.15); color: #f08858; }
+  .badge-share { background: rgba(163,113,247,0.15); color: var(--purple); }
+  .badge-none { background: rgba(139,148,158,0.15); color: var(--dim); }
+
+  .warning { background: rgba(210,153,29,0.1); border-left: 3px solid var(--orange); padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
+  .tip { background: rgba(88,166,255,0.08); border-left: 3px solid var(--accent); padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
+  .danger { background: rgba(248,81,73,0.1); border-left: 3px solid var(--red); padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
+
+  .toc-active { color: var(--accent) !important; font-weight: 600; }
+
+  @media (max-width: 900px) {
+    nav { display: none; }
+    main { margin-left: 0; padding: 24px 20px 60px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <h3><a href="#overview">概述</a></h3>
+  <h3>🚀 快速开始</h3>
+  <a href="#quickstart-web">Web 控制台</a>
+  <a href="#quickstart-api">API 编程</a>
+  <h3>🔌 客户端配置</h3>
+  <a href="#config-claude">Claude Desktop</a>
+  <a href="#config-cursor">Cursor</a>
+  <a href="#config-curl">curl / 脚本</a>
+  <h3>🛠 工具参考</h3>
+  <a href="#tool-whoami">whoami</a>
+  <a href="#tool-fs-list">fs_list</a>
+  <a href="#tool-fs-stat">fs_stat</a>
+  <a href="#tool-fs-read">fs_read</a>
+  <a href="#tool-fs-download">fs_download</a>
+  <a href="#tool-fs-write">fs_write</a>
+  <a href="#tool-fs-upload">fs_upload</a>
+  <a href="#tool-fs-mkdir">fs_mkdir</a>
+  <a href="#tool-fs-rename">fs_rename</a>
+  <a href="#tool-fs-move">fs_move</a>
+  <a href="#tool-fs-delete">fs_delete</a>
+  <a href="#tool-fs-trash">fs_trash_*</a>
+  <a href="#tool-share">share_*</a>
+  <h3>⚠️ 常见陷阱</h3>
+  <a href="#pitfalls-space-id">space_id 何时需要</a>
+  <a href="#pitfalls-file-id">file_id vs path</a>
+  <a href="#pitfalls-response">响应格式</a>
+  <a href="#pitfalls-login">登录与令牌</a>
+  <a href="#pitfalls-paths">路径格式</a>
+  <a href="#pitfalls-scopes">权限不足</a>
+  <h3>📝 附录</h3>
+  <a href="#appendix-rest">REST API 端点</a>
+  <a href="#appendix-manifest">机器可读资源</a>
+  <a href="#appendix-changelog">变更记录</a>
+</nav>
+
+<main>
+
+<h1 id="overview">FileSync MCP 接入指南</h1>
+<p>
+  FileSync 实现了完整的 <strong>Model Context Protocol (MCP)</strong> 服务器，
+  让 AI Agent 可以安全地管理你的文件：浏览目录、读写文件、上传下载、回收站、创建分享链接。
+</p>
+<p>
+  本文档基于 <strong>实战踩坑经验</strong> 编写，覆盖从零搭建到高级用法的全部细节。
+  如果你首次使用，请从头到尾阅读；有经验的可以跳转到 <a href="#tool-whoami">工具参考</a> 或 <a href="#pitfalls-space-id">常见陷阱</a>。
+</p>
+
+<div class="tip">
+  <strong>核心原则：先调 whoami</strong><br>
+  任何 Agent 收到 MCP 任务后，<strong>第一个动作必须是调用 <code>whoami</code></strong>。
+  它会返回当前令牌的 scope、空间沙箱、路径沙箱、配额上限——这些决定了你能做什么、不能做什么。
+  跳过这一步是大多数权限错误的根源。
+</div>
+
+<!-- ============================================================ -->
+<h2>快速开始</h2>
+
+<h3 id="quickstart-web">方式一：Web 控制台（推荐）</h3>
+<ol>
+  <li>登录 FileSync → 左侧栏「访问令牌」→ 点击「新建令牌」</li>
+  <li>填写令牌名称，勾选所需 scope：
+    <ul>
+      <li><span class="badge badge-read">read</span> 文件浏览、读取、下载、回收站查看</li>
+      <li><span class="badge badge-write">write</span> 文件创建、上传、改名、移动、删除、恢复</li>
+      <li><span class="badge badge-share">share</span> 创建、查看、删除分享链接</li>
+    </ul>
+  </li>
+  <li>（可选）限定空间和目录前缀作为安全沙箱</li>
+  <li>点击创建，<strong>立即复制令牌</strong>（只显示一次！）</li>
+  <li>将令牌配置到 MCP 客户端中（见下方 <a href="#config-claude">客户端配置</a>）</li>
+</ol>
+
+<div class="danger">
+  <strong>令牌只显示一次！</strong> 创建后请立即保存。如果丢失，只能删除重建。
+</div>
+
+<h3 id="quickstart-api">方式二：API 编程创建令牌</h3>
+<p>如果你想自动化创建令牌（例如 CI/CD 或批量部署），可以通过 REST API：</p>
+
+<pre><code># 第 1 步：获取 RSA 公钥
+curl -s https://你的域名/api/pubkey
+
+# 第 2 步：用公钥加密密码后登录（PKCS1v15 填充！）
+# Python 示例：
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+
+# ⚠️ 关键：使用 PKCS1v15，不是 OAEP！
+public_key.encrypt(password.encode(), padding.PKCS1v15())
+
+# 第 3 步：POST /api/login，获取 session cookie (fs_access_token)
+resp = session.post("/api/login", json={
+    "username": "admin",
+    "password": encrypted_password_base64
+})
+
+# 第 4 步：用 session cookie 创建 PAT
+# ⚠️ 关键：scopes 必须是数组，不是空格分隔的字符串！
+resp = session.post("/api/tokens", json={
+    "name": "MyToken",
+    "scopes": ["filesync:read", "filesync:write"]  # ← 数组，不是字符串!
+})</code></pre>
+
+<div class="warning">
+  <strong>API 创建令牌的两个常见错误：</strong><br>
+  ① RSA 加密使用<strong> PKCS1v15 填充</strong>，不要用 OAEP！<br>
+  ② <code>scopes</code> 字段是<strong>字符串数组</strong> <code>["filesync:read"]</code>，不是空格分隔字符串！
+</div>
+
+<!-- ============================================================ -->
+<h2>客户端配置</h2>
+
+<h3 id="config-claude">Claude Desktop</h3>
+<p>编辑 Claude Desktop 的 MCP 配置文件（<code>%APPDATA%/Claude/claude_desktop_config.json</code>）：</p>
+<pre><code>{
+  "mcpServers": {
+    "filesync": {
+      "type": "streamableHttp",
+      "url": "https://你的域名/mcp",
+      "headers": {
+        "Authorization": "Bearer fsk_你的令牌"
+      }
+    }
+  }
+}</code></pre>
+
+<h3 id="config-cursor">Cursor</h3>
+<p>在 Cursor Settings → MCP → Add new MCP server：</p>
+<pre><code>Name: filesync
+Type: Streamable HTTP
+URL: https://你的域名/mcp
+Header: Authorization: Bearer fsk_你的令牌</code></pre>
+
+<h3 id="config-curl">curl / Python / 其他脚本</h3>
+<p>直接发 JSON-RPC 请求到 <code>POST /mcp</code>：</p>
+<pre><code>curl -s -X POST https://你的域名/mcp \
+  -H "Authorization: Bearer fsk_你的令牌" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "whoami",
+      "arguments": {}
+    },
+    "id": 1
+  }'</code></pre>
+
+<pre><code># Python 通用调用模板
+import requests, json, time
+
+BASE = "https://你的域名"
+HEADERS = {
+    "Authorization": "Bearer fsk_你的令牌",
+    "Content-Type": "application/json"
+}
+
+def mcp_call(tool_name, arguments):
+    """调用 MCP 工具，返回完整 JSON 响应"""
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
+        "id": int(time.time() * 1000)
+    }
+    r = requests.post(f"{BASE}/mcp", json=payload, headers=HEADERS)
+    return r.json()
+
+def get_result(response):
+    """提取 structuredContent"""
+    return response.get("result", {}).get("structuredContent", {})
+
+# 示例
+result = get_result(mcp_call("whoami", {}))
+print(result["identity"]["username"])  # → "admin"</code></pre>
+
+<!-- ============================================================ -->
+<h2>工具完整参考</h2>
+
+<h3 id="tool-whoami"><code>whoami</code> <span class="badge badge-none">无 scope 要求</span></h3>
+<p><strong>Agent 必须首先调用</strong>，了解当前令牌的能力边界。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td colspan="4"><em>无参数</em></td></tr>
+</table>
+
+<pre><code># 请求
+mcp_call("whoami", {})
+
+# 响应 structuredContent
+{
+  "identity": {
+    "username": "admin",
+    "role": "admin",
+    "scopes": ["filesync:read", "filesync:write", "filesync:share"],
+    "token_id": "fsk_xxx",
+    "space_sandbox": "",           // 空=不限制
+    "path_sandbox": "",            // 空=不限制
+    "quota_bytes": 1073741824,     // 配额上限(字节)
+    "quota_used": 12345            // 已用配额
+  }
+}</code></pre>
+
+<h3 id="tool-fs-list"><code>fs_list</code> <span class="badge badge-read">filesync:read</span></h3>
+<p>列出目录内容。返回子目录列表和文件列表。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>path</code></td><td>string</td><td>是</td><td>目录路径，空字符串 = 根目录。例: <code>"docs/"</code></td></tr>
+  <tr><td><code>space_id</code></td><td>string</td><td>是</td><td>空间 ID。普通用户传空字符串使用默认空间，admin 传空=所有空间</td></tr>
+  <tr><td><code>recursive</code></td><td>bool</td><td>否</td><td>是否递归列出。默认 <code>false</code></td></tr>
+</table>
+
+<pre><code># 列出根目录
+mcp_call("fs_list", {"path": "", "space_id": ""})
+
+# 响应
+{
+  "dirs":  [{"name": "docs",       "updated": "2026-08-09T12:00:00Z"}],
+  "files": [{"name": "notes/todo.txt", "size": 1234, "updated": "...",
+              "id": "file_abc123", "hash": "sha256:...", "type": "text"}]
+}</code></pre>
+
+<div class="warning">
+  <strong>注意：</strong> 文件列表中的 <code>name</code> 是<strong>完整路径</strong>（如 <code>docs/readme.md</code>），不是仅文件名。
+  <code>id</code> 用于后续操作（如 <code>share_create</code> 需要 <code>file_id</code>）。
+</div>
+
+<h3 id="tool-fs-stat"><code>fs_stat</code> <span class="badge badge-read">filesync:read</span></h3>
+<p>获取单个文件的元信息（大小、哈希、归属空间）。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>file_id</code></td><td>string</td><td>二选一</td><td>文件 ID</td></tr>
+  <tr><td><code>path</code></td><td>string</td><td>二选一</td><td>文件路径（与 file_id 二选一，推荐用 path）</td></tr>
+</table>
+
+<div class="tip">
+  <strong>fs_stat 不需要 space_id。</strong> 与 fs_list 不同，fs_stat 直接用 path 查询即可。
+</div>
+
+<pre><code>mcp_call("fs_stat", {"path": "notes/todo.txt"})</code></pre>
+
+<h3 id="tool-fs-read"><code>fs_read</code> <span class="badge badge-read">filesync:read</span></h3>
+<p>读取文件内容。文本直接返回，二进制返回 base64（≤1MB 内联）。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>path</code></td><td>string</td><td>是</td><td>文件路径。不需要 space_id</td></tr>
+  <tr><td><code>max_size</code></td><td>int64</td><td>否</td><td>最大读取字节，默认 1MB</td></tr>
+</table>
+
+<pre><code># 文本文件
+mcp_call("fs_read", {"path": "notes/todo.txt"})
+# → {"filename": "notes/todo.txt", "content": "...", "size": 200}
+
+# 大文件建议用 fs_download
+mcp_call("fs_download", {"path": "video.mp4"})
+# → {"filename": "video.mp4", "size": 50000000, "download_url": "...", "expires_in": 1800}</code></pre>
+
+<h3 id="tool-fs-download"><code>fs_download</code> <span class="badge badge-read">filesync:read</span></h3>
+<p>生成 30 分钟有效的临时下载链接，适合大文件。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>path</code></td><td>string</td><td>是</td><td>文件路径。不需要 space_id</td></tr>
+</table>
+
+<h3 id="tool-fs-write"><code>fs_write</code> <span class="badge badge-write">filesync:write</span></h3>
+<p>创建或覆盖文本文件。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>path</code></td><td>string</td><td>是</td><td>目标文件路径</td></tr>
+  <tr><td><code>content</code></td><td>string</td><td>是</td><td>文本内容</td></tr>
+  <tr><td><code>space_id</code></td><td>string</td><td>是</td><td>空间 ID（普通用户传空=默认空间）</td></tr>
+  <tr><td><code>overwrite</code></td><td>bool</td><td>否</td><td>是否覆盖已存在文件，默认 <code>false</code>（冲突报错）</td></tr>
+</table>
+
+<div class="warning">
+  <strong>fs_write 需要 space_id！</strong> 这与 fs_read/fs_stat 不同。普通用户传 <code>""</code>，admin 传 <code>""</code> 会分配到 default-admin 空间。
+</div>
+
+<pre><code>mcp_call("fs_write", {
+    "path": "projects/new-readme.md",
+    "content": "# New Project\n\nHello!",
+    "space_id": ""
+})</code></pre>
+
+<h3 id="tool-fs-upload"><code>fs_upload</code> <span class="badge badge-write">filesync:write</span></h3>
+<p>上传二进制文件。两种方式：Base64 内联或服务端拉取 URL。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>path</code></td><td>string</td><td>是</td><td>目标路径</td></tr>
+  <tr><td><code>content_base64</code></td><td>string</td><td>二选一</td><td>文件内容 Base64（≤50MB）</td></tr>
+  <tr><td><code>source_url</code></td><td>string</td><td>二选一</td><td>源文件 URL，服务端拉取（≤200MB）</td></tr>
+  <tr><td><code>space_id</code></td><td>string</td><td>是</td><td>空间 ID</td></tr>
+</table>
+
+<h3 id="tool-fs-mkdir"><code>fs_mkdir</code> <span class="badge badge-write">filesync:write</span></h3>
+<p>创建目录。幂等操作——目录已存在也返回成功。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>path</code></td><td>string</td><td>是</td><td>目录路径，如 <code>"docs/notes/"</code></td></tr>
+  <tr><td><code>space_id</code></td><td>string</td><td>是</td><td>空间 ID</td></tr>
+</table>
+
+<h3 id="tool-fs-rename"><code>fs_rename</code> <span class="badge badge-write">filesync:write</span></h3>
+<p>重命名文件。仅限同目录内改名，跨目录移动请用 <code>fs_move</code>。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>path</code></td><td>string</td><td>是</td><td>原文件路径。不需要 space_id</td></tr>
+  <tr><td><code>new_path</code></td><td>string</td><td>是</td><td>新文件路径（同目录）</td></tr>
+  <tr><td><code>file_id</code></td><td>string</td><td>否</td><td>文件 ID（与 path 二选一）</td></tr>
+</table>
+
+<div class="tip">
+  <strong>fs_rename 不需要 space_id。</strong> 只需要 path + new_path。
+</div>
+
+<h3 id="tool-fs-move"><code>fs_move</code> <span class="badge badge-write">filesync:write</span></h3>
+<p>批量移动文件（改路径前缀）。把 <code>old_prefix</code> 下所有文件移到 <code>new_prefix</code>。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>old_prefix</code></td><td>string</td><td>是</td><td>源目录前缀</td></tr>
+  <tr><td><code>new_prefix</code></td><td>string</td><td>是</td><td>目标目录前缀</td></tr>
+  <tr><td><code>space_id</code></td><td>string</td><td>是</td><td>空间 ID</td></tr>
+</table>
+
+<h3 id="tool-fs-delete"><code>fs_delete</code> <span class="badge badge-write">filesync:write</span></h3>
+<p>软删除文件（进回收站，30 天保留）。支持按路径或 file_id 批量删除。</p>
+
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>paths</code></td><td>string[]</td><td>二选一</td><td>要删除的文件路径列表。不需要 space_id</td></tr>
+  <tr><td><code>file_ids</code></td><td>string[]</td><td>二选一</td><td>要删除的文件 ID 列表</td></tr>
+</table>
+
+<div class="warning">
+  <strong>fs_delete 不需要 space_id，paths 是数组。</strong><br>
+  路径数组如 <code>["dir/file1.txt", "dir/subdir"]</code>，删除目录会递归删除目录下所有文件。
+</div>
+
+<h3 id="tool-fs-trash">回收站系列</h3>
+
+<h4><code>fs_trash_list</code> <span class="badge badge-read">filesync:read</span></h4>
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>space_id</code></td><td>string</td><td>否</td><td>空间过滤（可选）</td></tr>
+</table>
+
+<h4><code>fs_trash_restore</code> <span class="badge badge-write">filesync:write</span></h4>
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>file_id</code></td><td>string</td><td>是</td><td>从 fs_trash_list 中获取的 file_id</td></tr>
+</table>
+
+<div class="tip">
+  <strong>恢复需要 file_id，不是 path。</strong> 先调 <code>fs_trash_list</code> 找到目标文件的 id，再用 <code>fs_trash_restore</code> 恢复。
+</div>
+
+<h3 id="tool-share">分享系列</h3>
+
+<h4><code>share_create</code> <span class="badge badge-share">filesync:share</span></h4>
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>file_id</code></td><td>string</td><td>条件</td><td>分享文件时需要。从 fs_list 获取</td></tr>
+  <tr><td><code>dir_prefix</code></td><td>string</td><td>条件</td><td>分享目录时需要。如 <code>"docs/"</code></td></tr>
+  <tr><td><code>share_type</code></td><td>string</td><td>是</td><td><code>"file"</code> 或 <code>"dir"</code></td></tr>
+  <tr><td><code>password</code></td><td>string</td><td>否</td><td>访问密码，1-64 字符</td></tr>
+  <tr><td><code>expires_in</code></td><td>int64</td><td>否</td><td>有效期秒，0=永久</td></tr>
+  <tr><td><code>space_id</code></td><td>string</td><td>否</td><td>目录分享时指定空间</td></tr>
+</table>
+
+<div class="warning">
+  <strong>分享文件需要 file_id，不是 path！</strong><br>
+  先通过 <code>fs_list</code> 获取文件列表，从返回的 <code>files[].id</code> 中拿到 file_id。
+</div>
+
+<pre><code># 第 1 步：获取 file_id
+result = get_result(mcp_call("fs_list", {"path": "docs", "space_id": ""}))
+file_id = [f["id"] for f in result["files"] if f["name"].endswith("readme.md")][0]
+
+# 第 2 步：创建分享
+mcp_call("share_create", {
+    "file_id": file_id,
+    "share_type": "file",
+    "password": "1234",
+    "expires_in": 86400    # 24小时
+})</code></pre>
+
+<h4><code>share_list</code> <span class="badge badge-share">filesync:share</span></h4>
+<p>列出当前令牌创建的所有分享。无参数。</p>
+
+<h4><code>share_delete</code> <span class="badge badge-share">filesync:share</span></h4>
+<table>
+  <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>share_id</code></td><td>string</td><td>是</td><td>分享 ID，从 share_list 获取</td></tr>
+</table>
+
+<pre><code># 删除分享
+result = get_result(mcp_call("share_list", {}))
+share_id = result["shares"][0]["id"]
+mcp_call("share_delete", {"share_id": share_id})</code></pre>
+
+<!-- ============================================================ -->
+<h2>⚠️ 常见陷阱（实战总结）</h2>
+
+<h3 id="pitfalls-space-id">陷阱 1：space_id 何时需要？</h3>
+<table>
+  <tr><th>工具</th><th>需要 space_id?</th><th>说明</th></tr>
+  <tr><td>fs_list</td><td style="color:var(--red)">✅ 是</td><td>普通用户传 <code>""</code></td></tr>
+  <tr><td>fs_write</td><td style="color:var(--red)">✅ 是</td><td>普通用户传 <code>""</code></td></tr>
+  <tr><td>fs_mkdir</td><td style="color:var(--red)">✅ 是</td><td>普通用户传 <code>""</code></td></tr>
+  <tr><td>fs_upload</td><td style="color:var(--red)">✅ 是</td><td>普通用户传 <code>""</code></td></tr>
+  <tr><td>fs_move</td><td style="color:var(--red)">✅ 是</td><td>普通用户传 <code>""</code></td></tr>
+  <tr><td>fs_stat</td><td style="color:var(--green)">❌ 否</td><td>只需 path 或 file_id</td></tr>
+  <tr><td>fs_read</td><td style="color:var(--green)">❌ 否</td><td>只需 path</td></tr>
+  <tr><td>fs_download</td><td style="color:var(--green)">❌ 否</td><td>只需 path</td></tr>
+  <tr><td>fs_rename</td><td style="color:var(--green)">❌ 否</td><td>只需 path + new_path</td></tr>
+  <tr><td>fs_delete</td><td style="color:var(--green)">❌ 否</td><td>只需 paths 数组</td></tr>
+  <tr><td>fs_trash_list</td><td style="color:var(--orange)">可选</td><td>可传空</td></tr>
+  <tr><td>share_create</td><td style="color:var(--orange)">可选</td><td>目录分享时需要</td></tr>
+</table>
+
+<div class="tip">
+  <strong>记住规则：</strong> 浏览类（stat/read/download）不需要 space_id；写入类（write/mkdir/upload/move）需要 space_id；list 需要 space_id；delete/rename 不需要 space_id。
+</div>
+
+<h3 id="pitfalls-file-id">陷阱 2：file_id vs path——用哪个？</h3>
+<p>有些操作接受 file_id，有些需要 path，有些两者都接受。搞错会导致调用失败。</p>
+
+<table>
+  <tr><th>操作</th><th>推荐用</th><th>原因</th></tr>
+  <tr><td>fs_stat</td><td>path</td><td>直观，不需要先查 id</td></tr>
+  <tr><td>fs_read</td><td>path</td><td>唯一选择</td></tr>
+  <tr><td>fs_download</td><td>path</td><td>唯一选择</td></tr>
+  <tr><td>fs_rename</td><td>path</td><td>最常用</td></tr>
+  <tr><td>fs_delete</td><td>paths[]</td><td>直接删目录</td></tr>
+  <tr><td><strong>share_create</strong></td><td><strong>file_id</strong></td><td><strong>文件分享必须用 file_id！</strong></td></tr>
+  <tr><td><strong>fs_trash_restore</strong></td><td><strong>file_id</strong></td><td><strong>必须用 file_id！</strong></td></tr>
+</table>
+
+<div class="danger">
+  <strong>最常见的错误：share_create 传 path 而不是 file_id。</strong><br>
+  正确的做法：先 <code>fs_list</code> → 取 <code>files[].id</code> → 传给 <code>share_create</code> 的 <code>file_id</code> 字段。
+</div>
+
+<h3 id="pitfalls-response">陷阱 3：MCP 响应格式</h3>
+<p>MCP JSON-RPC 响应的工具结果在 <code>result.structuredContent</code> 中，<strong>不是 <code>result.content</code></strong>。</p>
+
+<pre><code>// ✅ 正确
+response["result"]["structuredContent"]  // → {"dirs": [...], "files": [...]}
+
+// ❌ 错误
+response["result"]["content"]  // 可能是 null
+
+// 完整 JSON-RPC 响应结构
+{
+  "jsonrpc": "2.0",
+  "id": 1733280000000,
+  "result": {
+    "structuredContent": { /* 工具的实际输出 */ }
+    // "content": null  // ← 忽略这个
+  }
+}
+
+// 错误响应
+{
+  "jsonrpc": "2.0",
+  "id": 1733280000000,
+  "result": {
+    "isError": true,
+    "content": [{"type": "text", "text": "错误描述"}]
+  }
+}</code></pre>
+
+<h3 id="pitfalls-login">陷阱 4：登录时 JWT 在 Cookie 中，不在响应体</h3>
+<p>Web 登录 <code>POST /api/login</code> 成功后，JWT 通过 <strong>HttpOnly Cookie</strong> (<code>fs_access_token</code>) 设置，
+响应体中<strong>没有 token 字段</strong>。</p>
+
+<pre><code>// 登录响应体
+{
+  "success": true,
+  "user_id": 1,
+  "username": "admin",
+  "role": "admin",
+  "expires_in": 86400,
+  "token_type": "Bearer"
+  // ⚠️ 注意：没有 "token" 字段！
+}
+
+// 实际的 token 在 Set-Cookie 响应头中（HttpOnly，JS 不可读）
+// Set-Cookie: fs_access_token=eyJhbGc...; HttpOnly; Secure; SameSite=Lax</code></pre>
+
+<div class="tip">
+  <strong>编程访问时：</strong> 使用 <code>requests.Session()</code> 自动管理 Cookie，然后直接用 session 发后续请求。
+  脚本示例见 <a href="#quickstart-api">API 编程创建令牌</a>。
+</div>
+
+<h3 id="pitfalls-paths">陷阱 5：路径格式</h3>
+<ul>
+  <li><strong>无前导斜杠：</strong> 路径 <code>docs/readme.md</code> 而非 <code>/docs/readme.md</code></li>
+  <li><strong>目录以斜杠结尾：</strong> <code>docs/</code> 表示目录</li>
+  <li><strong>根目录：</strong> 空字符串 <code>""</code> 表示根目录</li>
+  <li><strong>fs_list 返回完整路径：</strong> 文件列表中 <code>name</code> 是 <code>"projects/readme.md"</code> 而非仅 <code>"readme.md"</code></li>
+</ul>
+
+<h3 id="pitfalls-scopes">陷阱 6：权限不足</h3>
+<p>常见错误信息及原因：</p>
+
+<table>
+  <tr><th>错误</th><th>原因</th><th>解决</th></tr>
+  <tr><td><code>"insufficient_scope"</code></td><td>令牌缺少所需 scope</td><td>重新创建令牌，勾选所需 scope</td></tr>
+  <tr><td><code>"space_id outside token sandbox"</code></td><td>space_id 超出令牌锁定的空间</td><td>传令牌允许的空间，或传空字符串</td></tr>
+  <tr><td><code>"path outside sandbox"</code></td><td>路径不在令牌允许的目录前缀内</td><td>使用令牌允许的路径前缀</td></tr>
+  <tr><td><code>"quota exceeded"</code></td><td>超出令牌配额上限</td><td>删除旧文件或提高配额</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>附录</h2>
+
+<h3 id="appendix-rest">REST API 端点</h3>
+
+<table>
+  <tr><th>端点</th><th>方法</th><th>认证</th><th>说明</th></tr>
+  <tr><td><code>/api/pubkey</code></td><td>GET</td><td>无</td><td>获取 RSA 公钥（用于加密登录密码）</td></tr>
+  <tr><td><code>/api/login</code></td><td>POST</td><td>PKCS1v15 加密密码</td><td>登录获取 session cookie</td></tr>
+  <tr><td><code>/api/tokens</code></td><td>POST</td><td>Cookie</td><td>创建 PAT（scopes 必须是数组）</td></tr>
+  <tr><td><code>/api/tokens</code></td><td>GET</td><td>Cookie</td><td>列出已创建的 PAT</td></tr>
+  <tr><td><code>/api/tokens/{id}</code></td><td>DELETE</td><td>Cookie</td><td>删除 PAT</td></tr>
+  <tr><td><code>/mcp</code></td><td>POST</td><td>Bearer PAT</td><td>MCP JSON-RPC 端点</td></tr>
+</table>
+
+<h3 id="appendix-manifest">机器可读资源</h3>
+
+<table>
+  <tr><th>URL</th><th>格式</th><th>用途</th></tr>
+  <tr><td><code>/mcp/manifest.json</code></td><td>JSON</td><td>工具列表、参数定义、scope 映射。由源码自动生成，始终与实现一致</td></tr>
+  <tr><td><code>/mcp/llms.txt</code></td><td>Plain text</td><td>Agent 速查文本。MCP 客户端可自动拉取了解服务器能力</td></tr>
+  <tr><td><code>/.well-known/oauth-authorization-server</code></td><td>JSON</td><td>OAuth 2.0 授权服务器元数据</td></tr>
+  <tr><td><code>/.well-known/jwks.json</code></td><td>JSON</td><td>JWT 签名公钥（JWKS）</td></tr>
+</table>
+
+<h3 id="appendix-changelog">变更记录</h3>
+<table>
+  <tr><th>日期</th><th>变更</th></tr>
+  <tr><td>2026-08-09</td><td>全面重写：增加完整 curl/Python 示例、16 个工具详细参考、6 大常见陷阱、space_id 对照表、file_id vs path 指南、REST API 端点、MCP 响应格式说明</td></tr>
+  <tr><td>2026-07-xx</td><td>初始版本：工具速查表、基本配置方法</td></tr>
+</table>
+
+<hr style="margin-top:48px; border-color:var(--border)">
+<p style="color:var(--dim); font-size:13px; text-align:center; margin-top:24px">
+  FileSync MCP Server · 由 <a href="/mcp/manifest.json">manifest.json</a> 自动生成 · 最后更新 2026-08-09
+</p>
+
+</main>
+
+</body>
+</html>
