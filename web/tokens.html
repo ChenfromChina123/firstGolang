@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0a0e14">
+    <meta name="color-scheme" content="dark">
+    <title>FileSync · 访问令牌</title>
+    <link rel="icon" href="/web/img/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/web/img/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/web/style.css?v=20260706g">
+    <style>
+        body { background: #0a0e14; color: #c8d3e0; font-family: 'Outfit', sans-serif; }
+        .tokens-wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px; }
+        .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+        .page-header h1 { font-size: 22px; font-weight: 600; margin: 0; }
+        .page-header .back-link {
+            color: #5ae0c8; text-decoration: none; font-size: 14px;
+            padding: 6px 12px; border: 1px solid #1c2536; border-radius: 6px; transition: all .2s;
+        }
+        .page-header .back-link:hover { border-color: #5ae0c8; background: rgba(90,224,200,.08); }
+        .hint {
+            font-size: 13px; color: #7a8a9e; line-height: 1.7;
+            border: 1px solid #1c2536; border-radius: 8px; padding: 14px 16px; margin-bottom: 24px;
+            background: linear-gradient(135deg, #0f1623 0%, #0a0e14 100%);
+        }
+        .hint code { font-family: 'JetBrains Mono', monospace; color: #5ae0c8; font-size: 12px; }
+        .card { border: 1px solid #1c2536; border-radius: 10px; background: #0d1320; padding: 20px; margin-bottom: 24px; }
+        .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 16px; color: #c8d3e0; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .form-grid label { display: block; font-size: 12px; color: #7a8a9e; margin-bottom: 4px; }
+        .form-grid input, .form-grid select {
+            width: 100%; padding: 8px 12px; background: #0a0e14; border: 1px solid #1c2536;
+            border-radius: 6px; color: #c8d3e0; font-family: inherit; font-size: 13px;
+            box-sizing: border-box; margin-bottom: 10px;
+        }
+        .form-grid input:focus, .form-grid select:focus { outline: none; border-color: #5ae0c8; }
+        .form-grid .full { grid-column: 1 / -1; }
+        .checkbox-row { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+        .checkbox-row label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #c8d3e0; cursor: pointer; }
+        .checkbox-row input[type=checkbox] { accent-color: #5ae0c8; width: 15px; height: 15px; }
+        .btn {
+            padding: 8px 16px; border: 1px solid #1c2536; background: transparent; color: #c8d3e0;
+            border-radius: 6px; cursor: pointer; font-size: 13px; font-family: inherit; transition: all .2s;
+        }
+        .btn:hover { border-color: #5ae0c8; color: #5ae0c8; }
+        .btn-danger { border-color: #ff6b9d; color: #ff6b9d; }
+        .btn-danger:hover { background: rgba(255,107,157,.1); }
+        .btn-primary { border-color: #5ae0c8; color: #5ae0c8; }
+        .btn-primary:hover { background: rgba(90,224,200,.1); }
+        .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .data-table th { text-align: left; padding: 10px 12px; color: #7a8a9e; font-weight: 500; border-bottom: 1px solid #1c2536; font-size: 12px; }
+        .data-table td { padding: 10px 12px; border-bottom: 1px solid #141c28; color: #c8d3e0; }
+        .data-table tr:hover td { background: rgba(90,224,200,.03); }
+        .scope-tag {
+            display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+            font-weight: 600; margin: 2px 4px 2px 0;
+        }
+        .scope-read { background: rgba(90,224,200,.15); color: #5ae0c8; }
+        .scope-write { background: rgba(255,193,7,.15); color: #ffc107; }
+        .scope-share { background: rgba(90,150,255,.15); color: #5a96ff; }
+        .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: #0d1320; border: 1px solid #1c2536; border-radius: 10px; padding: 24px; min-width: 420px; max-width: 90vw; }
+        .modal h3 { margin: 0 0 16px; font-size: 16px; }
+        .token-display {
+            width: 100%; padding: 10px 12px; background: #0a0e14; border: 1px solid #5ae0c8;
+            border-radius: 6px; color: #5ae0c8; font-family: 'JetBrains Mono', monospace; font-size: 13px;
+            word-break: break-all; box-sizing: border-box; margin-bottom: 12px;
+        }
+        .modal .warn { font-size: 12px; color: #ffc107; margin-bottom: 16px; line-height: 1.6; }
+        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+        .empty { text-align: center; color: #7a8a9e; padding: 32px; font-size: 13px; }
+        .toast { position: fixed; top: 20px; right: 20px; padding: 12px 16px; border-radius: 8px; font-size: 13px; z-index: 2000; display: none; }
+        .toast.error { background: #3a1520; color: #ff6b9d; border: 1px solid #ff6b9d; }
+        .toast.ok { background: #0f2a20; color: #5ae0c8; border: 1px solid #5ae0c8; }
+    </style>
+</head>
+<body>
+<div class="tokens-wrap">
+    <div class="page-header">
+        <h1>访问令牌 (PAT)</h1>
+        <a class="back-link" href="/web/index.html">← 返回控制台</a>
+    </div>
+    <div class="hint">
+        访问令牌用于 <b>MCP / 外部 Agent</b> 认证（替代账号密码 + 15 分钟刷新）。生成后在
+        <code>Authorization: Bearer &lt;token&gt;</code> 中使用。令牌明文只显示一次，请立即保存。
+        可用 scope：<code>filesync:read</code>（只读）、<code>filesync:write</code>（写入）、<code>filesync:share</code>（分享）。
+        可限定单一空间 / 目录前缀，实现 Agent 沙箱；可设置写入配额防止无限写入。
+    </div>
+
+    <div class="card">
+        <h2>生成新令牌</h2>
+        <div class="form-grid">
+            <div class="full">
+                <label>令牌名称</label>
+                <input id="tok-name" placeholder="如 claude-desktop / cursor-agent" maxlength="64">
+            </div>
+            <div class="full">
+                <label>权限范围 (Scope)</label>
+                <div class="checkbox-row">
+                    <label><input type="checkbox" class="scope" value="filesync:read" checked> 读取</label>
+                    <label><input type="checkbox" class="scope" value="filesync:write"> 写入</label>
+                    <label><input type="checkbox" class="scope" value="filesync:share"> 分享</label>
+                </div>
+            </div>
+            <div>
+                <label>限定空间（可选，留空=不限）</label>
+                <select id="tok-space"><option value="">不限</option></select>
+            </div>
+            <div>
+                <label>限定目录前缀（可选，留空=不限）</label>
+                <input id="tok-prefix" placeholder="如 agents/reports/">
+            </div>
+            <div>
+                <label>写入配额 (MB，0=不限)</label>
+                <input id="tok-quota" type="number" min="0" value="0" placeholder="0">
+            </div>
+            <div>
+                <label>有效期（秒，0=永久）</label>
+                <input id="tok-expires" type="number" min="0" value="0" placeholder="如 2592000 = 30 天">
+            </div>
+        </div>
+        <div style="margin-top:8px"><button class="btn btn-primary" id="btn-create">生成令牌</button></div>
+    </div>
+
+    <div class="card">
+        <h2>已生成的令牌</h2>
+        <table class="data-table">
+            <thead><tr><th>名称</th><th>权限</th><th>沙箱</th><th>配额</th><th>创建时间</th><th>操作</th></tr></thead>
+            <tbody id="tok-list"><tr><td colspan="6" class="empty">加载中…</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 创建成功：显示明文 -->
+<div class="modal-overlay" id="modal-result">
+    <div class="modal">
+        <h3>令牌已生成</h3>
+        <div class="warn">⚠️ 此令牌只显示这一次，关闭后将无法找回。请立即复制保存。</div>
+        <input class="token-display" id="token-plain" readonly onclick="this.select()">
+        <div class="modal-actions">
+            <button class="btn btn-primary" onclick="copyToken()">复制</button>
+            <button class="btn" onclick="closeResult()">我已保存</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- 内联脚本已提取到 /web/js/tokens.js，符合 CSP script-src 'self' 要求（禁止内联脚本执行） -->
+<script src="/web/js/tokens.js?v=20260809"></script>
+</body>
+</html>
