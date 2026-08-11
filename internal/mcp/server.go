@@ -31,6 +31,17 @@ type MCP struct {
 	tools []*mcp.Tool // 已注册工具（含自动生成的 InputSchema），供 manifest 导出
 }
 
+const serverInstructions = `FileSync MCP Server：个人仓库文件管理、回收站与分享。
+
+新会话入职规则（必须执行）：
+1. 在当前 AI 会话第一次使用 FileSync MCP 时，先调用 whoami 获取令牌绑定的空间与权限。
+2. 随后调用 fs_read，读取路径 _index/mcp-onboarding.md。
+3. 将该文档作为当前个人仓库的欢迎词、操作手册和维护规则载入当前会话，并遵守其中要求。
+4. 同一 AI 会话只加载一次，不要在后续工具调用中重复展示；新的 AI 会话重新加载，以便获取用户更新后的最新版本。
+5. 如果手册不存在或无法读取，继续使用 whoami 返回的权限边界，并建议用户创建 _index/mcp-onboarding.md。
+
+用户可以在仓库页面直接编辑这份手册，也可以通过 fs_write 更新它。任何文件操作都必须遵守 PAT 的空间、路径和 scope 沙箱。`
+
 // New 创建 MCP 服务实例。
 func New(svc *agentsvc.AgentSvc) *MCP {
 	return &MCP{svc: svc}
@@ -42,7 +53,7 @@ func (s *MCP) Server() *mcp.Server {
 		Name:    "filesync",
 		Version: "1.0.0",
 	}, &mcp.ServerOptions{
-		Instructions: "FileSync MCP Server: 文件管理、回收站、分享。使用前先调用 whoami 查看当前令牌能力边界。",
+		Instructions: serverInstructions,
 	})
 	s.registerTools(srv, s.svc)
 	return srv
