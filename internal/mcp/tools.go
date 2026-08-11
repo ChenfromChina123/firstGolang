@@ -155,7 +155,6 @@ type fsMoveInput struct {
 type fsDeleteInput struct {
 	Paths   []string `json:"paths,omitempty" jsonschema:"要删除的文件路径列表"`
 	FileIDs []string `json:"file_ids,omitempty" jsonschema:"要删除的文件 ID 列表"`
-	SpaceID string   `json:"space_id,omitempty" jsonschema:"space ID"`
 }
 
 type fsTrashListInput struct {
@@ -433,7 +432,8 @@ func (s *MCP) registerTools(srv *mcp.Server, a *agentsvc.AgentSvc) {
 		if err := requireScope(tc, auth.ScopeWrite); err != nil {
 			return errResult(err), nil, nil
 		}
-		spaceID, err := sandbox(tc, normalizeSpace(tc, in.SpaceID), "")
+		// PAT 已绑定空间；普通调用无需重复传入 space_id。
+		spaceID, err := sandbox(tc, "", "")
 		if err != nil {
 			return errResult(err), nil, nil
 		}
