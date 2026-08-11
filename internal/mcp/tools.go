@@ -91,6 +91,9 @@ func sandbox(tc *ToolContext, spaceID, path string) (string, error) {
 // normalizeSpace 普通用户空 space → 默认空间；admin 空 → "*"。
 func normalizeSpace(tc *ToolContext, spaceID string) string {
 	if spaceID == "" {
+		if tc.SpaceID != "" {
+			return tc.SpaceID
+		}
 		if tc.Role == "admin" {
 			return "*"
 		}
