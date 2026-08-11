@@ -30,6 +30,10 @@ func TestServerInstructionsLoadOnboardingOncePerSession(t *testing.T) {
 		"fs_mkdir",
 		"fs_write",
 		"自动初始化必须幂等",
+		"mode: file-manager",
+		"不自动创建 docs/skills/projects",
+		"mode: repository",
+		"不得只凭目录存在",
 	} {
 		if !strings.Contains(serverInstructions, want) {
 			t.Fatalf("server instructions missing %q", want)

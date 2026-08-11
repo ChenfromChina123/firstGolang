@@ -36,12 +36,14 @@ const serverInstructions = `FileSync MCP Server：个人仓库文件管理、回
 新会话入职规则（必须执行）：
 1. 在当前 AI 会话第一次使用 FileSync MCP 时，先调用 whoami 获取令牌绑定的空间与权限。
 2. 随后调用 fs_read，读取路径 _index/mcp-onboarding.md。
-3. 将该文档作为当前个人仓库的欢迎词、操作手册和维护规则载入当前会话，并遵守其中要求。
+3. 将该文档作为当前空间的欢迎词、操作手册和维护规则载入当前会话，并遵守其中要求。手册 mode 可为 file-manager、repository 或 custom。
 4. 同一 AI 会话只加载一次，不要在后续工具调用中重复展示；新的 AI 会话重新加载，以便获取用户更新后的最新版本。
 5. 如果手册不存在：
-   - 当前令牌有 filesync:write 权限时，先调用 fs_mkdir 创建 _index，再调用 fs_write 创建 _index/mcp-onboarding.md。写入默认内容应包含欢迎词、目录用途、软删除/回收站规则、敏感信息安全规则和“用户可随时编辑本文件”的说明；创建后立即读取并载入。
+   - 默认按 file-manager（普通文件管理）模式处理，不得把空间擅自解释为个人知识仓库。
+   - 当前令牌有 filesync:write 权限时，先调用 fs_mkdir 创建 _index，再调用 fs_write 创建 _index/mcp-onboarding.md。默认手册必须声明 mode: file-manager，并说明：不自动创建 docs/skills/projects 等仓库目录、不自动移动或删除文件、整理前先征求用户确认、删除使用软删除、用户可随时编辑本文件。创建后立即读取并载入。
    - 当前令牌只有只读权限时，不尝试写入；继续遵守 whoami 返回的权限边界，并明确告诉用户需要 write 权限才能自动初始化。
    - 自动初始化必须幂等：已有目录或手册时不得覆盖，不得创建重复文件。
+6. 仅当用户明确要求启用个人仓库、手册声明 mode: repository，或用户确认已有 docs/skills/projects/_index 等结构属于个人仓库时，才应用仓库分类、索引和自动维护规则。不得只凭目录存在就进行移动、删除或批量重构。
 
 用户可以在仓库页面直接编辑这份手册，也可以通过 fs_write 更新它。任何文件操作都必须遵守 PAT 的空间、路径和 scope 沙箱。`
 
