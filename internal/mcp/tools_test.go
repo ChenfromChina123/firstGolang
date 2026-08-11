@@ -26,6 +26,10 @@ func TestServerInstructionsLoadOnboardingOncePerSession(t *testing.T) {
 		"_index/mcp-onboarding.md",
 		"同一 AI 会话只加载一次",
 		"新的 AI 会话重新加载",
+		"filesync:write",
+		"fs_mkdir",
+		"fs_write",
+		"自动初始化必须幂等",
 	} {
 		if !strings.Contains(serverInstructions, want) {
 			t.Fatalf("server instructions missing %q", want)
