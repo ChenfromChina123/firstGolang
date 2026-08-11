@@ -17,9 +17,9 @@ import (
 // FileView 是 MCP 返回的文件视图（精简字段，避免暴露 storage_path）。
 type FileView struct {
 	ID        string `json:"id"`
-	Name      string `json:"name"`  // filename（含虚拟目录前缀）
-	Size      int64  `json:"size"`  // 字节
-	Hash      string `json:"hash"`  // SHA256
+	Name      string `json:"name"` // filename（含虚拟目录前缀）
+	Size      int64  `json:"size"` // 字节
+	Hash      string `json:"hash"` // SHA256
 	SpaceID   string `json:"space_id"`
 	Owner     string `json:"owner"`
 	CreatedAt string `json:"created_at"`
@@ -299,45 +299,54 @@ func (s *AgentSvc) Rename(ctx context.Context, id, oldPath, newPath, username, r
 
 // Move 批量移动（改路径前缀）。
 // oldPrefix→newPrefix：把 oldPrefix 下的所有文件路径前缀替换。
-func (s *AgentSvc) Move(ctx context.Context, oldPrefix, newPrefix, spaceID, username, role string) error {
+func (s *AgentSvc) Move(ctx context.Context, oldPrefix, newPrefix, spaceID, username, role string) (int, error) {
 	oldPrefix = normalizeDirPrefix(oldPrefix)
 	newPrefix = normalizeDirPrefix(newPrefix)
 	if oldPrefix == "" || newPrefix == "" {
-		return fmt.Errorf("%w: prefixes required", ErrInvalidPath)
+		return 0, fmt.Errorf("%w: prefixes required", ErrInvalidPath)
 	}
 	if err := validateAgentPath(newPrefix + "x"); err != nil {
-		return err
+		return 0, err
 	}
 	files, err := s.db.ListFiles(spaceID, oldPrefix, s.ownerFilter(username, role))
 	if err != nil {
-		return fmtErr(err)
+		return 0, fmtErr(err)
 	}
 	if len(files) == 0 {
-		return nil
+		return 0, nil
 	}
 	for _, f := range files {
 		newName := newPrefix + strings.TrimPrefix(f.Filename, oldPrefix)
 		if err := s.db.UpdateFilename(f.ID, newName, s.ownerFilter(username, role)); err != nil {
-			return fmtErr(err)
+			return 0, fmtErr(err)
 		}
 	}
-	return nil
+	return len(files), nil
 }
 
 // Delete 软删除（移入回收站）。paths 或 fileIDs 至少一项；统一批量语义。
 func (s *AgentSvc) Delete(ctx context.Context, paths, fileIDs []string, spaceID, username, role string) (deleted int, err error) {
 	// 收集待删 fileID
 	var ids []string
+	owner := s.ownerFilter(username, role)
 	for _, id := range fileIDs {
-		if id != "" {
-			ids = append(ids, id)
+		if id == "" {
+			continue
 		}
+		f, err := s.db.GetFile(id)
+		if err != nil {
+			continue
+		}
+		if (spaceID != "*" && f.SpaceID != spaceID) || (owner != "" && f.Owner != owner) {
+			continue
+		}
+		ids = append(ids, f.ID)
 	}
 	for _, p := range paths {
 		if p == "" {
 			continue
 		}
-		f, err := s.resolveFile("", strings.TrimSuffix(p, "/"), username, role)
+		f, err := s.db.FindFileByName(spaceID, strings.TrimSuffix(p, "/"), owner)
 		if err != nil {
 			continue // 单个缺失不阻塞批量
 		}

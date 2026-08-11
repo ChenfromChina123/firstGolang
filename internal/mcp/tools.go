@@ -129,10 +129,10 @@ type fsWriteInput struct {
 }
 
 type fsUploadInput struct {
-	Path           string `json:"path,omitempty" jsonschema:"目标文件路径"`
-	ContentBase64  string `json:"content_base64,omitempty" jsonschema:"文件内容 Base64(与 source_url 二选一)"`
-	SourceURL      string `json:"source_url,omitempty" jsonschema:"可公开访问的源文件 URL(服务端拉取,与 content_base64 二选一)"`
-	SpaceID        string `json:"space_id,omitempty" jsonschema:"空间 ID(可选)"`
+	Path          string `json:"path,omitempty" jsonschema:"目标文件路径"`
+	ContentBase64 string `json:"content_base64,omitempty" jsonschema:"文件内容 Base64(与 source_url 二选一)"`
+	SourceURL     string `json:"source_url,omitempty" jsonschema:"可公开访问的源文件 URL(服务端拉取,与 content_base64 二选一)"`
+	SpaceID       string `json:"space_id,omitempty" jsonschema:"空间 ID(可选)"`
 }
 
 type fsMkdirInput struct {
@@ -155,6 +155,7 @@ type fsMoveInput struct {
 type fsDeleteInput struct {
 	Paths   []string `json:"paths,omitempty" jsonschema:"要删除的文件路径列表"`
 	FileIDs []string `json:"file_ids,omitempty" jsonschema:"要删除的文件 ID 列表"`
+	SpaceID string   `json:"space_id,omitempty" jsonschema:"space ID"`
 }
 
 type fsTrashListInput struct {
@@ -268,9 +269,9 @@ func (s *MCP) registerTools(srv *mcp.Server, a *agentsvc.AgentSvc) {
 		}
 		if looksBinary(data) {
 			return okJSON(map[string]any{
-				"filename":   f.Name,
-				"size":       f.Size,
-				"encoding":   "base64",
+				"filename":    f.Name,
+				"size":        f.Size,
+				"encoding":    "base64",
 				"content_b64": base64.StdEncoding.EncodeToString(data),
 			}), nil, nil
 		}
@@ -414,10 +415,14 @@ func (s *MCP) registerTools(srv *mcp.Server, a *agentsvc.AgentSvc) {
 		if err != nil {
 			return errResult(err), nil, nil
 		}
-		if err := a.Move(ctx, in.OldPrefix, in.NewPrefix, spaceID, tc.Username, tc.Role); err != nil {
+		if _, err := sandbox(tc, spaceID, in.NewPrefix); err != nil {
 			return errResult(err), nil, nil
 		}
-		return okJSON(map[string]any{"moved": true, "from": in.OldPrefix, "to": in.NewPrefix}), nil, nil
+		moved, err := a.Move(ctx, in.OldPrefix, in.NewPrefix, spaceID, tc.Username, tc.Role)
+		if err != nil {
+			return errResult(err), nil, nil
+		}
+		return okJSON(map[string]any{"moved": moved > 0, "moved_count": moved, "from": in.OldPrefix, "to": in.NewPrefix}), nil, nil
 	})
 
 	addTool(s, srv, &mcp.Tool{
@@ -428,7 +433,7 @@ func (s *MCP) registerTools(srv *mcp.Server, a *agentsvc.AgentSvc) {
 		if err := requireScope(tc, auth.ScopeWrite); err != nil {
 			return errResult(err), nil, nil
 		}
-		spaceID, err := sandbox(tc, normalizeSpace(tc, ""), "")
+		spaceID, err := sandbox(tc, normalizeSpace(tc, in.SpaceID), "")
 		if err != nil {
 			return errResult(err), nil, nil
 		}
